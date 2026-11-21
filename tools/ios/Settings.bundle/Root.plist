@@ -6,7 +6,7 @@
 	<array>
 		<dict>
 			<key>DefaultValue</key>
-			<string>stacked</string>
+			<string>single</string>
 			<key>Key</key>
 			<string>layout</string>
 			<key>Title</key>
