@@ -19,7 +19,7 @@ nice -n 10 cmake --build "$build/game-ninja" --config Release --target khdays-na
 test -x "$build/game-ninja/khdays-native.app/khdays-native"
 app="$build/game-ninja/khdays-native.app"
 # App icon: compile the asset catalog into the bundle and merge the icon keys into its Info.plist.
-xcrun actool tools/ios/Assets.xcassets --compile "$app" --platform "$sdk" --minimum-deployment-target 16.0 \
+xcrun actool "${ICON_CATALOG:-tools/ios/Assets.xcassets}" --compile "$app" --platform "$sdk" --minimum-deployment-target 16.0 \
     --app-icon AppIcon --target-device iphone --target-device ipad --output-partial-info-plist "$build/icon-info.plist" >/dev/null
 /usr/libexec/PlistBuddy -c "Merge $build/icon-info.plist" "$app/Info.plist"
 test -f "$app/Assets.car"
