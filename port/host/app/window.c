@@ -3,12 +3,11 @@
  * player's profile, the settings menu opens on Esc or the pad's settings button, sound_output.c plays.
  * Closing the window ends the process (docs/PLATFORM.md, "The PC's side"). */
 #include "host.h"
-#ifdef KHDAYS_IOS
 #include "mobile_touch.h"
-#endif
 #include "devices.h"
 #include "press_edges.h"
 #include "../render/gpu_present.h"
+#include "../render/png_io.h"
 #include "../movies/movie_hd.h"
 #include "profile.h"
 #include "../../runtime/menus/newgame.h"
@@ -38,6 +37,7 @@
 #include "../../runtime/scripts/queue.h"
 #include "../../runtime/scripts/view.h"
 #include "../../runtime/core/runtime.h"
+#include "../../runtime/core/events.h"
 #include "../../runtime/core/session_log.h"
 #include "../../ui/situation.h"
 
@@ -123,6 +123,13 @@ static int last_full = KHDAYS_DISPLAY_BORDERLESS; /* the full screen Alt+Enter g
 static void display_now(int display)
 {
     static int shown = -1;
+#ifdef KHDAYS_IOS
+    /* the phone's window is always the whole screen: leaving full screen (the default setting is "a
+     * window") would bring the status bar over the game and lay the view out again as it appears */
+    (void)shown;
+    (void)display;
+    return;
+#else
     if (host_window == NULL || display == shown) {
         return;
     }
@@ -142,6 +149,7 @@ static void display_now(int display)
     khdays_log("window: %s", display == KHDAYS_DISPLAY_WINDOW       ? "a window"
                              : display == KHDAYS_DISPLAY_BORDERLESS ? "a borderless window over the screen"
                                                                     : "full screen");
+#endif
 }
 
 /* Applies a change in the menu's Video section at once: the picture behind
@@ -268,6 +276,139 @@ static void take_mod_notices(void)
     }
 }
 
+/* The picture report: what the window is about to show, read back from the renderer before it is
+ * presented -- how much of it is lit and where, with the window's sizes and how the picture was drawn
+ * (khdays_present_note). On the phone it tells a picture that was drawn but not shown (the window's
+ * side) from one never drawn (the port's side); the Linux picture test reads it too. Reported for
+ * the first pictures, a few later ones, after each change of the window's size, and every
+ * KHDAYS_PICTURE_LOG pictures; saved as PNGs to KHDAYS_SHOT_WINDOW (on the phone: saves/logs). */
+static unsigned picture_count;
+static int picture_report_due;
+
+static void picture_report(SDL_Window *window, SDL_Renderer *renderer)
+{
+    static int every = -1;
+    static const char *shot_dir;
+    int ww = 0, wh = 0, pw = 0, ph = 0, lw = 0, lh = 0;
+    SDL_Rect safe = {0, 0, 0, 0};
+    SDL_RendererLogicalPresentation mode = SDL_LOGICAL_PRESENTATION_DISABLED;
+    SDL_Surface *got, *rgba;
+    const unsigned n = ++picture_count;
+    if (every < 0) {
+        const char *v = SDL_getenv("KHDAYS_PICTURE_LOG");
+        every = v != NULL ? SDL_atoi(v) : 0;
+        shot_dir = SDL_getenv("KHDAYS_SHOT_WINDOW");
+#ifdef KHDAYS_IOS
+        if (shot_dir == NULL) {
+            shot_dir = "saves/logs";
+        }
+#endif
+        if (shot_dir != NULL) {
+            SDL_CreateDirectory(shot_dir);
+        }
+    }
+    if (picture_report_due > 0) {
+        if (--picture_report_due > 0) {
+            return; /* the first picture after a change of size: SDL's backbuffer still has the old size */
+        }
+    } else if (!(n == 1 || n == 30 || n == 300 || n == 900 || n == 1800 || (every > 0 && n % (unsigned)every == 0))) {
+        return;
+    }
+    SDL_GetWindowSize(window, &ww, &wh);
+    SDL_GetWindowSizeInPixels(window, &pw, &ph);
+    SDL_GetWindowSafeArea(window, &safe);
+    fprintf(stderr,
+            "picture %u (game frame %u, scene %u): window %dx%d, %dx%d pixels, density %.2f, safe area %d,%d %dx%d, "
+            "flags %llx; %s\n",
+            n, khdays_events_vblank_count(), khdays_runtime_scene(), ww, wh, pw, ph,
+            (double)SDL_GetWindowPixelDensity(window), safe.x, safe.y, safe.w, safe.h,
+            (unsigned long long)SDL_GetWindowFlags(window), khdays_present_note());
+#ifdef KHDAYS_IOS
+    {
+        extern void khdays_ios_report(const char *when);
+        char when[32];
+        SDL_snprintf(when, sizeof(when), "picture %u", n);
+        khdays_ios_report(when);
+    }
+#endif
+#ifdef KHDAYS_MOBILE
+    fprintf(stderr, "picture %u: touch keys %s (settings %s, a controller %s)\n", n,
+            !khdays_settings_is_open() && !khdays_devices_gamepad() ? "drawn" : "not drawn",
+            khdays_settings_is_open() ? "open" : "closed", khdays_devices_gamepad() ? "connected" : "not connected");
+#endif
+    SDL_GetRenderLogicalPresentation(renderer, &lw, &lh, &mode);
+    SDL_SetRenderLogicalPresentation(renderer, 0, 0, SDL_LOGICAL_PRESENTATION_DISABLED);
+    got = SDL_RenderReadPixels(renderer, NULL);
+    SDL_SetRenderLogicalPresentation(renderer, lw, lh, mode);
+    rgba = got != NULL ? SDL_ConvertSurface(got, SDL_PIXELFORMAT_RGBA32) : NULL;
+    SDL_DestroySurface(got);
+    if (rgba == NULL) {
+        fprintf(stderr, "picture %u: cannot be read back: %s\n", n, SDL_GetError());
+    } else {
+        int x0 = rgba->w, y0 = rgba->h, x1 = -1, y1 = -1;
+        unsigned long long lit = 0, sum[3] = {0, 0, 0};
+        const unsigned long long all = (unsigned long long)rgba->w * (unsigned long long)rgba->h;
+        for (int y = 0; y < rgba->h; ++y) {
+            const Uint8 *row = (const Uint8 *)rgba->pixels + (size_t)y * (size_t)rgba->pitch;
+            for (int x = 0; x < rgba->w; ++x) {
+                const Uint8 *c = row + 4 * x;
+                sum[0] += c[0];
+                sum[1] += c[1];
+                sum[2] += c[2];
+                if (c[0] > 16 || c[1] > 16 || c[2] > 16) {
+                    ++lit;
+                    x0 = x < x0 ? x : x0;
+                    x1 = x > x1 ? x : x1;
+                    y0 = y < y0 ? y : y0;
+                    y1 = y > y1 ? y : y1;
+                }
+            }
+        }
+        if (lit == 0) {
+            fprintf(stderr, "picture %u: %dx%d read back, ALL BLACK\n", n, rgba->w, rgba->h);
+        } else {
+            fprintf(stderr,
+                    "picture %u: %dx%d read back, %.1f%% lit, within %d,%d to %d,%d, average colour %llu %llu %llu\n",
+                    n, rgba->w, rgba->h, 100.0 * (double)lit / (double)all, x0, y0, x1, y1, sum[0] / all, sum[1] / all,
+                    sum[2] / all);
+        }
+        if (shot_dir != NULL) {
+            /* saved no wider than 1024: every k-th pixel */
+            const int k = (rgba->w + 1023) / 1024, w = rgba->w / k, h = rgba->h / k;
+            uint8_t *small = (uint8_t *)SDL_malloc((size_t)w * (size_t)h * 4);
+            if (small != NULL) {
+                char path[512];
+                const char *error;
+                for (int y = 0; y < h; ++y) {
+                    const Uint8 *row = (const Uint8 *)rgba->pixels + (size_t)(y * k) * (size_t)rgba->pitch;
+                    for (int x = 0; x < w; ++x) {
+                        memcpy(small + ((size_t)y * (size_t)w + (size_t)x) * 4, row + 4 * (x * k), 3);
+                        small[((size_t)y * (size_t)w + (size_t)x) * 4 + 3] = 255;
+                    }
+                }
+                SDL_snprintf(path, sizeof(path), "%s/picture-%05u.png", shot_dir, n);
+                error = khdays_png_write(path, small, w, h);
+                fprintf(stderr, error != NULL ? "picture %u: cannot write %s: %s\n" : "picture %u: saved to %s%s\n", n,
+                        path, error != NULL ? error : "");
+                SDL_free(small);
+            }
+        }
+        SDL_DestroySurface(rgba);
+    }
+    fflush(stderr);
+}
+
+/* Presents the picture; says so when the window would not take it (the first time, then every 600th). */
+static void present_picture(SDL_Renderer *renderer)
+{
+    static unsigned refused;
+    if (!SDL_RenderPresent(renderer) && refused++ % 600 == 0) {
+        fprintf(stderr, "picture %u: the window did not take it (%u so far): %s\n", picture_count, refused,
+                SDL_GetError());
+        fflush(stderr);
+    }
+}
+
 /* Draws the last frame, with the FPS and ping displays and the settings menu
  * over it. Draws nothing while the graphics card is lost (the loop recreates
  * it). */
@@ -301,10 +442,11 @@ static void redraw(SDL_Window *window, SDL_Renderer *renderer)
         khdays_settings_corner_draw(renderer, mod_notices[i].line, corner_rows + i);
     }
     khdays_settings_draw(renderer, window);
-#ifdef KHDAYS_IOS
+#ifdef KHDAYS_MOBILE
     if (!khdays_settings_is_open() && !khdays_devices_gamepad()) khdays_mobile_draw(renderer);
 #endif
-    SDL_RenderPresent(renderer);
+    picture_report(window, renderer);
+    present_picture(renderer);
 }
 
 /* Whether the open settings menu paused the game. In a multiplayer session
@@ -539,6 +681,14 @@ static SDL_Window *open_window(const KhdaysProfile *profile)
 #ifdef KHDAYS_IOS
     return SDL_CreateWindow("358/2 Days", w, h, SDL_WINDOW_FULLSCREEN | SDL_WINDOW_HIGH_PIXEL_DENSITY);
 #endif
+#ifdef KHDAYS_MOBILE_TEST
+    {
+        const char *size = SDL_getenv("KHDAYS_MOBILE_WINDOW");
+        if (size != NULL && SDL_sscanf(size, "%dx%d", &w, &h) == 2) {
+            return SDL_CreateWindow("358/2 Days", w, h, SDL_WINDOW_HIGH_PIXEL_DENSITY);
+        }
+    }
+#endif
     return SDL_CreateWindow("Kingdom Hearts 358/2 Days (native)", w, h, SDL_WINDOW_RESIZABLE);
 }
 
@@ -703,6 +853,38 @@ static int host_thread(void *unused)
             tell_game(); /* (a scale the graphics card refused changes what the game should fill) */
             redraw(window, renderer);
             continue;
+        }
+        if (event.type >= SDL_EVENT_TERMINATING && event.type <= SDL_EVENT_DID_ENTER_FOREGROUND) {
+            /* the phone's app going to the background and coming back. SDL's renderer draws nothing
+             * while its window counts as minimized (from "will enter background" until "did enter
+             * foreground"): say what the window's flags are, and draw again once it is back. */
+            static const char *const names[] = {"terminating",           "low memory",
+                                                "will enter background", "did enter background",
+                                                "will enter foreground", "did enter foreground"};
+            fprintf(stderr, "window: the app: %s (window flags %llx; 40 = minimized, 8 = hidden) after picture %u\n",
+                    names[event.type - SDL_EVENT_TERMINATING], (unsigned long long)SDL_GetWindowFlags(window),
+                    picture_count);
+            fflush(stderr);
+            if (event.type == SDL_EVENT_DID_ENTER_FOREGROUND) {
+                picture_report_due = 2;
+                redraw(window, renderer);
+            }
+            continue;
+        }
+        if (event.type >= SDL_EVENT_WINDOW_FIRST && event.type <= SDL_EVENT_WINDOW_LAST &&
+            event.type != SDL_EVENT_WINDOW_MOUSE_ENTER && event.type != SDL_EVENT_WINDOW_MOUSE_LEAVE &&
+            event.type != SDL_EVENT_WINDOW_EXPOSED) {
+            /* the window's own events, as they come: shown, resized, the safe area, focus, a turned phone */
+            static int said;
+            if (said < 200) {
+                ++said;
+                fprintf(stderr, "window: event %x (%d, %d) after picture %u\n", (unsigned)event.type,
+                        (int)event.window.data1, (int)event.window.data2, picture_count);
+                fflush(stderr);
+            }
+            if (event.type == SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED || event.type == SDL_EVENT_WINDOW_SAFE_AREA_CHANGED) {
+                picture_report_due = 2;
+            }
         }
         if (event.type == SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED) {
             khdays_present_resized(); /* settings set to "window" follow the new size */

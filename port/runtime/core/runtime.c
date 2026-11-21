@@ -267,6 +267,24 @@ unsigned int khdays_runtime_scene(void)
     return *(const volatile u32 *)KHDAYS_W(0x0204bda8 + 8);
 }
 
+/* The scenes' names (the decompilation's include/game/scene.h), for the log. */
+static const char *scene_name(u32 id)
+{
+    switch (id) {
+    case 0: return "none yet";
+    case 1: return "logos and title";
+    case 2: return "field";
+    case 5: return "calendar";
+    case 6: return "mission result";
+    case 7: return "mission select";
+    case 10: return "monologue";
+    case 11: return "opening movie";
+    case 12: return "connection error";
+    case 19: return "mission camp";
+    default: return "unnamed";
+    }
+}
+
 void khdays_host_frame(void)
 {
     /* the scene controller at 0x0204bda8: object, table entry, current id, pending id, argument */
@@ -290,8 +308,8 @@ void khdays_host_frame(void)
      * game spends away from this point (a movie), is seen all the same */
     if (frame % 60 == 0 || scene[2] != reported_scene) {
         reported_scene = scene[2];
-        fprintf(stderr, "khdays-native: frame %u, scene %u (object %08x, pending %u arg %u)\n", frame, scene[2],
-                scene[0], scene[3], scene[4]);
+        fprintf(stderr, "khdays-native: frame %u, scene %u %s (object %08x, pending %u arg %u)\n", frame, scene[2],
+                scene_name(scene[2]), scene[0], scene[3], scene[4]);
         fflush(stderr);
     }
 }

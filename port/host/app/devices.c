@@ -2,9 +2,7 @@
  * buttons and the port's actions through the player's profile (bindings.c) and published for the game.
  * Only one gamepad plays: the first connected, or the last used when it goes away. */
 #include "devices.h"
-#ifdef KHDAYS_IOS
 #include "mobile_touch.h"
-#endif
 #include "instance.h"
 #include "../screens/ui_text.h"
 
@@ -90,7 +88,7 @@ static void send(void)
 {
     snapshot.ui_open = 0;
     khdays_bindings_resolve(&profile, &state, &snapshot);
-#ifdef KHDAYS_IOS
+#ifdef KHDAYS_MOBILE
     khdays_mobile_snapshot(&snapshot);
 #endif
     if (!game_input) {
@@ -132,7 +130,7 @@ void khdays_devices_set_game_input(int on)
     if (on && !game_input) {
         khdays_bindings_mask_held(&state);
     }
-#ifdef KHDAYS_IOS
+#ifdef KHDAYS_MOBILE
     khdays_mobile_reset();
 #endif
     game_input = on;
@@ -422,7 +420,7 @@ void khdays_devices_frame(void)
 
 void khdays_devices_handle(const SDL_Event *event, SDL_Renderer *renderer)
 {
-#ifdef KHDAYS_IOS
+#ifdef KHDAYS_MOBILE
     switch (event->type) {
     case SDL_EVENT_WINDOW_FOCUS_LOST:
     case SDL_EVENT_WINDOW_SAFE_AREA_CHANGED:

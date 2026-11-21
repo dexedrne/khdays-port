@@ -51,6 +51,30 @@ def c_array(name: str, data: bytes) -> str:
     )
 
 
+def sdl_metal_order(msl: bytes) -> bytes:
+    """SDL's Metal backend binds a compute pipeline's uniform buffers first and its storage buffers after
+    them (SDL_gpu.h, SDL_CreateGPUComputePipeline); spirv-cross numbers them in binding order, which puts
+    the Params block last. Renumber the kernel's arguments: Params at 0, each storage buffer one up.
+    With the block left last every shader read its width and height from another buffer, as 0, and
+    wrote no pixel (a black picture on Metal)."""
+    text = msl.decode("utf-8")
+    lines = text.split("\n")
+    kernels = [i for i, line in enumerate(lines) if line.startswith("kernel void ")]
+    if len(kernels) != 1 or text.count("[[buffer(") != lines[kernels[0]].count("[[buffer("):
+        sys.exit("build_shaders: the MSL's buffers are not all arguments of one kernel")
+    line = lines[kernels[0]]
+    uniforms = re.findall(r"constant \w+& (\w+) \[\[buffer\((\d+)\)\]\]", line)
+    storage = re.findall(r"device \w+& (\w+) \[\[buffer\((\d+)\)\]\]", line)
+    if len(uniforms) != 1 or len(uniforms) + len(storage) != line.count("[[buffer("):
+        sys.exit("build_shaders: expected one uniform block and storage buffers in the MSL kernel")
+    if sorted(int(n) for _, n in storage) != list(range(len(storage))) or int(uniforms[0][1]) != len(storage):
+        sys.exit("build_shaders: the MSL's buffers are not numbered as spirv-cross numbers them")
+    line = re.sub(r"(device \w+& \w+ \[\[buffer\()(\d+)(\)\]\])", lambda m: f"{m[1]}{int(m[2]) + 1}{m[3]}", line)
+    line = re.sub(r"(constant \w+& \w+ \[\[buffer\()\d+(\)\]\])", r"\g<1>0\2", line)
+    lines[kernels[0]] = line
+    return "\n".join(lines).encode("utf-8")
+
+
 def build(source: Path, dxc: str, cross: str, versions: str, work: Path) -> None:
     text = source.read_text(encoding="utf-8")
     stages = [(entry, stage) for entry, stage in STAGES.items() if re.search(rf"\b{entry}\s*\(", text)]
@@ -86,7 +110,7 @@ def build(source: Path, dxc: str, cross: str, versions: str, work: Path) -> None
             f" * ({entry}); do not edit. Tools: {versions}. */\n"
             + c_array(f"{base}_dxil", dxil.read_bytes())
             + c_array(f"{base}_spirv", spirv.read_bytes())
-            + c_array(f"{base}_msl", msl.read_bytes() + b"\0")
+            + c_array(f"{base}_msl", sdl_metal_order(msl.read_bytes()) + b"\0")
             + f'#define {base.upper()}_ENTRY "{entry}"\n',
             encoding="utf-8",
             newline="\n",

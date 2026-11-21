@@ -12,10 +12,13 @@ static int game_status;
 
 int khdays_ios_layout(void)
 {
-    NSString *value = [NSUserDefaults.standardUserDefaults stringForKey:@"layout"];
-    if ([value isEqualToString:@"side"]) return 1;
-    if ([value isEqualToString:@"stacked"]) return 0;
-    return 2;  /* single screen by default */
+    /* (its own pool: the window's loop, which calls this, never returns to one that drains) */
+    @autoreleasepool {
+        NSString *value = [NSUserDefaults.standardUserDefaults stringForKey:@"layout"];
+        if ([value isEqualToString:@"side"]) return 1;
+        if ([value isEqualToString:@"stacked"]) return 0;
+        return 2;  /* single screen by default */
+    }
 }
 
 /* The testing switches (docs/RENDERING.md, the picture report of host/app/window.c) on the phone, where
@@ -34,8 +37,13 @@ static void take_environment(void)
             stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceCharacterSet];
         NSString *value = [[line substringFromIndex:equals.location + 1]
             stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceCharacterSet];
-        if (value.length == 0) unsetenv(name.UTF8String);
-        else setenv(name.UTF8String, value.UTF8String, 1);
+        if (value.length == 0) {
+            unsetenv(name.UTF8String);
+            SDL_UnsetEnvironmentVariable(SDL_GetEnvironment(), name.UTF8String); /* SDL_getenv reads its own copy */
+        } else {
+            setenv(name.UTF8String, value.UTF8String, 1);
+            SDL_SetEnvironmentVariable(SDL_GetEnvironment(), name.UTF8String, value.UTF8String, true);
+        }
         fprintf(stderr, "ios: khdays-env.txt: %s=%s\n", name.UTF8String, value.UTF8String);
     }
 }
@@ -46,6 +54,7 @@ static void take_environment(void)
  * a Metal layer without a drawable size. Called on the main thread (the window's loop runs there). */
 void khdays_ios_report(const char *when)
 {
+    @autoreleasepool {
     UIApplication *app = UIApplication.sharedApplication;
     fprintf(stderr, "ios: %s: app state %ld (0 active, 1 inactive, 2 background), %lu scenes\n", when,
             (long)app.applicationState, (unsigned long)app.connectedScenes.count);
@@ -78,6 +87,7 @@ void khdays_ios_report(const char *when)
         }
     }
     fflush(stderr);
+    }
 }
 
 static int run_game(void *unused)

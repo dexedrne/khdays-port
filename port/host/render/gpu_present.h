@@ -77,6 +77,8 @@ void khdays_present_set_video(const KhdaysVideo *video);
 /* Draws the picture; the caller draws the settings menu over it and
  * presents. */
 void khdays_present_draw(void);
+/* How the last picture was drawn (which way, sizes, viewport), for the picture report. */
+const char *khdays_present_note(void);
 /* Whether the window shows the one-screen picture of the last frame made. */
 int khdays_present_one_picture(void);
 

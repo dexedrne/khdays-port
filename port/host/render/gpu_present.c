@@ -4,6 +4,7 @@
  * (KHDAYS_SHOTS_HD, KHDAYS_GFX=reference|check, KHDAYS_PROFILE): docs/RENDERING.md. */
 #include "gpu_present.h"
 #include "../app/devices.h"
+#include "../app/mobile_touch.h"
 #include "gfx_render.h"
 #include "gpu_raster3d.h"
 #include "../movies/movie_hd.h"
@@ -1171,9 +1172,7 @@ int khdays_host_graphics_flags(void)
     return graphics_flags;
 }
 
-#ifdef KHDAYS_IOS
-#include "../app/mobile_touch.h"
-extern int khdays_ios_layout(void);
+#ifdef KHDAYS_MOBILE
 static int mobile_layout;
 static SDL_FRect stylus_rect;
 static bool drawing_mobile;
@@ -1181,7 +1180,7 @@ static bool drawing_mobile;
 
 void khdays_present_set_video(const KhdaysVideo *v)
 {
-#ifdef KHDAYS_IOS
+#ifdef KHDAYS_MOBILE
     KhdaysVideo mobile = *v;
     mobile_layout = khdays_ios_layout();
     mobile.one_screen = mobile_layout == 2;
@@ -1214,9 +1213,9 @@ static void present_size(int w, int h)
         presented_w = w;
         presented_h = h;
     }
-#ifdef KHDAYS_IOS
+#ifdef KHDAYS_MOBILE
     SDL_Rect safe;
-    if (drawing_mobile && renderer && SDL_GetWindowSafeArea(window, &safe))
+    if (drawing_mobile && renderer && khdays_mobile_safe(window, &safe))
         khdays_mobile_view(renderer, safe, w, h);
 #endif
 }
@@ -1324,15 +1323,52 @@ static SDL_ScaleMode mode_for(SDL_Texture *t, float w, float h)
     return video.smooth_scaling ? SDL_SCALEMODE_LINEAR : SDL_SCALEMODE_NEAREST;
 }
 
+/* How the last picture was drawn, for the picture report (window.c): which of draw_screens' ways, with
+ * the sizes it used. */
+static char draw_note[320];
+static const char *draw_way = "nothing yet";
+
+const char *khdays_present_note(void)
+{
+    float sx = 0.0f, sy = 0.0f;
+    SDL_Rect view = {0, 0, 0, 0};
+    int ow = 0, oh = 0;
+    if (renderer == NULL) {
+        return "no renderer";
+    }
+    SDL_GetRenderScale(renderer, &sx, &sy);
+    SDL_GetRenderViewport(renderer, &view);
+    SDL_GetCurrentRenderOutputSize(renderer, &ow, &oh);
+    SDL_snprintf(draw_note, sizeof(draw_note),
+                 "drawn as %s; %d columns, internal scale %d, logical %dx%d in output %dx%d, viewport %d,%d %dx%d, "
+                 "scale %.3f, 2D %s, one-screen setting %d, game level %.2f"
+#ifdef KHDAYS_MOBILE
+                 ", layout %d, stylus %.0f,%.0f %.0fx%.0f, %s"
+#endif
+                 ,
+                 draw_way, columns, scale_now(), presented_w, presented_h, ow, oh, view.x, view.y, view.w, view.h,
+                 (double)sx, port2d_drawn ? "the port's" : port2d_ready ? "not drawn yet" : "off", video.one_screen,
+                 (double)khdays_movie_hd_game_level()
+#ifdef KHDAYS_MOBILE
+                     ,
+                 mobile_layout, (double)stylus_rect.x, (double)stylus_rect.y, (double)stylus_rect.w,
+                 (double)stylus_rect.h, khdays_mobile_view_note()
+#endif
+    );
+    return draw_note;
+}
+
 static void draw_screens(void)
 {
     const float left = (float)(columns - W) / 2;
-#ifdef KHDAYS_IOS
+#ifdef KHDAYS_MOBILE
     SDL_zero(stylus_rect);
 #endif
     if (device_lost) {
+        draw_way = "nothing (the graphics device is lost)";
         return;
     }
+    draw_way = "nothing (no screens to draw)";
     fps_count(1);
     SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
     SDL_RenderClear(renderer);
@@ -1341,6 +1377,7 @@ static void draw_screens(void)
      * scene's 3D: no picture of it apart) */
     const int paused = khdays_movie_hd_scene_paused();
     if (khdays_movie_hd_showing() && !paused) {
+        draw_way = "an HD movie";
         draw_hd_movie();
         draw_movie_pause();
         return;
@@ -1355,9 +1392,10 @@ static void draw_screens(void)
         int made = 0;
         SDL_Texture *picture = khdays_gfx_render_picture(renderer, &made);
         present_size(columns, H);
+        draw_way = picture != NULL ? "the one-screen picture" : "nothing (no one-screen picture)";
         if (picture != NULL) {
             const SDL_FRect at = {((float)columns - (float)made) / 2, 0, (float)made, H};
-#ifdef KHDAYS_IOS
+#ifdef KHDAYS_MOBILE
             if (one_kind == KHDAYS_SCREENS_LOWER) stylus_rect = (SDL_FRect){left, 0, W, H};
 #endif
             one_at_x = at.x;
@@ -1366,7 +1404,7 @@ static void draw_screens(void)
             SDL_RenderTexture(renderer, picture, NULL, &at);
         }
     } else if (port2d_drawn && ((video.one_screen && one_kind == KHDAYS_SCREENS_SIDE_BY_SIDE)
-#ifdef KHDAYS_IOS
+#ifdef KHDAYS_MOBILE
                                || mobile_layout == 1
 #endif
                                )) {
@@ -1377,11 +1415,12 @@ static void draw_screens(void)
         SDL_Texture *upper = screen_texture(port2d_upper, &wu);
         SDL_Texture *lower = screen_texture(!port2d_upper, &wl);
         present_size(2 * W, H);
+        draw_way = upper != NULL && lower != NULL ? "two screens side by side" : "nothing (a screen's texture is missing)";
         if (upper != NULL && lower != NULL) {
             const SDL_ScaleMode mode = video.smooth_scaling ? SDL_SCALEMODE_LINEAR : SDL_SCALEMODE_NEAREST;
             const SDL_FRect upper_from = ds_columns(upper, wu), lower_from = ds_columns(lower, wl);
             const SDL_FRect upper_at = {0, 0, W, H}, lower_at = {W, 0, W, H};
-#ifdef KHDAYS_IOS
+#ifdef KHDAYS_MOBILE
             stylus_rect = lower_at;
 #endif
             SDL_SetTextureScaleMode(upper, mode);
@@ -1401,8 +1440,9 @@ static void draw_screens(void)
         const float wu = (float)cu, wl = (float)cl;
         const SDL_FRect upper_at = {((float)columns - wu) / 2, 0, wu, H},
                         lower_at = {((float)columns - wl) / 2, H, wl, H};
+        draw_way = upper != NULL && lower != NULL ? "two screens stacked" : "nothing (a screen's texture is missing)";
         if (upper != NULL && lower != NULL) {
-#ifdef KHDAYS_IOS
+#ifdef KHDAYS_MOBILE
             stylus_rect = (SDL_FRect){left, H, W, H};
 #endif
             SDL_SetTextureScaleMode(upper, mode_for(upper, wu, H));
@@ -1414,7 +1454,7 @@ static void draw_screens(void)
         /* the 1x screens, the DS's 256 columns in the middle */
         const SDL_FRect upper = {0, 0, W, H}, lower = {0, H, W, H};
         SDL_FRect upper_at = {left, 0, W, H}, lower_at = {left, H, W, H};
-#ifdef KHDAYS_IOS
+#ifdef KHDAYS_MOBILE
         if (mobile_layout == 1) {
             upper_at.x = 0;
             lower_at = (SDL_FRect){W, 0, W, H};
@@ -1422,14 +1462,15 @@ static void draw_screens(void)
         } else
 #endif
         present_size(columns, 2 * H);
-#ifdef KHDAYS_IOS
+#ifdef KHDAYS_MOBILE
         stylus_rect = lower_at;
 #endif
+        draw_way = "the 1x screens";
         SDL_RenderTexture(renderer, screens, &upper, &upper_at);
         SDL_RenderTexture(renderer, screens, &lower, &lower_at);
     }
     if (hd != NULL
-#ifdef KHDAYS_IOS
+#ifdef KHDAYS_MOBILE
         && mobile_layout != 1
 #endif
         ) {
@@ -1444,11 +1485,11 @@ static void draw_screens(void)
 
 void khdays_present_draw(void)
 {
-#ifdef KHDAYS_IOS
+#ifdef KHDAYS_MOBILE
     drawing_mobile = true;
 #endif
     draw_screens();
-#ifdef KHDAYS_IOS
+#ifdef KHDAYS_MOBILE
     drawing_mobile = false;
     khdays_mobile_stylus_rect(renderer, stylus_rect);
     SDL_SetRenderViewport(renderer, NULL);

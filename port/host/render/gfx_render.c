@@ -481,7 +481,14 @@ int khdays_gfx_render_open(SDL_GPUDevice *d)
         desc[e] = make_buffer(DESC_BYTES);
         desc_bytes[e] = DESC_BYTES;
 
-        dummy3d[e] = make_texture(SDL_GPU_TEXTUREFORMAT_R32_UINT, SDL_GPU_TEXTUREUSAGE_COMPUTE_STORAGE_WRITE, 1, 1);
+        /* read by the shaders: Metal gives a texture its read access only for a usage that reads
+         * (Direct3D 12 and Vulkan read a storage texture as it is, and stay as they were) */
+        dummy3d[e] = make_texture(SDL_GPU_TEXTUREFORMAT_R32_UINT,
+                                  SDL_GPU_TEXTUREUSAGE_COMPUTE_STORAGE_WRITE |
+                                      (SDL_strcmp(SDL_GetGPUDeviceDriver(device), "metal") == 0
+                                           ? SDL_GPU_TEXTUREUSAGE_COMPUTE_STORAGE_READ
+                                           : 0),
+                                  1, 1);
         ok = ok && desc[e] != NULL && dummy3d[e] != NULL;
     }
     layer3d = make_buffer(KHDAYS_FRAME_PIXELS * 4);

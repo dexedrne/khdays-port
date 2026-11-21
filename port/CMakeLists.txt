@@ -607,6 +607,17 @@ target_link_options(khdays-native PRIVATE
 
 endif()
 
+# The phone's layouts, safe areas and touch controls in the Linux test build (host/app/mobile_touch.h),
+# so that its window's picture can be drawn and checked without the phone (tools/ios/test_picture.py).
+option(KHDAYS_MOBILE_TEST "Linux test build: the phone's layouts and touch controls" OFF)
+if(KHDAYS_MOBILE_TEST)
+    if(NOT KHDAYS_HEADLESS_TEST_BUILD)
+        message(FATAL_ERROR "KHDAYS_MOBILE_TEST is for the Linux test build (KHDAYS_HEADLESS_TEST_BUILD)")
+    endif()
+    target_sources(khdays-host-input PRIVATE host/app/mobile_touch.c)
+    set_property(SOURCE host/app/mobile_touch.c host/app/devices.c host/app/window.c host/render/gpu_present.c
+                 APPEND PROPERTY COMPILE_DEFINITIONS KHDAYS_MOBILE_TEST)
+endif()
 if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
     set(ios "${CMAKE_CURRENT_SOURCE_DIR}/../tools/ios")
     target_sources(khdays-host-input PRIVATE host/app/mobile_touch.c)
@@ -616,7 +627,8 @@ if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
         MACOSX_BUNDLE_INFO_PLIST "${ios}/Info.plist"
         XCODE_ATTRIBUTE_PRODUCT_BUNDLE_IDENTIFIER beer.vyvanse.khdays
         XCODE_ATTRIBUTE_TARGETED_DEVICE_FAMILY "1,2")
-    target_link_libraries(khdays-native PRIVATE "-framework GameController" "-framework UIKit")
+    target_link_libraries(khdays-native PRIVATE "-framework GameController" "-framework UIKit" "-framework QuartzCore"
+                          "-framework Metal")
 endif()
 # The input layer's tests (controls, bindings, devices through SDL's virtual
 # gamepads): ctest --test-dir build/port/obj-x64
@@ -660,7 +672,17 @@ if(NOT WIN32)
             add_test(NAME khdays-title COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/../tools/ios/test_title.py"
                 "$<TARGET_FILE:khdays-native>" "${KHDAYS_TEST_ROM}")
             set_tests_properties(khdays-title PROPERTIES TIMEOUT 120)
+            if(KHDAYS_MOBILE_TEST)
+                # The phone's window, drawn for real on a hidden video driver with the CPU Vulkan driver.
+                add_test(NAME khdays-picture COMMAND "${Python3_EXECUTABLE}"
+                    "${CMAKE_CURRENT_SOURCE_DIR}/../tools/ios/test_picture.py"
+                    "$<TARGET_FILE:khdays-native>" "${KHDAYS_TEST_ROM}")
+                set_tests_properties(khdays-picture PROPERTIES TIMEOUT 600 SKIP_RETURN_CODE 77 RUN_SERIAL TRUE)
+            endif()
         endif()
+        # The Metal shaders' buffers in SDL's order (uniforms first): numbered otherwise they draw nothing.
+        add_test(NAME khdays-metal-shader-order COMMAND "${Python3_EXECUTABLE}"
+            "${CMAKE_CURRENT_SOURCE_DIR}/../tools/ios/fix_msl_order.py" --check)
     endif()
     return() # host tests have a standalone build in tools/ios
 endif()

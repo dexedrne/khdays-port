@@ -211,8 +211,10 @@ int main(int argc, char **argv)
     attach_parent_console();
 #endif
 #ifdef KHDAYS_HEADLESS_TEST_BUILD
-    if (!getenv("KHDAYS_HEADLESS")) {
-        fprintf(stderr, "This cartridge test build requires KHDAYS_HEADLESS\n");
+    /* KHDAYS_TEST_WINDOW: the real window and graphics-card path, for the picture tests (a hidden
+     * video driver, tools/ios/test_picture.py) */
+    if (!getenv("KHDAYS_HEADLESS") && !getenv("KHDAYS_TEST_WINDOW")) {
+        fprintf(stderr, "This cartridge test build requires KHDAYS_HEADLESS or KHDAYS_TEST_WINDOW\n");
         return 1;
     }
 #endif

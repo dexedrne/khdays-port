@@ -12,10 +12,39 @@ static bool stylus_point(float x, float y, float *sx, float *sy)
     return true;
 }
 
+bool khdays_mobile_safe(SDL_Window *w, SDL_Rect *safe)
+{
+    if (!SDL_GetWindowSafeArea(w, safe))
+        return false;
+#ifdef KHDAYS_MOBILE_TEST
+    const char *insets = SDL_getenv("KHDAYS_MOBILE_INSETS");
+    int l, t, r, b;
+    if (insets != NULL && SDL_sscanf(insets, "%d,%d,%d,%d", &l, &t, &r, &b) == 4) {
+        safe->x += l;
+        safe->y += t;
+        safe->w -= l + r;
+        safe->h -= t + b;
+    }
+#endif
+    return true;
+}
+
+#ifdef KHDAYS_MOBILE_TEST
+int khdays_ios_layout(void)
+{
+    const char *v = SDL_getenv("KHDAYS_MOBILE_LAYOUT");
+    return v != NULL ? SDL_atoi(v) : 2; /* as the phone: single screen unless chosen otherwise */
+}
+#endif
+
 /* Fit the logical picture inside both its letterbox and the unobscured window. */
+static char view_note[160] = "safe-area fit not run";
+const char *khdays_mobile_view_note(void) { return view_note; }
+
 void khdays_mobile_view(SDL_Renderer *renderer, SDL_Rect safe, int w, int h)
 {
     float x0, x1, y0, y1;
+    SDL_snprintf(view_note, sizeof(view_note), "safe area %d,%d %dx%d: no fit needed", safe.x, safe.y, safe.w, safe.h);
     SDL_SetRenderViewport(renderer, NULL);
     SDL_SetRenderScale(renderer, 1, 1);
     if (!SDL_RenderCoordinatesFromWindow(renderer, safe.x, safe.y, &x0, &y0) ||
@@ -31,6 +60,8 @@ void khdays_mobile_view(SDL_Renderer *renderer, SDL_Rect safe, int w, int h)
     SDL_Rect viewport = {(int)SDL_roundf(((x0 + x1) / fit - w) / 2), (int)SDL_roundf(((y0 + y1) / fit - h) / 2), w, h};
     SDL_SetRenderScale(renderer, fit, fit);
     SDL_SetRenderViewport(renderer, &viewport);
+    SDL_snprintf(view_note, sizeof(view_note), "safe area %d,%d %dx%d: fit %.3f, viewport %d,%d %dx%d", safe.x, safe.y,
+                 safe.w, safe.h, (double)fit, viewport.x, viewport.y, viewport.w, viewport.h);
 }
 
 void khdays_mobile_stylus_rect(SDL_Renderer *renderer, SDL_FRect stylus_rect)
@@ -70,7 +101,7 @@ static SDL_FRect button_rect(const SDL_Rect *safe, int i)
 
 static bool geometry(SDL_Window *w, SDL_Rect *safe)
 {
-    if (!SDL_GetWindowSafeArea(w, safe) || safe->w <= 0 || safe->h <= 0)
+    if (!khdays_mobile_safe(w, safe) || safe->w <= 0 || safe->h <= 0)
         return false;
     size = SDL_min(55, SDL_min(safe->w / 8.f, safe->h / 7.f));
     return true;
@@ -78,17 +109,29 @@ static bool geometry(SDL_Window *w, SDL_Rect *safe)
 
 static void draw_key(SDL_Renderer *r, SDL_FRect rect, const char *label)
 {
-    SDL_FRect logical;
+    /* in the window's pixels (the logical presentation is off): a third of a point each on the phone,
+     * so the outline and the label are scaled to the key, not left a pixel wide and 8 pixels high */
+    SDL_FRect at;
     float end_x, end_y;
-    SDL_RenderCoordinatesFromWindow(r, rect.x, rect.y, &logical.x, &logical.y);
+    SDL_RenderCoordinatesFromWindow(r, rect.x, rect.y, &at.x, &at.y);
     SDL_RenderCoordinatesFromWindow(r, rect.x + rect.w, rect.y + rect.h, &end_x, &end_y);
-    logical.w = end_x - logical.x;
-    logical.h = end_y - logical.y;
-    SDL_SetRenderDrawColor(r, 32, 36, 42, 145);
-    SDL_RenderFillRect(r, &logical);
-    SDL_SetRenderDrawColor(r, 255, 255, 255, 210);
-    SDL_RenderRect(r, &logical);
-    SDL_RenderDebugText(r, logical.x + (logical.w - 8 * SDL_strlen(label)) / 2, logical.y + (logical.h - 8) / 2, label);
+    at.w = end_x - at.x;
+    at.h = end_y - at.y;
+    const float length = (float)SDL_strlen(label);
+    const float text = SDL_max(1.0f, SDL_floorf(SDL_min(at.h / 22.0f, at.w / (8.0f * length + 4.0f))));
+    const int line = (int)SDL_max(1.0f, SDL_roundf(at.h / 40.0f));
+    SDL_SetRenderDrawColor(r, 255, 255, 255, 34);
+    SDL_RenderFillRect(r, &at);
+    SDL_SetRenderDrawColor(r, 255, 255, 255, 170);
+    for (int i = 0; i < line; ++i) {
+        const SDL_FRect edge = {at.x + (float)i, at.y + (float)i, at.w - 2.0f * (float)i, at.h - 2.0f * (float)i};
+        SDL_RenderRect(r, &edge);
+    }
+    SDL_SetRenderDrawColor(r, 255, 255, 255, 220);
+    SDL_SetRenderScale(r, text, text);
+    SDL_RenderDebugText(r, (at.x + (at.w - 8.0f * length * text) / 2.0f) / text,
+                        (at.y + (at.h - 8.0f * text) / 2.0f) / text, label);
+    SDL_SetRenderScale(r, 1.0f, 1.0f);
 }
 
 void khdays_mobile_draw(SDL_Renderer *r)

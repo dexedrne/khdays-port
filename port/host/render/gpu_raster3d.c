@@ -172,6 +172,11 @@ int khdays_raster3d_open(SDL_GPUDevice *d)
                                      SDL_GPU_TEXTUREUSAGE_COMPUTE_STORAGE_SIMULTANEOUS_READ_WRITE)) {
         target_usage |= SDL_GPU_TEXTUREUSAGE_COMPUTE_STORAGE_SIMULTANEOUS_READ_WRITE;
     }
+    if (SDL_strcmp(SDL_GetGPUDeviceDriver(device), "metal") == 0) {
+        /* the 3D's colour and attributes are read by the compose shaders: Metal gives a texture its
+         * read access only for a usage that reads (Direct3D 12 and Vulkan stay as they were) */
+        target_usage |= SDL_GPU_TEXTUREUSAGE_COMPUTE_STORAGE_READ;
+    }
     if (raster == NULL || compose == NULL || polys == NULL || verts == NULL || vram == NULL || records == NULL ||
         tiles == NULL || !khdays_gpu_hd_open(device)) {
         char why[256];
