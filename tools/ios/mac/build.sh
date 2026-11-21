@@ -14,6 +14,6 @@ jobs=2
 }
 gen="$PWD/../build/generated"
 nice -n 10 python3 port/tools/prepare.py --out "$gen"
-nice -n 10 cmake -S port -B "$build/game" "${args[@]}" "-DKHDAYS_GEN=$gen"
+nice -n 10 cmake -S port -B "$build/game" "${args[@]}" "-DKHDAYS_GEN=$gen" -DKHDAYS_NO_PAD_ICONS=ON
 nice -n 10 cmake --build "$build/game" --config Release --target khdays-native --parallel "$jobs"
 test -x "$build/game/Release-$sdk/khdays-native.app/khdays-native"

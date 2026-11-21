@@ -202,7 +202,8 @@ FetchContent_Declare(
     DOWNLOAD_EXTRACT_TIMESTAMP TRUE
     SOURCE_SUBDIR none
 )
-if(KHDAYS_HEADLESS_TEST_BUILD)
+option(KHDAYS_NO_PAD_ICONS "Build without the downloaded controller prompt icons" OFF)
+if(KHDAYS_HEADLESS_TEST_BUILD OR KHDAYS_NO_PAD_ICONS)
     file(WRITE "${KHDAYS_MENU_FONT_DIR}/pad_icons.h" "#include <array>
 struct PadIcon { const char *name; const unsigned char *png; unsigned size; };
 static constexpr std::array<PadIcon, 0> khdays_pad_icons{};
