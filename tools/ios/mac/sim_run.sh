@@ -3,7 +3,7 @@ set -eu
 cd "$(dirname "$0")/../../.."
 : "${SIM_UDID:?Set SIM_UDID to a dedicated simulator identifier}"
 : "${ROM:?Set ROM to the local cartridge path}"
-app=../build/iphonesimulator/game/Release-iphonesimulator/khdays-native.app
+app=../build/iphonesimulator/game-ninja/khdays-native.app
 test -x "$app/khdays-native"
 nice -n 10 python3 tools/verify_rom.py "$ROM"
 ctl() { nice -n 10 xcrun simctl "$@"; }
