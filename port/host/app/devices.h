@@ -37,6 +37,24 @@ int khdays_devices_take_settings_request(void);
  * complete, exploration, none). */
 int khdays_devices_take_hud_mode_request(void);
 
+/* How many times the lower-screen view's binding was pressed since the last call (one screen shows the
+ * DS's lower screen, or puts it away); khdays_devices_request_lower_view counts one more (the touch
+ * keys' own). */
+int khdays_devices_take_lower_view_request(void);
+void khdays_devices_request_lower_view(void);
+
+/* How many times the playing gamepad changed since the last call (one connected, the playing one
+ * gone, another one picked up), and how many are connected. */
+int khdays_devices_take_pad_change(void);
+int khdays_devices_pad_count(void);
+
+/* Whether the playing gamepad's Minus / Back is the lower-screen view instead of SELECT (the phone, a
+ * gamepad with neither a touch pad's click nor Share / Capture). */
+int khdays_devices_back_is_view(void);
+
+/* A test's switch: only SDL's virtual gamepads count from now on. */
+void khdays_devices_only_virtual(int on);
+
 /* The active gamepad's name, or NULL when none is connected. */
 const char *khdays_devices_gamepad_name(void);
 

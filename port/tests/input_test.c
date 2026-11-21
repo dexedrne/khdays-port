@@ -323,6 +323,242 @@ static void test_devices(void)
     SDL_Quit();
 }
 
+/* A gamepad as SDL's virtual one: a DualSense (every button but Share), a Switch Pro with Capture, or
+ * one as a phone may give it, with neither a touch pad nor Capture. SDL numbers a virtual gamepad's
+ * buttons in SDL_GamepadButton order, counting only those it has (raw_button). */
+static Uint32 kind_mask(int kind)
+{
+    Uint32 mask = (1u << SDL_GAMEPAD_BUTTON_RIGHT_PADDLE1) - 1; /* up to the D-pad and misc1 */
+    if (kind == 0) {
+        mask = (mask & ~(1u << SDL_GAMEPAD_BUTTON_MISC1)) | (1u << SDL_GAMEPAD_BUTTON_TOUCHPAD);
+    } else if (kind == 2) {
+        mask &= ~(1u << SDL_GAMEPAD_BUTTON_MISC1);
+    }
+    return mask;
+}
+
+static SDL_JoystickID attach_kind(int kind)
+{
+    static const Uint16 ids[3][2] = {{0x054c, 0x0ce6}, {0x057e, 0x2009}, {0x057e, 0x3009}};
+    SDL_VirtualJoystickDesc desc;
+    SDL_INIT_INTERFACE(&desc);
+    desc.type = SDL_JOYSTICK_TYPE_GAMEPAD;
+    desc.naxes = SDL_GAMEPAD_AXIS_COUNT;
+    desc.nbuttons = SDL_GAMEPAD_BUTTON_COUNT;
+    desc.vendor_id = ids[kind][0];
+    desc.product_id = ids[kind][1];
+    desc.button_mask = kind_mask(kind);
+    /* (ids of its own each: SDL keeps a gamepad's mapping by them, and names the known ones itself) */
+    desc.name = kind == 0 ? "DualSense" : kind == 1 ? "Switch Pro" : "Switch Pro without Capture";
+    return SDL_AttachVirtualJoystick(&desc);
+}
+
+static void press(SDL_Joystick *joystick, int kind, SDL_GamepadButton button, bool down)
+{
+    const Uint32 mask = kind_mask(kind);
+    int raw = 0;
+    for (int b = 0; b < (int)button; ++b) {
+        raw += (mask >> b) & 1u;
+    }
+    SDL_SetJoystickVirtualButton(joystick, (Uint8)raw, down);
+    pump();
+}
+
+/* The phone's priorities: the Kingdom Hearts II layout by position, the same on a DualSense and a
+ * Switch Pro; the lower-screen view's button; a gamepad going and coming back; two gamepads. */
+static void test_pads_and_view(void)
+{
+    const unsigned all = KHDAYS_ENH_ANALOG_CAMERA | KHDAYS_ENH_SEPARATE_LOCK_ON | KHDAYS_ENH_DPAD_COMMAND_MENU |
+                         KHDAYS_ENH_ANALOG_MOVEMENT;
+    static const struct {
+        SDL_GamepadButton button;
+        int action;
+    } layout[] = {{SDL_GAMEPAD_BUTTON_SOUTH, KHDAYS_ACT_A},         {SDL_GAMEPAD_BUTTON_EAST, KHDAYS_ACT_B},
+                  {SDL_GAMEPAD_BUTTON_NORTH, KHDAYS_ACT_X},         {SDL_GAMEPAD_BUTTON_WEST, KHDAYS_ACT_Y},
+                  {SDL_GAMEPAD_BUTTON_LEFT_SHOULDER, KHDAYS_ACT_L}, {SDL_GAMEPAD_BUTTON_RIGHT_STICK, KHDAYS_ACT_R},
+                  {SDL_GAMEPAD_BUTTON_START, KHDAYS_ACT_START},     {SDL_GAMEPAD_BUTTON_DPAD_UP, KHDAYS_ACT_UP}};
+    KhdaysProfile p;
+    SDL_JoystickID id[2];
+    SDL_Joystick *pad[2];
+    static const char *const real_drivers[] = {
+        SDL_HINT_JOYSTICK_HIDAPI,      SDL_HINT_JOYSTICK_RAWINPUT, SDL_HINT_XINPUT_ENABLED,
+        SDL_HINT_JOYSTICK_DIRECTINPUT, SDL_HINT_JOYSTICK_WGI,      SDL_HINT_JOYSTICK_GAMEINPUT,
+    };
+    for (size_t i = 0; i < sizeof(real_drivers) / sizeof(real_drivers[0]); ++i) {
+        SDL_SetHint(real_drivers[i], "0");
+    }
+    if (!SDL_Init(SDL_INIT_GAMEPAD)) {
+        fprintf(stderr, "SDL_Init failed: %s\n", SDL_GetError());
+        ++failures;
+        return;
+    }
+    khdays_profile_default(&p);
+    khdays_profile_apply_preset(&p, KHDAYS_PRESET_KH2, all);
+    khdays_devices_init(&p, capture);
+    (void)khdays_devices_take_pad_change();
+
+    /* The same position gives the same DS button on a DualSense (kind 0) and a Switch Pro (kind 1). */
+    for (int kind = 0; kind < 2; ++kind) {
+        id[0] = attach_kind(kind);
+        pump();
+        pad[0] = SDL_OpenJoystick(id[0]);
+        CHECK(khdays_devices_gamepad() != NULL);
+        CHECK(SDL_GetGamepadType(khdays_devices_gamepad()) ==
+              (kind == 0 ? SDL_GAMEPAD_TYPE_PS5 : SDL_GAMEPAD_TYPE_NINTENDO_SWITCH_PRO));
+        CHECK(khdays_devices_take_pad_change() == 1);
+        for (size_t i = 0; i < sizeof(layout) / sizeof(layout[0]); ++i) {
+            press(pad[0], kind, layout[i].button, true);
+            CHECK(last.ds_buttons == DS(layout[i].action));
+            press(pad[0], kind, layout[i].button, false);
+            CHECK(last.ds_buttons == 0);
+        }
+        /* Create / Share / Minus is SELECT where the gamepad has a button of its own for the view */
+        press(pad[0], kind, SDL_GAMEPAD_BUTTON_BACK, true);
+        CHECK(last.ds_buttons == DS(KHDAYS_ACT_SELECT));
+        press(pad[0], kind, SDL_GAMEPAD_BUTTON_BACK, false);
+        CHECK(khdays_devices_take_lower_view_request() == 0);
+        /* the view: the DualSense's touch pad click, the Switch Pro's Capture; a press, not a hold */
+        press(pad[0], kind, kind == 0 ? SDL_GAMEPAD_BUTTON_TOUCHPAD : SDL_GAMEPAD_BUTTON_MISC1, true);
+        CHECK(last.ds_buttons == 0);
+        CHECK(khdays_devices_take_lower_view_request() == 1);
+        CHECK(khdays_devices_take_lower_view_request() == 0);
+        press(pad[0], kind, kind == 0 ? SDL_GAMEPAD_BUTTON_TOUCHPAD : SDL_GAMEPAD_BUTTON_MISC1, false);
+        CHECK(khdays_devices_take_lower_view_request() == 0);
+        SDL_CloseJoystick(pad[0]);
+        SDL_DetachVirtualJoystick(id[0]);
+        pump();
+        CHECK(khdays_devices_gamepad() == NULL && khdays_devices_take_pad_change() == 1);
+    }
+
+    /* A gamepad with neither (kind 2). On the phone (and in the Linux build made as the phone's),
+     * with the right stick as the camera, its Minus / Back is the view, not SELECT; everywhere else,
+     * and in the DS layout, Back stays SELECT. */
+    id[0] = attach_kind(2);
+    pump();
+    pad[0] = SDL_OpenJoystick(id[0]);
+    {
+        const int view = khdays_devices_back_is_view();
+        KhdaysProfile ds;
+        press(pad[0], 2, SDL_GAMEPAD_BUTTON_BACK, true);
+        CHECK(last.ds_buttons == (view ? 0 : DS(KHDAYS_ACT_SELECT)));
+        CHECK(khdays_devices_take_lower_view_request() == view);
+        press(pad[0], 2, SDL_GAMEPAD_BUTTON_BACK, false);
+        CHECK(last.ds_buttons == 0);
+        khdays_profile_default(&ds);
+        khdays_devices_set_profile(&ds);
+        CHECK(!khdays_devices_back_is_view());
+        press(pad[0], 2, SDL_GAMEPAD_BUTTON_BACK, true);
+        CHECK(last.ds_buttons == DS(KHDAYS_ACT_SELECT));
+        CHECK(khdays_devices_take_lower_view_request() == 0);
+        press(pad[0], 2, SDL_GAMEPAD_BUTTON_BACK, false);
+        khdays_devices_set_profile(&p);
+        printf("Minus / Back as the lower-screen view on a gamepad without a button for it: %s in this build\n",
+               view ? "checked" : "not made (not the phone's build)");
+    }
+
+    /* While the settings menu has the input, the view's button does not count, and none is left over
+     * when it closes. */
+    khdays_devices_set_game_input(0);
+    press(pad[0], 2, SDL_GAMEPAD_BUTTON_BACK, true);
+    press(pad[0], 2, SDL_GAMEPAD_BUTTON_BACK, false);
+    khdays_devices_set_game_input(1);
+    CHECK(khdays_devices_take_lower_view_request() == 0);
+    {
+        /* the same on a gamepad with the button itself */
+        SDL_JoystickID with = attach_kind(0);
+        SDL_Joystick *held;
+        SDL_CloseJoystick(pad[0]);
+        SDL_DetachVirtualJoystick(id[0]);
+        pump();
+        held = SDL_OpenJoystick(with);
+        khdays_devices_set_game_input(0);
+        press(held, 0, SDL_GAMEPAD_BUTTON_TOUCHPAD, true);
+        press(held, 0, SDL_GAMEPAD_BUTTON_TOUCHPAD, false);
+        khdays_devices_set_game_input(1);
+        CHECK(khdays_devices_take_lower_view_request() == 0);
+        press(held, 0, SDL_GAMEPAD_BUTTON_TOUCHPAD, true);
+        CHECK(khdays_devices_take_lower_view_request() == 1);
+        press(held, 0, SDL_GAMEPAD_BUTTON_TOUCHPAD, false);
+        SDL_CloseJoystick(held);
+        SDL_DetachVirtualJoystick(with);
+        pump();
+        id[0] = attach_kind(2);
+        pump();
+        pad[0] = SDL_OpenJoystick(id[0]);
+    }
+    (void)khdays_devices_take_pad_change();
+
+    /* Two gamepads: the first plays; while it holds something the second's buttons do nothing; once
+     * it holds nothing, a button of the second makes that one play, and its press counts. */
+    id[1] = attach_kind(0);
+    pump();
+    pad[1] = SDL_OpenJoystick(id[1]);
+    CHECK(khdays_devices_take_pad_change() == 0);
+    press(pad[0], 2, SDL_GAMEPAD_BUTTON_SOUTH, true);
+    press(pad[1], 0, SDL_GAMEPAD_BUTTON_EAST, true);
+    CHECK(last.ds_buttons == DS(KHDAYS_ACT_A));
+    press(pad[1], 0, SDL_GAMEPAD_BUTTON_EAST, false);
+    press(pad[0], 2, SDL_GAMEPAD_BUTTON_SOUTH, false);
+    CHECK(last.ds_buttons == 0);
+    press(pad[1], 0, SDL_GAMEPAD_BUTTON_EAST, true);
+    CHECK(last.ds_buttons == DS(KHDAYS_ACT_B));
+    CHECK(SDL_GetGamepadType(khdays_devices_gamepad()) == SDL_GAMEPAD_TYPE_PS5);
+    CHECK(khdays_devices_take_pad_change() == 1);
+    press(pad[1], 0, SDL_GAMEPAD_BUTTON_EAST, false);
+    /* and back to the first the same way */
+    press(pad[0], 2, SDL_GAMEPAD_BUTTON_NORTH, true);
+    CHECK(last.ds_buttons == DS(KHDAYS_ACT_X));
+    press(pad[0], 2, SDL_GAMEPAD_BUTTON_NORTH, false);
+
+    /* The one that does not play pulled out: the playing one goes on (its index moved down or not). */
+    SDL_CloseJoystick(pad[1]);
+    SDL_DetachVirtualJoystick(id[1]);
+    pump();
+    press(pad[0], 2, SDL_GAMEPAD_BUTTON_SOUTH, true);
+    CHECK(last.ds_buttons == DS(KHDAYS_ACT_A));
+    press(pad[0], 2, SDL_GAMEPAD_BUTTON_SOUTH, false);
+
+    /* The phone asleep and awake again (the focus lost and gained) with a stick held: nothing held
+     * while away, and the stick counts again only once back at its centre. */
+    SDL_SetJoystickVirtualAxis(pad[0], SDL_GAMEPAD_AXIS_LEFTX, 32767);
+    pump();
+    CHECK(last.ds_buttons == DS(KHDAYS_ACT_RIGHT));
+    window_event(SDL_EVENT_WINDOW_FOCUS_LOST);
+    CHECK(last.ds_buttons == 0);
+    window_event(SDL_EVENT_WINDOW_FOCUS_GAINED);
+    CHECK(last.ds_buttons == 0);
+    SDL_SetJoystickVirtualAxis(pad[0], SDL_GAMEPAD_AXIS_LEFTX, 0);
+    pump();
+    SDL_SetJoystickVirtualAxis(pad[0], SDL_GAMEPAD_AXIS_LEFTX, 32767);
+    pump();
+    CHECK(last.ds_buttons == DS(KHDAYS_ACT_RIGHT));
+    SDL_SetJoystickVirtualAxis(pad[0], SDL_GAMEPAD_AXIS_LEFTX, 0);
+    pump();
+
+    /* Gone (its battery) and back: nothing held meanwhile; a button held as it comes back (pressed to
+     * wake it) only counts once let go. */
+    press(pad[0], 2, SDL_GAMEPAD_BUTTON_SOUTH, true);
+    SDL_CloseJoystick(pad[0]);
+    SDL_DetachVirtualJoystick(id[0]);
+    pump();
+    CHECK(last.ds_buttons == 0 && khdays_devices_gamepad() == NULL);
+    id[0] = attach_kind(0);
+    pad[0] = SDL_OpenJoystick(id[0]);
+    SDL_SetJoystickVirtualButton(pad[0], 0, true); /* south, held before the port sees the gamepad */
+    pump();
+    CHECK(khdays_devices_gamepad() != NULL);
+    CHECK(last.ds_buttons == 0);
+    press(pad[0], 0, SDL_GAMEPAD_BUTTON_SOUTH, false);
+    press(pad[0], 0, SDL_GAMEPAD_BUTTON_SOUTH, true);
+    CHECK(last.ds_buttons == DS(KHDAYS_ACT_A));
+    press(pad[0], 0, SDL_GAMEPAD_BUTTON_SOUTH, false);
+    SDL_CloseJoystick(pad[0]);
+    SDL_DetachVirtualJoystick(id[0]);
+    pump();
+    CHECK(khdays_devices_gamepad() == NULL);
+    SDL_Quit();
+}
+
 /* ---- The settings file --------------------- */
 
 static int notices;
@@ -2016,7 +2252,11 @@ static void test_presets(void)
     CHECK(first_input(&p, PAD, KHDAYS_ACT_LOCK_ON) == KHDAYS_PAD_RIGHTSHOULDER);
     CHECK(first_input(&p, PAD, KHDAYS_ACT_TARGET_NEXT) == KHDAYS_PAD_RIGHTTRIGGER);
     CHECK(khdays_profile_owner(&p, PAD, BASE, KHDAYS_PAD_RIGHTSTICK) == KHDAYS_ACT_R); /* the camera's reset */
-    CHECK(khdays_profile_owner(&p, PAD, BASE, KHDAYS_PAD_LEFTTRIGGER) < 0);
+    CHECK(khdays_profile_owner(&p, PAD, BASE, KHDAYS_PAD_LEFTTRIGGER) == KHDAYS_ACT_TARGET_PREV);
+    /* the lower-screen view of one screen: the touch pad's click, Share / Capture */
+    CHECK(khdays_profile_owner(&p, PAD, BASE, KHDAYS_PAD_TOUCHPAD) == KHDAYS_ACT_LOWER_VIEW);
+    CHECK(khdays_profile_owner(&p, PAD, BASE, KHDAYS_PAD_MISC1) == KHDAYS_ACT_LOWER_VIEW);
+    CHECK(khdays_profile_owner(&defaults, PAD, BASE, KHDAYS_PAD_TOUCHPAD) == KHDAYS_ACT_LOWER_VIEW);
     CHECK(khdays_profile_owner(&p, PAD, BASE, KHDAYS_PAD_RIGHTSHOULDER) == KHDAYS_ACT_LOCK_ON);
     CHECK(p.input[PAD][FIELD][KHDAYS_ACT_MENU_UP][0] == KHDAYS_PAD_DPUP);
     CHECK(p.input[PAD][FIELD][KHDAYS_ACT_MENU_RIGHT][0] == KHDAYS_PAD_DPRIGHT);
@@ -2086,6 +2326,7 @@ int main(void)
     test_binding_rules();
     test_masking();
     test_devices();
+    test_pads_and_view();
     test_settings_file();
     test_mouse_bindings();
     test_video_settings();

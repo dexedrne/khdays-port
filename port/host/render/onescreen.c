@@ -508,6 +508,7 @@ static void model_window(const KhdaysFramePackage *p, int columns, KhdaysComposi
     composition->brightness = (int)KOB_OWN;
     composition->shapes = NULL;
     composition->shape_count = 0;
+    khdays_composition_lower_view_drop(); /* the port's screen takes the picture: no lower-screen view in it */
     composition->key_count = 0;
     /* the Preferences page shows no model: its backdrop alone */
     composition->shapes3d = m.model ? &model_shape : NULL;
@@ -572,6 +573,12 @@ void khdays_onescreen_prepare(const KhdaysFramePackage *p, int columns, KhdaysCo
         khdays_events_vblank_count(); /* an animated backdrop's clock: it moves when the frames are alike */
     settings_prompt();
     khdays_composition_for(&situation, columns, composition);
+    if (khdays_composition_lower_view() && situation.scene == KHDAYS_SIT_FIELD_3D_BOTH &&
+        composition->screens == KHDAYS_SCREENS_UPPER) {
+        /* the lower-screen view where the lower screen has the 3D too: that picture is no piece of a
+         * screen's 2D, so both screens whole, side by side */
+        composition->screens = KHDAYS_SCREENS_SIDE_BY_SIDE;
+    }
     model_window(p, columns, composition);
     if (traced_frame(p->frame) && pixels.p == p &&
         (composition->screens == KHDAYS_SCREENS_UPPER || composition->screens == KHDAYS_SCREENS_LOWER)) {

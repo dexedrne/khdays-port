@@ -74,6 +74,11 @@ void khdays_present_screens(const uint32_t *upper_then_lower);
 /* The picture settings, from the next frame drawn. */
 void khdays_present_set_video(const KhdaysVideo *video);
 
+/* The lower-screen view of one screen (ui/composition.h): asked for or put away -- the newest frame is
+ * drawn again at once -- and whether it is asked for. */
+void khdays_present_set_lower_view(int on);
+int khdays_present_lower_view(void);
+
 /* Draws the picture; the caller draws the settings menu over it and
  * presents. */
 void khdays_present_draw(void);

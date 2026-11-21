@@ -41,6 +41,9 @@ typedef enum KhdaysAction {
     KHDAYS_ACT_OPEN_SETTINGS,
     /* The port's own: the one-screen picture's HUD mode, complete, exploration or none; unbound at first. */
     KHDAYS_ACT_HUD_MODE,
+    /* The port's own: on one screen, show the DS's lower screen (whole, over the picture) or put it
+     * away again. The touch pad's click and Share / Capture in both presets. */
+    KHDAYS_ACT_LOWER_VIEW,
     KHDAYS_ACT_COUNT
 } KhdaysAction;
 
@@ -162,7 +165,13 @@ typedef struct KhdaysVideo {
     int hud_size;      /* the HUD's size on one screen, 1 to 8 (4) */
     int subtitles;     /* the movies' subtitles show (runtime/menus/newgame.h: the new game asks) */
     int display;       /* KhdaysDisplay: a window, a borderless one over the screen, or full screen */
+    int lower_view;    /* KhdaysLowerView: how the lower-screen view shows on one screen */
 } KhdaysVideo;
+
+/* The lower-screen view on one screen ([video] lower_view; the action KHDAYS_ACT_LOWER_VIEW shows it
+ * and puts it away): the lower screen whole in the picture's middle at its full height, or smaller
+ * at its right with the game seen beside it. */
+typedef enum KhdaysLowerView { KHDAYS_LOWER_VIEW_FULL, KHDAYS_LOWER_VIEW_INSET, KHDAYS_LOWER_VIEW_COUNT } KhdaysLowerView;
 
 /* The window ([video] display): one that moves and resizes, one without borders
  * over the whole screen, or the screen the game's alone at the desktop's mode. */

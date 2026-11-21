@@ -22,6 +22,8 @@ static KhdaysInputSnapshot snapshot;
 static int game_input = 1;    /* 0 while the settings menu has the input */
 static int settings_request;  /* the settings button was pressed */
 static int hud_mode_requests; /* presses of the HUD mode button not taken yet */
+static int lower_view_requests; /* presses of the lower-screen view's button not taken yet */
+static int pad_changes;         /* the playing gamepad changed (connected, gone, another one) since last asked */
 /* A notch of the wheel is a press held this long, so the game, reading its buttons once a frame of
  * its own (30 a second in the field), sees it once */
 #define WHEEL_PRESS_MS 100
@@ -134,6 +136,7 @@ void khdays_devices_set_game_input(int on)
     khdays_mobile_reset();
 #endif
     game_input = on;
+    hud_mode_requests = lower_view_requests = 0; /* none from the presses the menu took */
     send();
 }
 
@@ -142,6 +145,32 @@ int khdays_devices_take_hud_mode_request(void)
     const int requests = hud_mode_requests;
     hud_mode_requests = 0;
     return requests;
+}
+
+int khdays_devices_take_lower_view_request(void)
+{
+    const int requests = lower_view_requests;
+    lower_view_requests = 0;
+    return requests;
+}
+
+void khdays_devices_request_lower_view(void)
+{
+    if (game_input) {
+        ++lower_view_requests;
+    }
+}
+
+int khdays_devices_take_pad_change(void)
+{
+    const int changes = pad_changes;
+    pad_changes = 0;
+    return changes;
+}
+
+int khdays_devices_pad_count(void)
+{
+    return pad_count;
 }
 
 int khdays_devices_take_settings_request(void)
@@ -203,6 +232,9 @@ SDL_GamepadButton khdays_devices_sdl_button(int input)
     return SDL_GAMEPAD_BUTTON_INVALID;
 }
 
+/* The gamepad used since the keyboard or the mouse last were (khdays_devices_pad_in_use). */
+static int pad_in_use;
+
 /* Forgets everything the active gamepad held. */
 static void clear_pad_state(void)
 {
@@ -253,9 +285,81 @@ static int find_pad(SDL_JoystickID id)
     return -1;
 }
 
+/* Gamepad `i` plays from now on: what the one before held is let go, and what this one holds only
+ * counts once released. */
+static void play_pad(int i)
+{
+    active = i;
+    read_active_pad();
+    khdays_bindings_mask_held_pad(&state);
+    ++pad_changes;
+#ifdef KHDAYS_MOBILE
+    pad_in_use = 1; /* on the phone a connected gamepad is what is played: its prompts at once */
+#endif
+}
+
+/* Whether the gamepad has a button for the lower-screen view (its touch pad's click, Share or
+ * Capture). One without (a Switch Pro whose Capture the system keeps) gives it on Minus / Back, which
+ * is then not SELECT (SELECT's look view is the right stick's camera in the Kingdom Hearts II layout). */
+static int has_view_button(SDL_Gamepad *gamepad)
+{
+    return SDL_GamepadHasButton(gamepad, SDL_GAMEPAD_BUTTON_TOUCHPAD) ||
+           SDL_GamepadHasButton(gamepad, SDL_GAMEPAD_BUTTON_MISC1);
+}
+
+/* Whether Minus / Back is the lower-screen view on this gamepad: on the phone only (one screen is how
+ * it is played, and the view the only way to the lower screen), for a gamepad without a button for it,
+ * while Back is SELECT and the right stick is the camera (the look view's work done), and the view is
+ * bound at all. Everywhere else Back stays what the player's layout says. */
+static int back_is_view(SDL_Gamepad *gamepad)
+{
+#ifdef KHDAYS_MOBILE
+    return !has_view_button(gamepad) && profile.stick[1].role == KHDAYS_STICK_CAMERA && profile.enh.analog_camera &&
+           khdays_profile_owner(&profile, KHDAYS_DEVICE_GAMEPAD, KHDAYS_LAYER_BASE, KHDAYS_PAD_BACK) == KHDAYS_ACT_SELECT &&
+           profile.input[KHDAYS_DEVICE_GAMEPAD][KHDAYS_LAYER_BASE][KHDAYS_ACT_LOWER_VIEW][0] != KHDAYS_NO_INPUT;
+#else
+    (void)gamepad;
+    return 0;
+#endif
+}
+
+int khdays_devices_back_is_view(void)
+{
+    return active >= 0 && back_is_view(pads[active].gamepad);
+}
+
+/* Says what a gamepad is, for the log: the phone's console tells which layout it got. */
+static void describe_pad(int i, const char *what)
+{
+    static const char *const types[] = {"unknown",  "standard", "Xbox 360", "Xbox One", "PS3",       "PS4",
+                                        "PS5",      "Switch Pro", "Joy-Con left", "Joy-Con right", "Joy-Con pair"};
+    SDL_Gamepad *g = pads[i].gamepad;
+    const int type = (int)SDL_GetGamepadType(g);
+    fprintf(stderr,
+            "host: gamepad %s: %s (type %s, vendor %04x product %04x, touch pad click %s, Share/Capture %s%s)%s; %d "
+            "connected\n",
+            what, SDL_GetGamepadName(g), type >= 0 && type < (int)SDL_arraysize(types) ? types[type] : "other",
+            (unsigned)SDL_GetGamepadVendor(g), (unsigned)SDL_GetGamepadProduct(g),
+            SDL_GamepadHasButton(g, SDL_GAMEPAD_BUTTON_TOUCHPAD) ? "yes" : "no",
+            SDL_GamepadHasButton(g, SDL_GAMEPAD_BUTTON_MISC1) ? "yes" : "no",
+            back_is_view(g) ? ": the lower-screen view is on Minus / Back" : "", i == active ? " (playing)" : "",
+            pad_count);
+    fflush(stderr);
+}
+
+static int only_virtual;
+
+void khdays_devices_only_virtual(int on)
+{
+    only_virtual = on;
+}
+
 static void gamepad_added(SDL_JoystickID id)
 {
     SDL_Gamepad *gamepad;
+    if (only_virtual && !SDL_IsJoystickVirtual(id)) {
+        return; /* a test's emulated gamepads alone: not a real one plugged into this machine */
+    }
     if (find_pad(id) >= 0 || !make_room((void **)&pads, &pad_room, pad_count + 1, sizeof(Pad))) {
         return;
     }
@@ -267,13 +371,13 @@ static void gamepad_added(SDL_JoystickID id)
         return;
     }
     pads[pad_count] = (Pad){id, gamepad, 0};
-    if (active < 0 && pad_count >= own_pad()) {
-        active = pad_count; /* the first one connected plays (for player N's copy, the Nth) */
-        clear_pad_state();
-    }
     ++pad_count;
-    fprintf(stderr, "host: gamepad connected: %s%s\n", SDL_GetGamepadName(gamepad),
-            active == pad_count - 1 ? " (playing)" : "");
+    if (active < 0 && pad_count > own_pad()) {
+        /* the first one connected plays (for player N's copy, the Nth). What it holds as it arrives (a
+         * button pressed to wake it) only counts once let go. */
+        play_pad(pad_count - 1);
+    }
+    describe_pad(pad_count - 1, "connected");
 }
 
 static void gamepad_removed(SDL_JoystickID id)
@@ -302,9 +406,11 @@ static void gamepad_removed(SDL_JoystickID id)
                 }
             }
         }
-        active = next;
-        if (active >= 0) {
-            fprintf(stderr, "host: now playing: %s\n", SDL_GetGamepadName(pads[active].gamepad));
+        active = -1;
+        ++pad_changes;
+        if (next >= 0) {
+            play_pad(next);
+            describe_pad(next, "now playing");
         }
     } else if (active > i) {
         --active;
@@ -315,7 +421,7 @@ static void gamepad_removed(SDL_JoystickID id)
 static void joystick_added(SDL_JoystickID id)
 {
     char text[160];
-    if (SDL_IsGamepad(id)) {
+    if (SDL_IsGamepad(id) || only_virtual) {
         return; /* it arrives as a gamepad too */
     }
     for (int i = 0; i < ignored_count; ++i) {
@@ -331,26 +437,70 @@ static void joystick_added(SDL_JoystickID id)
     notice(text);
 }
 
-/* The gamepad used since the keyboard or the mouse last were (khdays_devices_pad_in_use). */
-static int pad_in_use;
 
 int khdays_devices_pad_in_use(void)
 {
     return pad_in_use && khdays_devices_gamepad() != NULL;
 }
 
+/* Whether the playing gamepad holds anything: a button, a trigger, a stick off its centre. */
+static int pad_idle(void)
+{
+    for (int b = 0; b < KHDAYS_PAD_COUNT; ++b) {
+        if (state.pad[b]) {
+            return 0;
+        }
+    }
+    for (int s = 0; s < 2; ++s) {
+        const int64_t x = state.stick[s][0], y = state.stick[s][1];
+        if (state.trigger[s] > 16384 || x * x + y * y > (int64_t)16384 * 16384) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
 static void pad_button(SDL_JoystickID id, SDL_GamepadButton button, int down)
 {
     const int i = find_pad(id);
-    const int input = pad_input(button);
+    int input = pad_input(button);
     if (i < 0 || input < 0) {
         return;
     }
     if (down) {
         pads[i].last_used = SDL_GetTicks();
     }
+    if (i != active && down && active >= 0 && own_pad() == 0 && (khdays_host_other_copies() ? i == 0 : pad_idle())) {
+        /* Another gamepad's button while the playing one holds nothing: that one plays from now on (a
+         * DualSense and a Switch Pro both connected: whichever is picked up). Its press counts. With
+         * another copy of the port on this PC, only back to this copy's own gamepad, the first (a
+         * press before that copy started may have moved it away). */
+        const uint8_t in_use = (uint8_t)pad_in_use;
+        active = i;
+        clear_pad_state();
+        ++pad_changes;
+        pad_in_use = in_use;
+        describe_pad(i, "now playing");
+    }
+    {
+        /* the first presses, for the log: which button SDL reports and what the layout makes of it
+         * (the phone's console tells whether a DualSense's Cross is the bottom button) */
+        static int said;
+        if (down && said < 300) {
+            const int owner = khdays_profile_owner(&profile, KHDAYS_DEVICE_GAMEPAD, KHDAYS_LAYER_BASE, input);
+            ++said;
+            fprintf(stderr, "host: gamepad button %s (%s) -> %s%s%s\n", khdays_pad_input_name(input),
+                    SDL_GetGamepadStringForButton(button), owner >= 0 ? khdays_action_name(owner) : "nothing",
+                    i != active ? " (not the playing gamepad)" : "", game_input ? "" : " (the settings menu has it)");
+            fflush(stderr);
+        }
+    }
     if (i != active) {
         return; /* only one gamepad plays */
+    }
+    if (input == KHDAYS_PAD_BACK && back_is_view(pads[i].gamepad)) {
+        /* no button of its own for the lower-screen view: Minus / Back is that view's first input */
+        input = profile.input[KHDAYS_DEVICE_GAMEPAD][KHDAYS_LAYER_BASE][KHDAYS_ACT_LOWER_VIEW][0];
     }
     pad_in_use = pad_in_use || down;
     state.pad[input] = (uint8_t)down;
@@ -358,15 +508,20 @@ static void pad_button(SDL_JoystickID id, SDL_GamepadButton button, int down)
         khdays_profile_owner(&profile, KHDAYS_DEVICE_GAMEPAD, KHDAYS_LAYER_BASE, input) == KHDAYS_ACT_OPEN_SETTINGS) {
         settings_request = 1;
     }
-    if (down &&
+    if (down && game_input &&
         khdays_profile_owner(&profile, KHDAYS_DEVICE_GAMEPAD, KHDAYS_LAYER_BASE, input) == KHDAYS_ACT_HUD_MODE) {
         ++hud_mode_requests;
+    }
+    if (down && game_input &&
+        khdays_profile_owner(&profile, KHDAYS_DEVICE_GAMEPAD, KHDAYS_LAYER_BASE, input) == KHDAYS_ACT_LOWER_VIEW) {
+        ++lower_view_requests;
     }
 }
 
 static void pad_axis(SDL_JoystickID id, SDL_GamepadAxis axis, int16_t value)
 {
-    if (find_pad(id) != active) {
+    const int i = find_pad(id);
+    if (i < 0 || i != active) {
         return;
     }
     if (value > 16384 || value < -16384) {
@@ -395,10 +550,14 @@ static void read_keyboard(void)
 /* A mouse input pressed: its HUD mode request, if it is that button's */
 static void mouse_pressed(int mouse)
 {
+    const int owner =
+        khdays_profile_owner(&profile, KHDAYS_DEVICE_KEYBOARD, KHDAYS_LAYER_BASE, KHDAYS_MOUSE_INPUT + mouse);
     pad_in_use = 0;
-    if (khdays_profile_owner(&profile, KHDAYS_DEVICE_KEYBOARD, KHDAYS_LAYER_BASE, KHDAYS_MOUSE_INPUT + mouse) ==
-        KHDAYS_ACT_HUD_MODE) {
+    if (owner == KHDAYS_ACT_HUD_MODE && game_input) {
         ++hud_mode_requests;
+    }
+    if (owner == KHDAYS_ACT_LOWER_VIEW && game_input) {
+        ++lower_view_requests;
     }
 }
 
@@ -440,10 +599,11 @@ void khdays_devices_handle(const SDL_Event *event, SDL_Renderer *renderer)
     case SDL_EVENT_KEY_UP:
         pad_in_use = event->type == SDL_EVENT_KEY_DOWN ? 0 : pad_in_use;
         read_keyboard();
-        if (event->type == SDL_EVENT_KEY_DOWN && !event->key.repeat &&
-            khdays_profile_owner(&profile, KHDAYS_DEVICE_KEYBOARD, KHDAYS_LAYER_BASE, (int)event->key.scancode) ==
-                KHDAYS_ACT_HUD_MODE) {
-            ++hud_mode_requests;
+        if (event->type == SDL_EVENT_KEY_DOWN && !event->key.repeat && game_input) {
+            const int owner =
+                khdays_profile_owner(&profile, KHDAYS_DEVICE_KEYBOARD, KHDAYS_LAYER_BASE, (int)event->key.scancode);
+            hud_mode_requests += owner == KHDAYS_ACT_HUD_MODE;
+            lower_view_requests += owner == KHDAYS_ACT_LOWER_VIEW;
         }
         break;
     case SDL_EVENT_MOUSE_BUTTON_DOWN:

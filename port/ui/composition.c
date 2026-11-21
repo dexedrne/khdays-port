@@ -1625,6 +1625,64 @@ static void add_halves(int columns, int key_count, int *shape_count, int *shape3
     }
 }
 
+static int lower_view_on, lower_view_inset, lower_view_made;
+static float lower_view_at[4];
+
+void khdays_composition_set_lower_view(int on, int inset)
+{
+    lower_view_on = on;
+    lower_view_inset = inset;
+}
+
+int khdays_composition_lower_view(void)
+{
+    return lower_view_on;
+}
+
+int khdays_composition_lower_view_rect(float rect[4])
+{
+    if (lower_view_made) {
+        memcpy(rect, lower_view_at, sizeof(lower_view_at));
+    }
+    return lower_view_made;
+}
+
+void khdays_composition_lower_view_drop(void)
+{
+    lower_view_made = 0;
+}
+
+/* The lower-screen view: the lower screen whole (`force`: its black is the screen's own ground), before
+ * every other shape, so over them all. */
+static void add_lower_view(int columns, int key_count, int *shape_count)
+{
+    const float c = (float)columns;
+    /* the inset: 0.62 of the DS's size, a margin of 4 from the right edge (fixed: not the HUD's size) */
+    const float k = lower_view_inset ? 0.62f : 1.0f, margin = lower_view_inset ? 4.0f : 0.0f;
+    ShapeDef view;
+    if (!grow((void **)&shapes, &shape_room, *shape_count, sizeof(KhdaysShape))) {
+        return;
+    }
+    memmove(&shapes[1], &shapes[0], (size_t)*shape_count * sizeof(KhdaysShape));
+    memset(&view, 0, sizeof(view));
+    view.lower = 1;
+    view.whole = 1;
+    view.w = 256.0f;
+    view.h = 192.0f;
+    view.corner = lower_view_inset ? CORNER_RIGHT : CORNER_CENTRE;
+    view.margin_fixed[2] = margin;
+    view.sx_fixed = view.sy_fixed = k;
+    view.flags = KOF_FORCE;
+    view.opacity = 1.0f;
+    build_shape(&view, columns, &shapes[0], key_count);
+    ++*shape_count;
+    lower_view_at[2] = 256.0f * k;
+    lower_view_at[3] = 192.0f * k;
+    lower_view_at[0] = lower_view_inset ? c - lower_view_at[2] - margin : (c - lower_view_at[2]) / 2.0f;
+    lower_view_at[1] = (192.0f - lower_view_at[3]) / 2.0f;
+    lower_view_made = 1;
+}
+
 void khdays_composition_for(const KhdaysSituation *situation, int columns, KhdaysComposition *out)
 {
     int shape_count = 0, key_count = 0, shape3d_count = 0, stopped = 0, matched = 0, shown = -1, menu = 0, halves = 0;
@@ -1759,6 +1817,10 @@ void khdays_composition_for(const KhdaysSituation *situation, int columns, Khday
         add_halves(columns, key_count, &shape_count, &shape3d_count);
     }
     out->screens = out->screens < 0 ? KHDAYS_SCREENS_UPPER : out->screens;
+    lower_view_made = 0;
+    if (lower_view_on && out->screens == KHDAYS_SCREENS_UPPER) {
+        add_lower_view(columns, key_count, &shape_count);
+    }
     out->brightness = out->brightness < 0 ? (int)KOB_DEFAULT : out->brightness;
     out->shapes = shapes;
     out->shape_count = shape_count;

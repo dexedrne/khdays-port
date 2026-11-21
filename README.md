@@ -27,7 +27,38 @@ AI-assisted coding tools were used to help make this possible.
 
 ## iPhone and iPad (work in progress)
 
-This branch adds an iOS build: SDL for iOS, the two DS screens stacked or side by side (made for foldables too), touch on the bottom screen, on-screen controls when no controller is connected, and MFi / Switch Pro / DualSense controllers. It reaches the title screen on Linux; the iPhone build is being tested. You still need your own European copy of the game; put it in the app's Documents folder as `Kh358.nds`. Build steps are in [tools/ios/MAC-STEPS.md](tools/ios/MAC-STEPS.md).
+This branch adds an iOS build: SDL for iOS, one screen as on the PC, DualSense / Switch Pro / MFi controllers, and on-screen keys when no controller is connected. You still need your own European copy of the game; put it in the app's Documents folder as `Kh358.nds`. Build steps are in [tools/ios/MAC-STEPS.md](tools/ios/MAC-STEPS.md). The Linux tests play it with emulated controllers from the title into the first field; the phone checks still to do are listed in MAC-STEPS.md.
+
+**One screen.** The phone shows the port's one-screen picture (below, "The field on one screen"), as wide as its screen, folded or unfolded: the field with the game's HUD laid out over it (the map at the top right, the mission's panel at the top left, the command deck and the party at the bottom), each menu, tutorial and list as large as the picture allows. The DS's two screens stacked or side by side remain under Settings → Apps → 358/2 Days → Screen layout.
+
+**The lower-screen view.** The touch pad's click (DualSense) or Capture (Switch Pro) shows the DS's lower screen whole, over the picture, and puts it away again: the full map with the area's and the day's names, and anything else the game draws there. The game goes on behind it. `lower_view = inset` in `[video]` of `saves/settings.ini` shows it smaller at the right instead, the field seen beside it. A finger on the view is the stylus. A controller with neither a touch pad nor Capture gives the view on Minus / Back (the log says so when it connects), and has no SELECT.
+
+**Controller.** The phone starts with the Kingdom Hearts II layout (below), by position, the same on every controller; Settings (PS / Home, or L3) changes it.
+
+| DualSense | Switch Pro | DS | In a field | In menus and dialogs |
+|---|---|---|---|---|
+| Cross (bottom) | B | A | attack; the selected command | confirm |
+| Circle (right) | A | B | jump | back |
+| Triangle (top) | X | X | next command of the deck; with L1, a shortcut | the page's own (lists) |
+| Square (left) | Y | Y | guard and dodge roll, once their panels are equipped; with L1, a shortcut | the page's own |
+| L1 | L | L | held with a face button: its shortcut | previous tab or world |
+| R1 | R | lock-on (the DS's double R press, made for you) | lock on, let go | DS R: next tab or world |
+| R2 | ZR | next target (a single DS R press) | the next target | DS R |
+| L2 | ZL | previous target | the previous target (Controls: Type B) | DS L |
+| R3 | right stick's click | R | the camera behind Roxas; held, the chase camera on or off | DS R |
+| left stick | left stick | D-pad | move, in the stick's exact direction; pushed lightly, walk | cursor |
+| right stick | right stick | (the DS's touch-screen drag) | turn and tilt the camera | -- |
+| D-pad | D-pad | X with a direction | the command deck | cursor |
+| Options | + | START | the menu (the pause in Mission Mode); skips a movie | START; closes a tutorial |
+| Create | - | SELECT | the look view | SELECT |
+| touch pad's click | Capture | -- | the lower-screen view | the lower-screen view |
+| PS, L3 | Home, L3 | -- | the port's settings | the port's settings |
+
+The game's own tutorials and prompts still draw the DS's button names: where one says A, press Cross (B on a Switch Pro), and so on down the table's third column.
+
+**Controllers coming and going.** A controller can be connected at any time. With two connected, the one whose button is pressed while the other holds nothing plays from then on. When the playing controller goes away and no other is connected (its battery, out of reach), the game waits, its sound stopped, until one connects or the screen is touched; what a controller holds as it connects, and what is held when the app comes back to the front, only counts once let go.
+
+**Touch.** Without a controller the screen shows keys for the DS's buttons, a pad to move at the bottom left, and a Screen key for the lower-screen view. They are a fallback: there is no camera stick and no lock-on key.
 
 **App icon:** use the [KH Melon Mix](https://github.com/vitor251093/KHMelonMix) logo. Save it as a PNG, run `python3 tools/ios/make_icon.py logo.png ../my-icon/Assets.xcassets`, then build with `ICON_CATALOG=$PWD/../my-icon/Assets.xcassets`. The repository's own icon is only a placeholder.
 
@@ -177,7 +208,8 @@ By default the game is played as on the DS.
   the middle of a battle. The buttons follow the DS's layout by *position*,
   whatever is printed on them: the right-hand face button is A, the bottom one
   B, the left one Y and the top one X; the shoulders are L and R; Start or
-  Options is START; Select, Share or View is SELECT. The left stick moves like
+  Options is START; Select, View or Create is SELECT; the touch pad's click, Share or
+  Capture shows one screen's lower-screen view (below). The left stick moves like
   the D-pad (the DS's eight directions). With several gamepads connected, the
   first one plays.
 
@@ -253,9 +285,12 @@ own controls can do, through the same parts of the game:
 The **Kingdom Hearts II layout** (Settings → Gamepad preset; Kingdom Hearts
 III uses the same buttons for these actions) puts attack on the bottom face
 button, jump on the right, guard on the left, DS X on the top, the shortcuts
-on L1, lock-on on R1, the next target on R2, the camera's reset on R3 (the
-DS's R), the command menu on the D-pad, the camera on the right stick and
-SELECT on View / the touch pad, and switches on the enhancements it uses.
+on L1, lock-on on R1, the next target on R2, the previous one on L2, the
+camera's reset on R3 (the DS's R), the command menu on the D-pad, the camera
+on the right stick and SELECT on View / Create, and switches on the
+enhancements it uses. In both layouts the touch pad's click, Share or Capture
+shows one screen's lower-screen view (the DS's lower screen whole, over the
+picture) and puts it away.
 The keyboard is not changed.
 
 ## Picture

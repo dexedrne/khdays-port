@@ -1,5 +1,6 @@
 #include "mobile_touch.h"
 #include "profile.h"
+#include "devices.h"
 
 static SDL_FRect window_stylus;
 static bool stylus_point(float x, float y, float *sx, float *sy)
@@ -77,13 +78,16 @@ void khdays_mobile_stylus_rect(SDL_Renderer *renderer, SDL_FRect stylus_rect)
     }
 }
 
+enum { VIEW_KEY = -1 };
 static struct Button {
     const char *label;
     int action;
     float x, y;
 } const buttons[] = {{"A", KHDAYS_ACT_A, 0, 1},         {"B", KHDAYS_ACT_B, 1, 0},          {"X", KHDAYS_ACT_X, 1, 2},
                      {"Y", KHDAYS_ACT_Y, 2, 1},         {"R", KHDAYS_ACT_R, 0, 3},          {"L", KHDAYS_ACT_L, -1, 3},
-                     {"Start", KHDAYS_ACT_START, 3, 0}, {"Select", KHDAYS_ACT_SELECT, 4, 0}};
+                     {"Start", KHDAYS_ACT_START, 3, 0}, {"Select", KHDAYS_ACT_SELECT, 4, 0},
+                     /* the lower-screen view of one screen, shown and put away (no DS button) */
+                     {"Screen", VIEW_KEY, 5, 0}};
 enum { STICK = -2, STYLUS = -1 };
 static struct Finger {
     bool held;
@@ -202,6 +206,9 @@ void khdays_mobile_finger(const SDL_Event *e, SDL_Renderer *r, bool controller)
                 control = STICK;
         }
         *f = (struct Finger){true, e->tfinger.fingerID, control, p.x, p.y, p.x, p.y};
+        if (control >= 0 && buttons[control].action == VIEW_KEY) {
+            khdays_devices_request_lower_view();
+        }
     } else if (!f->held || f->id != e->tfinger.fingerID)
         return;
     if (e->type == SDL_EVENT_FINGER_UP || e->type == SDL_EVENT_FINGER_CANCELED) {
@@ -221,8 +228,9 @@ void khdays_mobile_snapshot(KhdaysInputSnapshot *out)
         const struct Finger *f = &fingers[i];
         if (!f->held)
             continue;
-        if (f->control >= 0)
-            bits |= 1u << buttons[f->control].action;
+        if (f->control >= 0) {
+            if (buttons[f->control].action >= 0) bits |= 1u << buttons[f->control].action;
+        }
         else if (f->control == STYLUS) {
             out->touching = 1;
             out->touch_x = (uint16_t)f->x;

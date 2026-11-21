@@ -120,6 +120,7 @@ const char *khdays_model_action_label(int action)
         [KHDAYS_ACT_MENU_RIGHT] = TXT_ACT_MENU_RIGHT,
         [KHDAYS_ACT_OPEN_SETTINGS] = TXT_ACT_OPEN_SETTINGS,
         [KHDAYS_ACT_HUD_MODE] = TXT_ACT_HUD_MODE,
+        [KHDAYS_ACT_LOWER_VIEW] = TXT_ACT_LOWER_VIEW,
     };
     if (action < 0 || action >= KHDAYS_ACT_COUNT) {
         return "?";
@@ -257,6 +258,7 @@ static void build_controls(Builder *b, KhdaysProfile *w)
     }
     add_binding(b, KHDAYS_LAYER_BASE, KHDAYS_ACT_OPEN_SETTINGS, PAD_CELLS); /* the keyboard always has Esc */
     add_binding(b, KHDAYS_LAYER_BASE, KHDAYS_ACT_HUD_MODE, ALL_CELLS);      /* one screen's HUD mode */
+    add_binding(b, KHDAYS_LAYER_BASE, KHDAYS_ACT_LOWER_VIEW, ALL_CELLS);    /* one screen's lower-screen view */
     if (w->enh.separate_lock_on) {
         add(b, KHDAYS_ROW_HEADING, KHDAYS_SET_NONE, khdays_text(TXT_HEADING_LOCK_ON));
         add_binding(b, KHDAYS_LAYER_BASE, KHDAYS_ACT_LOCK_ON, ALL_CELLS);

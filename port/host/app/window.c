@@ -4,6 +4,9 @@
  * Closing the window ends the process (docs/PLATFORM.md, "The PC's side"). */
 #include "host.h"
 #include "mobile_touch.h"
+#ifdef KHDAYS_MOBILE_TEST
+#include "pad_script.h"
+#endif
 #include "devices.h"
 #include "press_edges.h"
 #include "../render/gpu_present.h"
@@ -284,6 +287,7 @@ static void take_mod_notices(void)
  * KHDAYS_PICTURE_LOG pictures; saved as PNGs to KHDAYS_SHOT_WINDOW (on the phone: saves/logs). */
 static unsigned picture_count;
 static int picture_report_due;
+static int title_menu_shown; /* the newest frame's situation: the title's menu shows (the pad script's anchor) */
 
 static void picture_report(SDL_Window *window, SDL_Renderer *renderer)
 {
@@ -409,6 +413,67 @@ static void present_picture(SDL_Renderer *renderer)
     }
 }
 
+/* The lower-screen view of one screen (host/render/gpu_present.h): shown or put away by its button. */
+static void toggle_lower_view(void)
+{
+    khdays_present_set_lower_view(!khdays_present_lower_view());
+    fprintf(stderr, "lower view: %s at game frame %u (scene %u)\n", khdays_present_lower_view() ? "on" : "off",
+            khdays_events_vblank_count(), khdays_runtime_scene());
+    fflush(stderr);
+    khdays_log("one screen: the lower-screen view %s", khdays_present_lower_view() ? "on" : "off");
+    picture_report_due = 1; /* the next picture is reported: with the view, or without it again */
+}
+
+#ifdef KHDAYS_MOBILE
+/* On the phone, the playing gamepad gone with no other connected (its battery, out of reach): the game
+ * waits -- its time and sound stop -- until a gamepad connects or the screen is touched (the touch keys
+ * play from then on). Not in a multiplayer session, whose other players' games go on. */
+static int pad_lost;
+static int pad_had; /* a gamepad was playing */
+
+static void pad_lost_set(int lost)
+{
+    if (lost == pad_lost) {
+        return;
+    }
+    pad_lost = lost;
+    khdays_clock_hold(KHDAYS_HOLD_SETTINGS, lost);
+    khdays_sound_output_pause(lost);
+    if (lost || !khdays_movie_hd_course_paused()) {
+        khdays_hd_pause(lost); /* (not a video its course keeps paused) */
+    }
+    khdays_hd_voice_pause(lost);
+    fprintf(stderr, "host: %s at game frame %u\n",
+            lost ? "the gamepad is gone: the game waits for one, or for a touch" : "the game goes on",
+            khdays_events_vblank_count());
+    fflush(stderr);
+}
+
+static void pad_lost_draw(SDL_Renderer *r)
+{
+    static const char *const lines[] = {"Controller disconnected", "Reconnect it, or touch the screen to play with touch"};
+    int w = 0, h = 0, lw, lh;
+    SDL_RendererLogicalPresentation presentation;
+    SDL_GetRenderLogicalPresentation(r, &lw, &lh, &presentation);
+    SDL_SetRenderLogicalPresentation(r, 0, 0, SDL_LOGICAL_PRESENTATION_DISABLED);
+    SDL_GetCurrentRenderOutputSize(r, &w, &h);
+    SDL_SetRenderDrawBlendMode(r, SDL_BLENDMODE_BLEND);
+    SDL_SetRenderDrawColor(r, 0, 0, 0, 150);
+    SDL_RenderFillRect(r, NULL);
+    SDL_SetRenderDrawColor(r, 255, 255, 255, 255);
+    for (int i = 0; i < 2; ++i) {
+        const float length = (float)SDL_strlen(lines[i]);
+        const float k = SDL_max(1.0f, SDL_floorf((float)w / (8.0f * 60.0f))) * (i == 0 ? 1.5f : 1.0f);
+        SDL_SetRenderScale(r, k, k);
+        SDL_RenderDebugText(r, ((float)w - 8.0f * length * k) / 2.0f / k,
+                            ((float)h / 2.0f + (i == 0 ? -14.0f : 6.0f) * SDL_max(1.0f, (float)w / 480.0f)) / k,
+                            lines[i]);
+    }
+    SDL_SetRenderScale(r, 1.0f, 1.0f);
+    SDL_SetRenderLogicalPresentation(r, lw, lh, presentation);
+}
+#endif
+
 /* Draws the last frame, with the FPS and ping displays and the settings menu
  * over it. Draws nothing while the graphics card is lost (the loop recreates
  * it). */
@@ -443,7 +508,11 @@ static void redraw(SDL_Window *window, SDL_Renderer *renderer)
     }
     khdays_settings_draw(renderer, window);
 #ifdef KHDAYS_MOBILE
-    if (!khdays_settings_is_open() && !khdays_devices_gamepad()) khdays_mobile_draw(renderer);
+    if (pad_lost) {
+        pad_lost_draw(renderer);
+    } else if (!khdays_settings_is_open() && !khdays_devices_gamepad()) {
+        khdays_mobile_draw(renderer);
+    }
 #endif
     picture_report(window, renderer);
     present_picture(renderer);
@@ -585,6 +654,9 @@ static void settings_closed(SDL_Window *window, SDL_Renderer *renderer)
 static void open_settings(void)
 {
     char text[160];
+#ifdef KHDAYS_MOBILE
+    pad_lost_set(0); /* the menu's own pause from here */
+#endif
     stop_game_for_menu();
     while (khdays_devices_take_notice(text, sizeof(text))) {
         khdays_settings_add_notice(text);
@@ -712,6 +784,28 @@ static int host_thread(void *unused)
         char path[512];
         khdays_settings_path(path, sizeof(path));
         khdays_profile_load(&profile, path, notice);
+#ifdef KHDAYS_MOBILE
+        {
+            /* The phone's own defaults, for what the settings file does not say (there is none on
+             * the first run; one written by hand may say only a part): the Kingdom Hearts II
+             * layout -- attack and confirm on the bottom face button (Cross), jump and back on the
+             * right one (Circle), the camera on the right stick -- instead of the DS's positions,
+             * and the picture as wide as the phone's screen, folded (about 2.2:1) or unfolded
+             * (1.42:1), not 16:9 with bars. Settings changes both, and the file then says. */
+            char *text = (char *)SDL_LoadFile(path, NULL);
+            const int pad_said = text != NULL && (SDL_strstr(text, "[gamepad") != NULL || SDL_strstr(text, "preset") != NULL);
+            const int aspect_said = text != NULL && SDL_strstr(text, "aspect") != NULL;
+            if (!pad_said && SDL_getenv("KHDAYS_MOBILE_PRESET_DS") == NULL) {
+                khdays_profile_apply_preset(&profile, KHDAYS_PRESET_KH2, KHDAYS_AVAILABLE_ENHANCEMENTS);
+                fprintf(stderr, "host: %s: the Kingdom Hearts II gamepad layout\n",
+                        text == NULL ? "no settings file yet" : "the settings file names no gamepad layout");
+            }
+            if (!aspect_said) {
+                profile.video.aspect = KHDAYS_ASPECT_WINDOW;
+            }
+            SDL_free(text);
+        }
+#endif
         khdays_ui_set_language(khdays_language_choose(profile.language));
         khdays_sound_output_set(&profile.sound);
         khdays_log_want(profile.session_log);
@@ -732,6 +826,11 @@ static int host_thread(void *unused)
         return 1;
     }
     khdays_devices_init(&profile, publish);
+#ifdef KHDAYS_MOBILE_TEST
+    const int pad_script = khdays_pad_script_start();
+#else
+    const int pad_script = 0;
+#endif
     khdays_settings_set_graphics_card(khdays_present_gpu());
     tell_game();
     khdays_updates_start(profile.network.check_updates); /* in the background; told of on the title */
@@ -754,6 +853,23 @@ static int host_thread(void *unused)
         }
         animating = khdays_settings_is_open();
         khdays_devices_frame(); /* a wheel's notch let go */
+#ifdef KHDAYS_MOBILE_TEST
+        if (pad_script) {
+            /* the script's clock is the game's VBlanks, and while the game waits for a gamepad (its
+             * time stopped) the wall's clock at 60 a second, so that a script can bring one back */
+            static Uint64 waited_ms, waiting_since;
+            if (pad_lost && waiting_since == 0) {
+                waiting_since = SDL_GetTicks();
+            } else if (!pad_lost && waiting_since != 0) {
+                waited_ms += SDL_GetTicks() - waiting_since;
+                waiting_since = 0;
+            }
+            khdays_pad_script_frame(khdays_events_vblank_count() +
+                                        (unsigned)((waited_ms + (waiting_since ? SDL_GetTicks() - waiting_since : 0)) *
+                                                   60 / 1000),
+                                    khdays_runtime_scene(), title_menu_shown);
+        }
+#endif
         mouse_follow(window);
         /* The 3D at the monitor's refresh rate: draw a picture
          * whenever VSync lets one through, between events. */
@@ -787,7 +903,7 @@ static int host_thread(void *unused)
              * handle it like SDL's event */
             SDL_zero(event);
             event.type = SDL_EVENT_RENDER_DEVICE_LOST;
-        } else if (!(smooth || movie || backdrop ? SDL_WaitEventTimeout(&event, 1)
+        } else if (!(smooth || movie || backdrop || pad_script ? SDL_WaitEventTimeout(&event, 1)
                      : settling                  ? SDL_WaitEventTimeout(&event, 4) /* (a VBlank is ~17 ms) */
                      : animating                 ? SDL_WaitEventTimeout(&event, 50)
                                                  : SDL_WaitEvent(&event))) {
@@ -842,6 +958,8 @@ static int host_thread(void *unused)
             SDL_SetAtomicInt(&frame_pending, 0);
             if (SDL_GetAtomicInt(&mailbox) & FRESH) {
                 host_slot = SDL_SetAtomicInt(&mailbox, host_slot) & 3;
+                title_menu_shown = packages[host_slot]->situation.taken && packages[host_slot]->situation.title_valid &&
+                                   packages[host_slot]->situation.title_shown == KHDAYS_TITLE_SHOWN;
                 khdays_present_package(packages[host_slot]);
             } else if (SDL_SetAtomicInt(&frame_new, 0)) {
                 SDL_LockMutex(frame_lock);
@@ -928,6 +1046,11 @@ static int host_thread(void *unused)
              * while they keep coming. */
             static Uint64 drawn_at;
             khdays_devices_handle(&event, renderer);
+#ifdef KHDAYS_MOBILE
+            if (khdays_devices_take_pad_change()) {
+                pad_had = khdays_devices_gamepad() != NULL; /* under the menu's own pause: no wait for a gamepad */
+            }
+#endif
             if (khdays_settings_handle(&event, window)) {
                 settings_closed(window, renderer);
                 continue;
@@ -959,7 +1082,44 @@ static int host_thread(void *unused)
             redraw(window, renderer);
             continue;
         }
+#ifdef KHDAYS_MOBILE
+        if (pad_lost && event.type == SDL_EVENT_FINGER_DOWN) {
+            /* played by touch from here. This touch only wakes the game: the keys were not drawn under
+             * the notice, so it is no key's press (its later moves and lift find no finger of theirs) */
+            pad_lost_set(0);
+            redraw(window, renderer);
+            continue;
+        }
+#endif
         khdays_devices_handle(&event, renderer); /* keys, mouse, gamepads, focus */
+        if (khdays_devices_take_pad_change()) {
+            /* the playing gamepad changed: the phone's touch keys show without one and hide with one */
+            fprintf(stderr, "host: gamepads: %d connected, %s%s; touch keys %s (game frame %u)\n",
+                    khdays_devices_pad_count(), khdays_devices_gamepad() != NULL ? "playing: " : "none plays",
+                    khdays_devices_gamepad() != NULL ? khdays_devices_gamepad_name() : "",
+#ifdef KHDAYS_MOBILE
+                    khdays_devices_gamepad() != NULL ? "hidden" : "shown",
+#else
+                    "not in this build",
+#endif
+                    khdays_events_vblank_count());
+            fflush(stderr);
+#ifdef KHDAYS_MOBILE
+            pad_lost_set(khdays_devices_gamepad() == NULL && pad_had && !khdays_net_in_session());
+            pad_had = khdays_devices_gamepad() != NULL;
+#endif
+            redraw(window, renderer);
+        }
+#ifdef KHDAYS_MOBILE
+        if (pad_lost && event.type == SDL_EVENT_KEY_DOWN) {
+            pad_lost_set(0); /* played on the keyboard from here */
+            redraw(window, renderer);
+        }
+#endif
+        if (khdays_devices_take_lower_view_request() & 1) {
+            toggle_lower_view();
+            redraw(window, renderer);
+        }
         for (int n = khdays_devices_take_hud_mode_request(); n > 0; --n) {
             khdays_situation_hud_mode_next(); /* the one-screen HUD mode */
             khdays_log("one screen: the HUD mode now %d (0 complete, 1 exploration, 2 none)",

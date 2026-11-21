@@ -95,6 +95,9 @@ int khdays_present_lost(void)
 }
 
 static void layout(void); /* where the screens go, for the picture's width */
+static int lower_view;       /* the lower-screen view is asked for (khdays_present_set_lower_view) */
+static int lower_view_shown; /* and the last picture drawn shows it */
+static SDL_FRect lower_view_at; /* where, in the logical presentation */
 
 /* KHDAYS_GFX: the port's own 2D */
 static int port2d_mode = -1;         /* 0 off, 1 port, 2 check */
@@ -866,6 +869,20 @@ static void under_paused_video(KhdaysOneScreenDraw *one)
     one->hide3d_all = 1;
 }
 
+int khdays_present_lower_view(void)
+{
+    return lower_view;
+}
+
+void khdays_present_set_lower_view(int on)
+{
+    lower_view = on != 0;
+    khdays_composition_set_lower_view(lower_view, video.lower_view == KHDAYS_LOWER_VIEW_INSET);
+    if (latest != NULL && !device_lost) {
+        present(latest, 0); /* the picture again, with or without it, even while the game stands still */
+    }
+}
+
 void khdays_present_package(const KhdaysFramePackage *p)
 {
     if (!khdays_movie_hd_scene_paused()) {
@@ -1199,6 +1216,7 @@ void khdays_present_set_video(const KhdaysVideo *v)
     }
     video = *v;
     khdays_composition_set_hud_size(video.hud_size);
+    khdays_composition_set_lower_view(lower_view, video.lower_view == KHDAYS_LOWER_VIEW_INSET);
     if (screens != NULL) {
         SDL_SetTextureScaleMode(screens, video.smooth_scaling ? SDL_SCALEMODE_LINEAR : SDL_SCALEMODE_NEAREST);
     }
@@ -1325,7 +1343,7 @@ static SDL_ScaleMode mode_for(SDL_Texture *t, float w, float h)
 
 /* How the last picture was drawn, for the picture report (window.c): which of draw_screens' ways, with
  * the sizes it used. */
-static char draw_note[320];
+static char draw_note[400];
 static const char *draw_way = "nothing yet";
 
 const char *khdays_present_note(void)
@@ -1341,13 +1359,14 @@ const char *khdays_present_note(void)
     SDL_GetCurrentRenderOutputSize(renderer, &ow, &oh);
     SDL_snprintf(draw_note, sizeof(draw_note),
                  "drawn as %s; %d columns, internal scale %d, logical %dx%d in output %dx%d, viewport %d,%d %dx%d, "
-                 "scale %.3f, 2D %s, one-screen setting %d, game level %.2f"
+                 "scale %.3f, 2D %s, one-screen setting %d, lower view %s, game level %.2f"
 #ifdef KHDAYS_MOBILE
                  ", layout %d, stylus %.0f,%.0f %.0fx%.0f, %s"
 #endif
                  ,
                  draw_way, columns, scale_now(), presented_w, presented_h, ow, oh, view.x, view.y, view.w, view.h,
                  (double)sx, port2d_drawn ? "the port's" : port2d_ready ? "not drawn yet" : "off", video.one_screen,
+                 !lower_view ? "off" : lower_view_shown ? "shown" : "on (this picture has the lower screen already)",
                  (double)khdays_movie_hd_game_level()
 #ifdef KHDAYS_MOBILE
                      ,
@@ -1369,6 +1388,7 @@ static void draw_screens(void)
         return;
     }
     draw_way = "nothing (no screens to draw)";
+    lower_view_shown = 0;
     fps_count(1);
     SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
     SDL_RenderClear(renderer);
@@ -1398,6 +1418,17 @@ static void draw_screens(void)
 #ifdef KHDAYS_MOBILE
             if (one_kind == KHDAYS_SCREENS_LOWER) stylus_rect = (SDL_FRect){left, 0, W, H};
 #endif
+            {
+                /* the lower-screen view in this picture (ui/composition.h): where a finger is the stylus */
+                float r[4];
+                lower_view_shown = one_kind == KHDAYS_SCREENS_UPPER && khdays_composition_lower_view_rect(r);
+                if (lower_view_shown) {
+                    lower_view_at = (SDL_FRect){at.x + r[0], r[1], r[2], r[3]};
+#ifdef KHDAYS_MOBILE
+                    stylus_rect = lower_view_at;
+#endif
+                }
+            }
             one_at_x = at.x;
             one_at_w = at.w;
             SDL_SetTextureScaleMode(picture, mode_for(picture, at.w, at.h));

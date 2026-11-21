@@ -614,7 +614,7 @@ if(KHDAYS_MOBILE_TEST)
     if(NOT KHDAYS_HEADLESS_TEST_BUILD)
         message(FATAL_ERROR "KHDAYS_MOBILE_TEST is for the Linux test build (KHDAYS_HEADLESS_TEST_BUILD)")
     endif()
-    target_sources(khdays-host-input PRIVATE host/app/mobile_touch.c)
+    target_sources(khdays-host-input PRIVATE host/app/mobile_touch.c host/app/pad_script.c)
     set_property(SOURCE host/app/mobile_touch.c host/app/devices.c host/app/window.c host/render/gpu_present.c
                  APPEND PROPERTY COMPILE_DEFINITIONS KHDAYS_MOBILE_TEST)
 endif()
@@ -678,6 +678,12 @@ if(NOT WIN32)
                     "${CMAKE_CURRENT_SOURCE_DIR}/../tools/ios/test_picture.py"
                     "$<TARGET_FILE:khdays-native>" "${KHDAYS_TEST_ROM}")
                 set_tests_properties(khdays-picture PROPERTIES TIMEOUT 600 SKIP_RETURN_CODE 77 RUN_SERIAL TRUE)
+                # The same window played with emulated gamepads (host/app/pad_script.h): a DualSense from the
+                # title through a new game into the field, gamepads coming and going.
+                add_test(NAME khdays-pad COMMAND "${Python3_EXECUTABLE}"
+                    "${CMAKE_CURRENT_SOURCE_DIR}/../tools/ios/test_pad.py"
+                    "$<TARGET_FILE:khdays-native>" "${KHDAYS_TEST_ROM}")
+                set_tests_properties(khdays-pad PROPERTIES TIMEOUT 1200 SKIP_RETURN_CODE 77 RUN_SERIAL TRUE)
             endif()
         endif()
         # The Metal shaders' buffers in SDL's order (uniforms first): numbered otherwise they draw nothing.

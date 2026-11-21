@@ -39,13 +39,18 @@ void khdays_bindings_mask_held(KhdaysDeviceState *s)
     for (int m = 0; m < KHDAYS_MOUSE_COUNT; ++m) {
         s->mouse_masked[m] = s->mouse[m];
     }
+    khdays_bindings_mask_held_pad(s);
+}
+
+void khdays_bindings_mask_held_pad(KhdaysDeviceState *s)
+{
     for (int i = 0; i < KHDAYS_PAD_COUNT; ++i) {
         s->pad_masked[i] = (uint8_t)pad_held(s, i);
     }
     for (int i = 0; i < 2; ++i) {
         /* A stick counts as held when it is off centre by more than a tenth
          * of its travel; it is let go once back inside its dead zone. */
-        const int x = s->stick[i][0], y = s->stick[i][1];
+        const int64_t x = s->stick[i][0], y = s->stick[i][1];
         s->stick_masked[i] = (uint8_t)(x * x + y * y > 3277 * 3277);
     }
 }

@@ -36,6 +36,9 @@ void khdays_bindings_reset(KhdaysDeviceState *state);
 /* Everything held now is ignored until it is released. */
 void khdays_bindings_mask_held(KhdaysDeviceState *state);
 
+/* The same for the gamepad alone (a gamepad that begins to play: the keyboard's keys go on). */
+void khdays_bindings_mask_held_pad(KhdaysDeviceState *state);
+
 /* Fills `out` (all but `ui_open`) from the profile and what is held. */
 void khdays_bindings_resolve(const KhdaysProfile *profile, KhdaysDeviceState *state, KhdaysInputSnapshot *out);
 

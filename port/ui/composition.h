@@ -104,6 +104,18 @@ float khdays_composition_hud_factor(void);
  * the order to try; none (count 0) when the keyboard is played: the pieces' own texels. Copied. */
 void khdays_composition_set_prompt(const char *action, const char *const *inputs, int count);
 
+/* The lower-screen view (the player's button, host/app/profile.h KHDAYS_ACT_LOWER_VIEW): while `on`,
+ * every picture of the upper screen also shows the lower screen whole, over everything -- `inset` 0:
+ * in the middle at the picture's full height (the DS's 256 x 192); 1: smaller, at the right, the game
+ * seen beside it. A picture that already shows the lower screen whole is left as it is. */
+void khdays_composition_set_lower_view(int on, int inset);
+int khdays_composition_lower_view(void);
+/* Where the last composition made put the view, in the picture's DS dots (x, y, w, h); 0 when it
+ * put none. */
+int khdays_composition_lower_view_rect(float rect[4]);
+/* The last composition's shapes were put aside (a screen of the port's takes the picture): no view in it. */
+void khdays_composition_lower_view_drop(void);
+
 /* The composition for a situation in a picture C DS dots wide. */
 void khdays_composition_for(const KhdaysSituation *situation, int columns, KhdaysComposition *out);
 

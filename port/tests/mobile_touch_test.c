@@ -3,6 +3,9 @@
 #include <stdlib.h>
 
 static SDL_Renderer *renderer;
+/* the Screen key's request for the lower-screen view (host/app/devices.c in the game) */
+static int view_requests;
+void khdays_devices_request_lower_view(void) { ++view_requests; }
 static unsigned finger(SDL_EventType type, SDL_FingerID id, float x, float y, bool pad)
 {
     SDL_Event e = {0};
@@ -29,6 +32,13 @@ int main(void)
         finger(SDL_EVENT_FINGER_DOWN, 2, 35, 310, false) != a ||
         finger(SDL_EVENT_FINGER_MOTION, 2, 75, 310, false) != (a | right) ||
         finger(SDL_EVENT_FINGER_CANCELED, 1, 486, 302, false) != right)
+        return 1;
+    khdays_mobile_reset();
+    /* the Screen key (sixth from the right in the bottom row): no DS button, one request for the view
+     * at the press, none while held or at the lift */
+    if (view_requests != 0 || finger(SDL_EVENT_FINGER_DOWN, 4, 210, 356, false) != 0 || view_requests != 1 ||
+        finger(SDL_EVENT_FINGER_MOTION, 4, 212, 356, false) != 0 || finger(SDL_EVENT_FINGER_UP, 4, 212, 356, false) != 0 ||
+        view_requests != 1)
         return 1;
     khdays_mobile_reset();
     if (finger(SDL_EVENT_FINGER_DOWN, 3, 120, 210, true))

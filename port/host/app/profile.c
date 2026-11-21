@@ -40,6 +40,7 @@ static const char *const action_names[KHDAYS_ACT_COUNT] = {
     [KHDAYS_ACT_MENU_RIGHT] = "menu_right",
     [KHDAYS_ACT_OPEN_SETTINGS] = "open_settings",
     [KHDAYS_ACT_HUD_MODE] = "hud_mode",
+    [KHDAYS_ACT_LOWER_VIEW] = "lower_view",
 };
 
 static const char *const pad_names[KHDAYS_PAD_COUNT] = {
@@ -189,6 +190,8 @@ void khdays_profile_default(KhdaysProfile *p)
      * Guide button for themselves, and neither the DS layout nor the KH II
      * layout uses L3. */
     bind(p, G, BASE, KHDAYS_ACT_OPEN_SETTINGS, KHDAYS_PAD_GUIDE, KHDAYS_PAD_LEFTSTICK);
+    /* The lower-screen view of one screen: the touch pad's click (DualSense), Share or Capture. */
+    bind(p, G, BASE, KHDAYS_ACT_LOWER_VIEW, KHDAYS_PAD_TOUCHPAD, KHDAYS_PAD_MISC1);
     /* Inputs the DS layout leaves free, used by the enhancements when they are
      * on; they do nothing while their enhancement is off. */
     bind(p, G, BASE, KHDAYS_ACT_LOCK_ON, KHDAYS_PAD_RIGHTSTICK, NONE);
@@ -267,6 +270,7 @@ void khdays_video_default(KhdaysVideo *v)
     v->hud_size = 4;
     v->subtitles = 1; /* as the DS showed them */
     v->display = KHDAYS_DISPLAY_WINDOW;
+    v->lower_view = KHDAYS_LOWER_VIEW_FULL;
 }
 
 /* The display values as the file writes them. */
@@ -407,6 +411,7 @@ int khdays_profile_repair(KhdaysProfile *p)
         }
         changed += clamp(&p->video.hud_size, 1, 8);
         changed += clamp(&p->video.display, 0, KHDAYS_DISPLAY_COUNT - 1);
+        changed += clamp(&p->video.lower_view, 0, KHDAYS_LOWER_VIEW_COUNT - 1);
     }
     changed += clamp(&p->sound.volume, 0, 100);
     changed += clamp(&p->sound.music, 0, 100);
@@ -420,9 +425,10 @@ int khdays_profile_repair(KhdaysProfile *p)
 
 /* The Kingdom Hearts II layout for Days's actions (Kingdom Hearts III uses the same): attack on the
  * bottom button, jump on the right, guard on the left, DS X on the top button, L1 for the shortcuts
- * (DS L), R1 lock-on, R2 switch target, R3 for DS R (with Config Controls Type A, R resets the camera,
- * as R3 does in KH), View or touch pad for DS Select, the D-pad for the command menu and the right
- * stick for the camera. Returns the enhancements it needs that are off. */
+ * (DS L), R1 lock-on, R2 the next target, L2 the previous one, R3 for DS R (with Config Controls Type
+ * A, R resets the camera, as R3 does in KH), View / Create for DS Select (the touch pad's click, Share
+ * or Capture is one screen's lower-screen view, as in the DS layout), the D-pad for the command menu
+ * and the right stick for the camera. Returns the enhancements it needs that are off. */
 static unsigned kh2_gamepad(KhdaysProfile *p, unsigned available)
 {
     enum { G = KHDAYS_DEVICE_GAMEPAD, BASE = KHDAYS_LAYER_BASE, FIELD = KHDAYS_LAYER_FIELD, NONE = KHDAYS_NO_INPUT };
@@ -444,12 +450,14 @@ static unsigned kh2_gamepad(KhdaysProfile *p, unsigned available)
     bind(p, G, BASE, KHDAYS_ACT_LEFT, KHDAYS_PAD_DPLEFT, NONE);
     bind(p, G, BASE, KHDAYS_ACT_RIGHT, KHDAYS_PAD_DPRIGHT, NONE);
     bind(p, G, BASE, KHDAYS_ACT_OPEN_SETTINGS, KHDAYS_PAD_GUIDE, KHDAYS_PAD_LEFTSTICK);
+    bind(p, G, BASE, KHDAYS_ACT_LOWER_VIEW, KHDAYS_PAD_TOUCHPAD, KHDAYS_PAD_MISC1);
     p->stick[0].role = KHDAYS_STICK_DPAD;
     p->stick[1].role = KHDAYS_STICK_CAMERA;
 
     if (available & KHDAYS_ENH_SEPARATE_LOCK_ON) {
         bind(p, G, BASE, KHDAYS_ACT_LOCK_ON, KHDAYS_PAD_RIGHTSHOULDER, NONE);
         bind(p, G, BASE, KHDAYS_ACT_TARGET_NEXT, KHDAYS_PAD_RIGHTTRIGGER, NONE);
+        bind(p, G, BASE, KHDAYS_ACT_TARGET_PREV, KHDAYS_PAD_LEFTTRIGGER, NONE);
         bind(p, G, BASE, KHDAYS_ACT_R, KHDAYS_PAD_RIGHTSTICK, NONE);
         p->enh.separate_lock_on = 1;
     } else {
@@ -946,6 +954,15 @@ static void read_video(Reader *r, const char *key, const char *value, const char
         }
         return;
     }
+    if (SDL_strcasecmp(key, "lower_view") == 0) {
+        if (SDL_strcasecmp(value, "full") == 0 || SDL_strcasecmp(value, "inset") == 0) {
+            v->lower_view = SDL_strcasecmp(value, "inset") == 0 ? KHDAYS_LOWER_VIEW_INSET : KHDAYS_LOWER_VIEW_FULL;
+        } else {
+            say_localized(r, TXT_VIDEO_BAD_VALUE, key, value, "full");
+            v->lower_view = KHDAYS_LOWER_VIEW_FULL;
+        }
+        return;
+    }
     if (SDL_strcasecmp(key, "hud_size") == 0) {
         char *end = NULL;
         const long n = SDL_strtol(value, &end, 10);
@@ -1321,6 +1338,19 @@ void khdays_profile_load(KhdaysProfile *profile, const char *path, KhdaysNotice 
         } else if (!r->aspect_seen) {
             profile->video.aspect = default_aspect(profile->video.one_screen);
         }
+        if (profile->preset == KHDAYS_PRESET_KH2 && profile->enh.separate_lock_on &&
+            profile->input[KHDAYS_DEVICE_GAMEPAD][KHDAYS_LAYER_BASE][KHDAYS_ACT_TARGET_PREV][0] == KHDAYS_NO_INPUT &&
+            khdays_profile_owner(profile, KHDAYS_DEVICE_GAMEPAD, KHDAYS_LAYER_BASE, KHDAYS_PAD_LEFTTRIGGER) < 0) {
+            /* a Kingdom Hearts II layout saved before it had the previous target on L2: given it now,
+             * if the layout is otherwise the preset's own (the player changed nothing) */
+            KhdaysProfile up = *profile;
+            const unsigned available = (up.enh.analog_camera ? 1u : 0u) | 2u | (up.enh.dpad_command_menu ? 4u : 0u) |
+                                       (up.enh.analog_movement ? 8u : 0u);
+            up.input[KHDAYS_DEVICE_GAMEPAD][KHDAYS_LAYER_BASE][KHDAYS_ACT_TARGET_PREV][0] = KHDAYS_PAD_LEFTTRIGGER;
+            if (khdays_profile_matches_preset(&up, available)) {
+                *profile = up;
+            }
+        }
     } else {
         say(notice, "settings: %s could not be read (%s); the defaults are used", path, SDL_GetError());
     }
@@ -1373,6 +1403,7 @@ static const int base_actions[] = {
     KHDAYS_ACT_A,       KHDAYS_ACT_B,           KHDAYS_ACT_X,           KHDAYS_ACT_Y,
     KHDAYS_ACT_L,       KHDAYS_ACT_R,           KHDAYS_ACT_START,       KHDAYS_ACT_SELECT,
     KHDAYS_ACT_LOCK_ON, KHDAYS_ACT_TARGET_NEXT, KHDAYS_ACT_TARGET_PREV, KHDAYS_ACT_OPEN_SETTINGS,
+    KHDAYS_ACT_LOWER_VIEW,
 };
 static const int field_actions[] = {
     KHDAYS_ACT_MENU_UP,
@@ -1514,7 +1545,10 @@ int khdays_profile_save(const KhdaysProfile *p, const char *path, KhdaysNotice n
             "show_fps = %s\n"
             "# backend: the graphics API -- auto (Direct3D 12 on Windows, Vulkan under Wine or Proton),\n"
             "#          direct3d12 or vulkan\n"
-            "backend = %s\n",
+            "backend = %s\n"
+            "# lower_view: on one screen, how the lower-screen view shows -- full (whole, in the middle) or\n"
+            "#             inset (smaller, at the right)\n"
+            "lower_view = %s\n",
             displays[v->display >= 0 && v->display < KHDAYS_DISPLAY_COUNT ? v->display : 0], resolution, antialiasing,
             v->one_screen ? "one" : "two", v->hud_size,
             aspects[v->aspect >= 0 && v->aspect < KHDAYS_ASPECT_COUNT ? v->aspect : 0],
@@ -1526,7 +1560,8 @@ int khdays_profile_save(const KhdaysProfile *p, const char *path, KhdaysNotice n
             v->subtitles ? "on" : "off", v->picture_ds ? "ds" : "smooth", v->show_fps ? "on" : "off",
             v->backend == KHDAYS_BACKEND_D3D12    ? "direct3d12"
             : v->backend == KHDAYS_BACKEND_VULKAN ? "vulkan"
-                                                  : "auto");
+                                                  : "auto",
+            v->lower_view == KHDAYS_LOWER_VIEW_INSET ? "inset" : "full");
     }
     add_unknown(&t, "video");
     {
