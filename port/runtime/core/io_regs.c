@@ -17,7 +17,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <windows.h>
 
 /* The address a function returns to: its caller's instruction. */
 #if defined(_MSC_VER)

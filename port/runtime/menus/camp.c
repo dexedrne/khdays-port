@@ -12,7 +12,7 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
-#include <windows.h>
+#include "../../host/app/sync.h"
 
 extern int GetLanguage(void);
 extern int GameState_GetField(int a, int b);

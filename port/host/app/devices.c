@@ -2,6 +2,9 @@
  * buttons and the port's actions through the player's profile (bindings.c) and published for the game.
  * Only one gamepad plays: the first connected, or the last used when it goes away. */
 #include "devices.h"
+#ifdef KHDAYS_IOS
+#include "mobile_touch.h"
+#endif
 #include "instance.h"
 #include "../screens/ui_text.h"
 
@@ -87,6 +90,9 @@ static void send(void)
 {
     snapshot.ui_open = 0;
     khdays_bindings_resolve(&profile, &state, &snapshot);
+#ifdef KHDAYS_IOS
+    khdays_mobile_snapshot(&snapshot);
+#endif
     if (!game_input) {
         /* The settings menu has the input: the game sees nothing held. */
         memset(&snapshot, 0, sizeof(snapshot));
@@ -126,6 +132,9 @@ void khdays_devices_set_game_input(int on)
     if (on && !game_input) {
         khdays_bindings_mask_held(&state);
     }
+#ifdef KHDAYS_IOS
+    khdays_mobile_reset();
+#endif
     game_input = on;
     send();
 }
@@ -413,6 +422,20 @@ void khdays_devices_frame(void)
 
 void khdays_devices_handle(const SDL_Event *event, SDL_Renderer *renderer)
 {
+#ifdef KHDAYS_IOS
+    switch (event->type) {
+    case SDL_EVENT_WINDOW_FOCUS_LOST:
+    case SDL_EVENT_WINDOW_SAFE_AREA_CHANGED:
+    case SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED:
+    case SDL_EVENT_GAMEPAD_ADDED:
+    case SDL_EVENT_GAMEPAD_REMOVED: khdays_mobile_reset(); send(); break;
+    case SDL_EVENT_FINGER_DOWN: case SDL_EVENT_FINGER_MOTION:
+    case SDL_EVENT_FINGER_UP: case SDL_EVENT_FINGER_CANCELED:
+        if (game_input) khdays_mobile_finger(event, renderer, active >= 0);
+        send();
+        return;
+    }
+#endif
     (void)renderer;
     switch (event->type) {
     case SDL_EVENT_KEY_DOWN:

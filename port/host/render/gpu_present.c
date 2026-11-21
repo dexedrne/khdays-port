@@ -1171,8 +1171,22 @@ int khdays_host_graphics_flags(void)
     return graphics_flags;
 }
 
+#ifdef KHDAYS_IOS
+#include "../app/mobile_touch.h"
+extern int khdays_ios_layout(void);
+static int mobile_layout;
+static SDL_FRect stylus_rect;
+static bool drawing_mobile;
+#endif
+
 void khdays_present_set_video(const KhdaysVideo *v)
 {
+#ifdef KHDAYS_IOS
+    KhdaysVideo mobile = *v;
+    mobile_layout = khdays_ios_layout();
+    mobile.one_screen = mobile_layout == 2;
+    v = &mobile;
+#endif
     graphics_flags =
         (v->hd_graphics ? KHDAYS_HOST_HD_GRAPHICS : 0) | (v->dump_graphics ? KHDAYS_HOST_DUMP_GRAPHICS : 0) |
         (v->movies == KHDAYS_MOVIES_DS ? KHDAYS_HOST_MOVIES_DS : 0) |
@@ -1200,6 +1214,11 @@ static void present_size(int w, int h)
         presented_w = w;
         presented_h = h;
     }
+#ifdef KHDAYS_IOS
+    SDL_Rect safe;
+    if (drawing_mobile && renderer && SDL_GetWindowSafeArea(window, &safe))
+        khdays_mobile_view(renderer, safe, w, h);
+#endif
 }
 
 /* Black over the whole picture, `amount` of it (0 none, 1 all): a fade. */
@@ -1305,9 +1324,12 @@ static SDL_ScaleMode mode_for(SDL_Texture *t, float w, float h)
     return video.smooth_scaling ? SDL_SCALEMODE_LINEAR : SDL_SCALEMODE_NEAREST;
 }
 
-void khdays_present_draw(void)
+static void draw_screens(void)
 {
     const float left = (float)(columns - W) / 2;
+#ifdef KHDAYS_IOS
+    SDL_zero(stylus_rect);
+#endif
     if (device_lost) {
         return;
     }
@@ -1335,12 +1357,19 @@ void khdays_present_draw(void)
         present_size(columns, H);
         if (picture != NULL) {
             const SDL_FRect at = {((float)columns - (float)made) / 2, 0, (float)made, H};
+#ifdef KHDAYS_IOS
+            if (one_kind == KHDAYS_SCREENS_LOWER) stylus_rect = (SDL_FRect){left, 0, W, H};
+#endif
             one_at_x = at.x;
             one_at_w = at.w;
             SDL_SetTextureScaleMode(picture, mode_for(picture, at.w, at.h));
             SDL_RenderTexture(renderer, picture, NULL, &at);
         }
-    } else if (port2d_drawn && video.one_screen && one_kind == KHDAYS_SCREENS_SIDE_BY_SIDE) {
+    } else if (port2d_drawn && ((video.one_screen && one_kind == KHDAYS_SCREENS_SIDE_BY_SIDE)
+#ifdef KHDAYS_IOS
+                               || mobile_layout == 1
+#endif
+                               )) {
         /* Both screens whole, side by side, each as the DS's 256 columns, touching: the upper on the left,
          * the lower at its right. Engine A drawn wider keeps only its middle 256 (its extra columns showed
          * as a band between the two). */
@@ -1352,6 +1381,9 @@ void khdays_present_draw(void)
             const SDL_ScaleMode mode = video.smooth_scaling ? SDL_SCALEMODE_LINEAR : SDL_SCALEMODE_NEAREST;
             const SDL_FRect upper_from = ds_columns(upper, wu), lower_from = ds_columns(lower, wl);
             const SDL_FRect upper_at = {0, 0, W, H}, lower_at = {W, 0, W, H};
+#ifdef KHDAYS_IOS
+            stylus_rect = lower_at;
+#endif
             SDL_SetTextureScaleMode(upper, mode);
             SDL_SetTextureScaleMode(lower, mode);
             SDL_RenderTexture(renderer, upper, &upper_from, &upper_at);
@@ -1370,6 +1402,9 @@ void khdays_present_draw(void)
         const SDL_FRect upper_at = {((float)columns - wu) / 2, 0, wu, H},
                         lower_at = {((float)columns - wl) / 2, H, wl, H};
         if (upper != NULL && lower != NULL) {
+#ifdef KHDAYS_IOS
+            stylus_rect = (SDL_FRect){left, H, W, H};
+#endif
             SDL_SetTextureScaleMode(upper, mode_for(upper, wu, H));
             SDL_SetTextureScaleMode(lower, mode_for(lower, wl, H));
             SDL_RenderTexture(renderer, upper, NULL, &upper_at);
@@ -1378,12 +1413,26 @@ void khdays_present_draw(void)
     } else if (screens != NULL) {
         /* the 1x screens, the DS's 256 columns in the middle */
         const SDL_FRect upper = {0, 0, W, H}, lower = {0, H, W, H};
-        const SDL_FRect upper_at = {left, 0, W, H}, lower_at = {left, H, W, H};
+        SDL_FRect upper_at = {left, 0, W, H}, lower_at = {left, H, W, H};
+#ifdef KHDAYS_IOS
+        if (mobile_layout == 1) {
+            upper_at.x = 0;
+            lower_at = (SDL_FRect){W, 0, W, H};
+            present_size(2 * W, H);
+        } else
+#endif
         present_size(columns, 2 * H);
+#ifdef KHDAYS_IOS
+        stylus_rect = lower_at;
+#endif
         SDL_RenderTexture(renderer, screens, &upper, &upper_at);
         SDL_RenderTexture(renderer, screens, &lower, &lower_at);
     }
-    if (hd != NULL) {
+    if (hd != NULL
+#ifdef KHDAYS_IOS
+        && mobile_layout != 1
+#endif
+        ) {
         /* engine A drawn again, as wide as its list was made */
         const SDL_FRect place = {(float)(columns - hd_columns) / 2, hd_upper ? 0.0f : (float)H, (float)hd_columns,
                                  (float)H};
@@ -1391,6 +1440,20 @@ void khdays_present_draw(void)
     }
     /* around a scene's videos the game goes down to black and comes up from it */
     darken(1.0f - khdays_movie_hd_game_level());
+}
+
+void khdays_present_draw(void)
+{
+#ifdef KHDAYS_IOS
+    drawing_mobile = true;
+#endif
+    draw_screens();
+#ifdef KHDAYS_IOS
+    drawing_mobile = false;
+    khdays_mobile_stylus_rect(renderer, stylus_rect);
+    SDL_SetRenderViewport(renderer, NULL);
+    SDL_SetRenderScale(renderer, 1, 1);
+#endif
 }
 
 SDL_Renderer *khdays_present_event(const SDL_Event *event, int *renewed)

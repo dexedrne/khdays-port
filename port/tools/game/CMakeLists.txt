@@ -1,0 +1,8 @@
+add_library(khdays-game OBJECT ${KHDAYS_REWRITTEN})
+target_include_directories(khdays-game PRIVATE "${PROJECT_SOURCE_DIR}/compat" "${KHDAYS_GEN}")
+if(MSVC)
+    target_compile_options(khdays-game PRIVATE /W0 /Zp4 /std:c17)
+else()
+    target_precompile_headers(khdays-game PRIVATE "${PROJECT_SOURCE_DIR}/compat/khdays_references.h")
+    target_compile_options(khdays-game PRIVATE -Wno-implicit-function-declaration -Wno-deprecated-non-prototype -fshort-wchar -fpack-struct=4 -fsigned-char -fwrapv -O0)
+endif()

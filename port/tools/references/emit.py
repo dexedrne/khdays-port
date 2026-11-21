@@ -29,6 +29,8 @@ from .types import (
     decayed,
 )
 
+# The DS and MSVC use 32-bit long; Unix arm64 and x86-64 use 64 bits.
+DS_ARITHMETIC = {"long": "int", "unsigned long": "unsigned int", "long double": "double"}
 REF = "khdays_ref"
 PRELUDE = """/* Rewritten by port/tools/references: every pointer of the
  * game's side a 4-byte reference, the DS address it had. */
@@ -206,7 +208,7 @@ class Emitter(c_generator.CGenerator):
                 params = ", ".join(self.decl(p, "", game) for p in t.params) + (", ..." if t.variadic else "")
             return self.decl(t.result, f"{target}({params})", game)
         if isinstance(t, Arithmetic):
-            return f"{q}{t.spelling}{sep}{inner}".rstrip()
+            return f"{q}{DS_ARITHMETIC.get(t.spelling, t.spelling)}{sep}{inner}".rstrip()
         if isinstance(t, Void):
             return f"{q}void{sep}{inner}".rstrip()
         if isinstance(t, Record):
@@ -246,6 +248,9 @@ class Emitter(c_generator.CGenerator):
 
     def lv(self, node) -> str:
         """The node as a host lvalue."""
+        if isinstance(node, c_ast.Cast) and isinstance(self.type(node), Pointer) and isinstance(self.type(node.expr), Pointer):
+            # The DS compiler permits updating a pointer through a pointer cast.
+            return self.lv(node.expr)
         if isinstance(node, c_ast.ID):
             return self.lv_ID(node)
         if isinstance(node, c_ast.UnaryOp) and node.op == "*":
@@ -384,7 +389,7 @@ class Emitter(c_generator.CGenerator):
     @staticmethod
     def record(key: str, image: str) -> str:
         return (
-            f'__declspec(allocate(".khdi$m")) struct khdays_data_init khdays_place_{key} = '
+            f'KHDAYS_DATA_RECORD struct khdays_data_init khdays_place_{key} = '
             f"{{KHDAYS_DATA({key}), &{image}, sizeof({image}), {DATA_AREA_MODULE}}}"
         )
 
@@ -438,6 +443,8 @@ class Emitter(c_generator.CGenerator):
     def rv_Constant(self, node: c_ast.Constant) -> str:
         if node.type == "string":
             return self.literal(node)
+        if "long" in node.type and node.type.count("long") == 1:
+            return node.value.rstrip("lL") if node.type == "long double" else node.value.replace("L", "").replace("l", "")
         return node.value
 
     def rv_UnaryOp(self, node: c_ast.UnaryOp) -> str:
@@ -718,6 +725,14 @@ class Emitter(c_generator.CGenerator):
     def visit_ID(self, n):
         return self.rv(n)
 
+    def visit_IdentifierType(self, n):
+        words = n.names
+        if words.count("long") == 1:
+            if "double" in words:
+                return "double"
+            return "unsigned int" if "unsigned" in words else "int"
+        return super().visit_IdentifierType(n)
+
     def visit_Constant(self, n):
         return self.rv(n)
 
@@ -918,6 +933,8 @@ class Emitter(c_generator.CGenerator):
         if self.host_node(n):
             return self.plain.visit_Decl(n, no_type)
         d = copy.copy(n)
+        if isinstance(n.type, c_ast.FuncDecl) and n.name in self.static_here and "static" not in n.storage:
+            d.storage = ["static"]
         d.type = self.game_declarators(n.type)
         init = n.init
         d.init = None
@@ -1000,7 +1017,7 @@ class Emitter(c_generator.CGenerator):
         if address is None:
             raise EmitFailure(n, "a data record for an object with no place")
         rest = ", ".join(self.plain.visit(e) for e in exprs[1:])
-        return f'__declspec(allocate(".khdi$m")) struct khdays_data_init {n.name} = {{{address}, {rest}}}'
+        return f'KHDAYS_DATA_RECORD struct khdays_data_init {n.name} = {{{address}, {rest}}}'
 
     def visit_Typedef(self, n):
         chain = self.once(n.type, n.name)
@@ -1018,11 +1035,17 @@ class Emitter(c_generator.CGenerator):
         d.type = self.game_declarators(n.type)
         return super().visit_Typename(d)
 
+    def visit_Return(self, n):
+        if n.expr is None and isinstance(self.return_type, (Arithmetic, Pointer, Enumeration)):
+            return "return 0;"
+        return super().visit_Return(n)
+
     def visit_FuncDef(self, n):
         if self.host_node(n):
             return self.plain.visit_FuncDef(n)
         s = self.tp.declared.get(id(n.decl))
         f = s.type if s is not None else None
+        self.return_type = f.result if isinstance(f, Function) else None
         saved = self.va_params, self.va_calls
         self.va_params, self.va_calls = {}, {}
         try:
@@ -1063,6 +1086,9 @@ class Emitter(c_generator.CGenerator):
         # the functions this file defines: the game's, whatever their
         # declarations before the definition say
         self.defined_here = {ext.decl.name for ext in n.ext if isinstance(ext, c_ast.FuncDef)}
+        self.static_here = {ext.decl.name for ext in n.ext if isinstance(ext, c_ast.FuncDef)
+                            and ("static" in ext.decl.storage or
+                                 ("inline" in ext.decl.funcspec and ext.decl.name not in self.index.functions))}
         out = [PRELUDE]
         for ext in n.ext:
             coord = getattr(ext, "coord", None)
@@ -1084,7 +1110,7 @@ class Emitter(c_generator.CGenerator):
         """The native function of each function reference the build numbers
         (runtime/core/window.c builds its table from these)."""
         return "".join(
-            f'__declspec(allocate(".khfr$m")) const struct khdays_function_record '
+            f'KHDAYS_FUNCTION_RECORD const struct khdays_function_record '
             f"khdays_function_{key}_{self.file_key} = {{KHDAYS_FREF({key}), (khdays_function_pointer){name}}};\n"
             for key, name in sorted(self.frefs.items())
         )

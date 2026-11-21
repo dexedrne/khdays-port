@@ -3,6 +3,9 @@
  * player's profile, the settings menu opens on Esc or the pad's settings button, sound_output.c plays.
  * Closing the window ends the process (docs/PLATFORM.md, "The PC's side"). */
 #include "host.h"
+#ifdef KHDAYS_IOS
+#include "mobile_touch.h"
+#endif
 #include "devices.h"
 #include "press_edges.h"
 #include "../render/gpu_present.h"
@@ -298,6 +301,9 @@ static void redraw(SDL_Window *window, SDL_Renderer *renderer)
         khdays_settings_corner_draw(renderer, mod_notices[i].line, corner_rows + i);
     }
     khdays_settings_draw(renderer, window);
+#ifdef KHDAYS_IOS
+    if (!khdays_settings_is_open() && !khdays_devices_gamepad()) khdays_mobile_draw(renderer);
+#endif
     SDL_RenderPresent(renderer);
 }
 
@@ -530,6 +536,9 @@ static SDL_Window *open_window(const KhdaysProfile *profile)
         w = 342 * (k > 1 ? k : 1);
         h = H * (k > 1 ? k : 1);
     }
+#ifdef KHDAYS_IOS
+    return SDL_CreateWindow("358/2 Days", w, h, SDL_WINDOW_FULLSCREEN | SDL_WINDOW_HIGH_PIXEL_DENSITY);
+#endif
     return SDL_CreateWindow("Kingdom Hearts 358/2 Days (native)", w, h, SDL_WINDOW_RESIZABLE);
 }
 
@@ -801,6 +810,10 @@ void khdays_host_tell_no_data(const char *where, const char *broken)
     }
 }
 
+#ifdef KHDAYS_IOS
+static void SDLCALL ios_host_loop(void *unused) { host_thread(unused); }
+#endif
+
 int khdays_host_start(void)
 {
     if (frame_lock == NULL) {
@@ -838,7 +851,12 @@ int khdays_host_start(void)
     }
     ready = SDL_CreateSemaphore(0);
     closed = SDL_CreateSemaphore(0);
-    if (ready == NULL || closed == NULL || SDL_CreateThread(host_thread, "host", NULL) == NULL) {
+    if (ready == NULL || closed == NULL) return 0;
+#ifdef KHDAYS_IOS
+    if (!SDL_RunOnMainThread(ios_host_loop, NULL, false)) {
+#else
+    if (SDL_CreateThread(host_thread, "host", NULL) == NULL) {
+#endif
         return 0;
     }
     SDL_WaitSemaphore(ready);

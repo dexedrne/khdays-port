@@ -11,7 +11,7 @@
 #include "khdays_ds_symbols.h"
 
 #include <string.h>
-#include <windows.h>
+#include "../../host/app/sync.h"
 #undef PlaySound /* windows.h's (winmm's), not the game's */
 
 extern int GetLanguage(void);

@@ -33,7 +33,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <windows.h>
+#include "../../host/app/sync.h"
+#include <SDL3/SDL.h>
 
 #define PIXELS (KHDAYS_SCREEN_W * KHDAYS_SCREEN_H)
 
@@ -111,7 +112,7 @@ static void polygon_caller(const KhdaysG3dPolygon *p, const KhdaysG3dVertex *v)
     fprintf(stderr, "display: 3D polygons from %s\n  first: x %.1f-%.1f y %.1f-%.1f, w %.0f-%.0f, attr %08x tex %08x\n",
             chain, x0, x1, p->ymin, p->ymax, w0, w1, p->attr, p->tex);
     if (chain_count < MAX_CHAINS) {
-        strncpy_s(chains[chain_count].chain, sizeof(chains[0].chain), chain, _TRUNCATE);
+        SDL_strlcpy(chains[chain_count].chain, chain, sizeof(chains[0].chain));
         chains[chain_count++].polygons = 1;
     }
 }
@@ -313,7 +314,7 @@ void khdays_display_init(void)
     shot_dir = getenv("KHDAYS_SHOT_DIR");
     scene_shot_dir = getenv("KHDAYS_SCENE_SHOTS");
     if (scene_shot_dir != NULL) {
-        CreateDirectoryA(scene_shot_dir, NULL);
+        SDL_CreateDirectory(scene_shot_dir);
     }
     profile = getenv("KHDAYS_PROFILE") != NULL;
     headless = getenv("KHDAYS_HEADLESS") != NULL;
@@ -324,7 +325,7 @@ void khdays_display_init(void)
     trace_situation = getenv("KHDAYS_TRACE_SITUATION") != NULL;
     trace_3d_frame = getenv("KHDAYS_TRACE_3D_CALLERS") != NULL ? (u32)atoi(getenv("KHDAYS_TRACE_3D_CALLERS")) : 0;
     if (record_dir != NULL) {
-        CreateDirectoryA(record_dir, NULL);
+        SDL_CreateDirectory(record_dir);
     }
     khdays_ui_parts_init();
     khdays_ui_text_init();
@@ -349,7 +350,7 @@ void khdays_display_init(void)
             shots[shot_count++] = (u32)frame;
             p = end;
         }
-        CreateDirectoryA(shot_dir, NULL);
+        SDL_CreateDirectory(shot_dir);
     }
 }
 
@@ -370,7 +371,7 @@ static int write_bmp(const char *path, const uint32_t *upper, const uint32_t *lo
 {
     FILE *f;
     const unsigned w = KHDAYS_SCREEN_W, h = 2 * KHDAYS_SCREEN_H;
-    if (fopen_s(&f, path, "wb") != 0) {
+    if ((f = fopen(path, "wb")) == NULL) {
         fprintf(stderr, "display: cannot write %s\n", path);
         return 0;
     }
@@ -424,7 +425,7 @@ static void save_mark(u32 frame, const uint32_t *upper, const uint32_t *lower)
     char dir[MAX_PATH], path[MAX_PATH];
     KhdaysPauseView pv;
     snprintf(dir, sizeof(dir), "%s/marks", khdays_host_user_folder());
-    CreateDirectoryA(dir, NULL);
+    SDL_CreateDirectory(dir);
     snprintf(path, sizeof(path), "%s/mark_%u_frame_%05u.bmp", dir, ++mark_count, frame);
     if (write_bmp(path, upper, lower)) {
         khdays_log("mark %u: frame %u saved to %s", mark_count, frame, path);
@@ -736,7 +737,7 @@ static int ui_said(const char *id)
 static void ui_write_bmp(const char *path, const uint32_t *pixels)
 {
     FILE *f;
-    if (fopen_s(&f, path, "wb") != 0) {
+    if ((f = fopen(path, "wb")) == NULL) {
         return;
     }
     fputc('B', f);
@@ -934,7 +935,7 @@ static void record_package(const KhdaysFramePackage *p)
     /* version 14: a vertex has an alpha (ten words) */
     const u32 header[4] = {0x474b5046u /* "FPKG" */, 14, (u32)KHDAYS_FRAME_RECORDED, p->frame};
     snprintf(path, sizeof(path), "%s/frame_%05u.pkg", record_dir, p->frame);
-    if (fopen_s(&f, path, "wb") != 0) {
+    if ((f = fopen(path, "wb")) == NULL) {
         fprintf(stderr, "display: cannot write %s\n", path);
         return;
     }

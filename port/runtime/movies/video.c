@@ -8,7 +8,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <windows.h>
+#include "../../host/app/sync.h"
 
 static LARGE_INTEGER decode_start, blit_start;
 static LONGLONG decode_ticks, blit_ticks; /* QueryPerformanceCounter's */

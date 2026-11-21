@@ -18,7 +18,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <windows.h>
 
 static u64 last_update;
 static u64 alarm_at; /* the cycle timer 1 would overflow at (khdays_alarm_set_after) */

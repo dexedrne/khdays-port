@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import ntpath
 import os
 import re
 import shutil
@@ -213,7 +214,7 @@ def mark_step(state: dict[str, Any], step: str, inputs: dict[str, Any], **more: 
 
 def same_folder(a: str, b: str) -> bool:
     """Whether two folder paths name the same folder, as Windows compares them (case, separators)."""
-    return os.path.normcase(os.path.abspath(a)) == os.path.normcase(os.path.abspath(b))
+    return ntpath.normcase(ntpath.abspath(a)) == ntpath.normcase(ntpath.abspath(b))
 
 
 def hd_made(state: dict[str, Any], step: str, folders: dict[str, str], made: Path) -> bool:

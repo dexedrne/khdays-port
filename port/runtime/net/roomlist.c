@@ -15,7 +15,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <windows.h>
+#include "../../host/app/sync.h"
 
 extern int GetLanguage(void);
 extern void Ov006_UpdateMissionMenuOptionScreen(void);
@@ -574,11 +574,14 @@ static void test_typing(Text *t)
     static int read;
     const char *end;
     if (!read) {
-        const DWORD size = GetEnvironmentVariableA("KHDAYS_TEST_TYPE", NULL, 0); /* its end included */
+        const char *value = getenv("KHDAYS_TEST_TYPE");
         read = 1;
-        texts = size > 1 ? (char *)malloc(size) : NULL;
-        if (texts != NULL && GetEnvironmentVariableA("KHDAYS_TEST_TYPE", texts, size) == size - 1) {
-            length = size - 1;
+        if (value && *value) {
+            texts = malloc(strlen(value) + 1);
+            if (texts) {
+                strcpy(texts, value);
+                length = strlen(texts);
+            }
         }
     }
     if (at >= length) {

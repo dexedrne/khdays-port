@@ -38,7 +38,7 @@ void snd7_random_reset(void)
     random_state = snd7_segment_u32(0x03807404u);
 }
 
-__declspec(noreturn) void snd7_stop(const char *format, ...)
+_Noreturn void snd7_stop(const char *format, ...)
 {
     va_list args;
     fprintf(stderr, "khdays-native: native sound driver: ");

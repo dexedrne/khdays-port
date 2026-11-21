@@ -14,7 +14,19 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#ifdef _WIN32
 #include <windows.h>
+#else
+#include <errno.h>
+#include <sys/mman.h>
+#include <unistd.h>
+#ifdef __APPLE__
+#include <mach/mach.h>
+#include <mach/vm_map.h>
+#else
+#include <fcntl.h>
+#endif
+#endif
 
 #define MAIN_RAM_SIZE 0x400000u
 #define DTCM_BASE 0x027e0000u
@@ -25,10 +37,17 @@
 /* The stacks area: 256 MB, each stack after an inaccessible granule. */
 #define STACKS_BASE 0x0c000000u
 #define STACKS_SIZE 0x10000000u
-#define WINDOW_SIZE ((SIZE_T)KHDAYS_HEAPS_END)
+#define WINDOW_SIZE ((size_t)KHDAYS_HEAPS_END)
 
 _Static_assert(STACKS_BASE + STACKS_SIZE <= KHDAYS_HEAPS_BASE, "the stacks area runs into the game's heaps");
 
+/* The host address of a DS address (window.h's W). */
+static unsigned char *at(unsigned address)
+{
+    return khdays_window + address;
+}
+
+#ifdef _WIN32
 /* The window is one placeholder (Windows 10 1803 and later) whose regions are replaced by their
  * memory; nothing else can be placed in it. */
 typedef PVOID(WINAPI *VirtualAlloc2Fn)(HANDLE, PVOID, SIZE_T, ULONG, ULONG, MEM_EXTENDED_PARAMETER *, ULONG);
@@ -36,12 +55,6 @@ typedef PVOID(WINAPI *MapViewOfFile3Fn)(HANDLE, HANDLE, PVOID, ULONG64, SIZE_T, 
                                         ULONG);
 static VirtualAlloc2Fn virtual_alloc2;
 static MapViewOfFile3Fn map_view_of_file3;
-
-/* The host address of a DS address (window.h's W). */
-static unsigned char *at(unsigned address)
-{
-    return khdays_window + address;
-}
 
 static int fail(const char *what, unsigned address)
 {
@@ -106,6 +119,27 @@ static void keep_free(unsigned start, unsigned end)
     }
 }
 
+#else
+static int fail(const char *what, unsigned address)
+{
+    fprintf(stderr, "memory map: %s at 0x%08x: %s\n", what, address, strerror(errno));
+    return 0;
+}
+
+static int plain(const char *what, unsigned address, unsigned size)
+{
+    unsigned base = address & ~(GRANULE - 1);
+    unsigned end = (address + size + GRANULE - 1) & ~(GRANULE - 1);
+    return mprotect(at(base), end - base, PROT_READ | PROT_WRITE) == 0 || fail(what, base);
+}
+
+static int view(int fd, const char *what, unsigned address, unsigned offset, unsigned size)
+{
+    return mmap(at(address), size, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_FIXED, fd, offset) != MAP_FAILED ||
+           fail(what, address);
+}
+#endif
+
 /* The registers' own memory (io_regs.c, IO16/IO32, the C's plain registers), in the window at
  * KHDAYS_IO_VIEW. Their DS addresses stay inaccessible (io_guard.c). */
 u8 *khdays_io_host;
@@ -115,6 +149,7 @@ u8 *khdays_io2_host;
  * each. */
 static int empty_gba_slot(void)
 {
+#ifdef _WIN32
     HANDLE section = CreateFileMappingA(INVALID_HANDLE_VALUE, NULL, PAGE_READWRITE, 0, GRANULE, NULL);
     u8 *fill;
     DWORD old;
@@ -129,6 +164,15 @@ static int empty_gba_slot(void)
     }
     VirtualProtect(at(0x08000000), GRANULE, PAGE_READONLY, &old);
     VirtualProtect(at(0x0a000000), GRANULE, PAGE_READONLY, &old);
+#else
+    const unsigned addresses[] = {0x08000000, 0x0a000000};
+    for (unsigned i = 0; i < 2; ++i) {
+        unsigned address = addresses[i];
+        if (!plain("GBA slot", address, GRANULE)) return 0;
+        memset(at(address), 0xff, GRANULE);
+        if (mprotect(at(address), GRANULE, PROT_READ) != 0) return fail("GBA read protection", address);
+    }
+#endif
     return 1;
 }
 
@@ -183,6 +227,7 @@ static void window_stack_release(void *stack, size_t size)
 
 /* The game's heaps: reserved without memory; the first access to a granule commits it, so the PC
  * gives the game only what it touches. Committed memory stays committed. */
+#ifdef _WIN32
 static SRWLOCK heaps_lock = SRWLOCK_INIT;
 static volatile LONG64 heaps_committed;
 static DWORD heaps_granule;
@@ -329,21 +374,77 @@ static int reserve_window(void)
                 (unsigned long long)WINDOW_SIZE, GetLastError());
         return 0;
     }
+#else
+static size_t page_size;
+#ifndef __APPLE__
+static int pagemap;
+#endif
+
+static int reserve_heaps(void)
+{
+    long size = sysconf(_SC_PAGESIZE);
+    if (size <= 0 || GRANULE % size) return fail("unsupported host page size", KHDAYS_HEAPS_BASE);
+    page_size = (size_t)size;
+#ifndef __APPLE__
+    pagemap = open("/proc/self/pagemap", O_RDONLY | O_CLOEXEC);
+    if (pagemap < 0) return fail("open process page map", KHDAYS_HEAPS_BASE);
+#endif
+    return plain("game heaps", KHDAYS_HEAPS_BASE, KHDAYS_HEAPS_END - KHDAYS_HEAPS_BASE);
+}
+
+int khdays_heaps_touched(KhdaysRef reference, unsigned *rest)
+{
+    uintptr_t page = (uintptr_t)at(reference) / page_size;
+    *rest = page_size - reference % page_size;
+#ifdef __APPLE__
+    integer_t disposition, refs;
+    if (vm_map_page_query(mach_task_self(), page * page_size, &disposition, &refs) != KERN_SUCCESS)
+        return 1; /* read it normally if the kernel cannot classify it */
+    return disposition != 0;
+#else
+    uint64_t entry;
+    if (pread(pagemap, &entry, sizeof entry, page * sizeof entry) != sizeof entry) return 1;
+    return (entry >> 62) != 0; /* present or swapped */
+#endif
+}
+
+unsigned long long khdays_heaps_committed(void)
+{
+    unsigned long long total = 0;
+    unsigned rest;
+    for (unsigned address = KHDAYS_HEAPS_BASE; address < KHDAYS_HEAPS_END; address += rest)
+        if (khdays_heaps_touched(address, &rest)) total += rest;
+    return total;
+}
+
+void khdays_heaps_reset(void)
+{
+    if (mmap(at(KHDAYS_HEAPS_BASE), KHDAYS_HEAPS_END - KHDAYS_HEAPS_BASE, PROT_READ | PROT_WRITE,
+             MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED, -1, 0) == MAP_FAILED) {
+        fail("reset game heaps", KHDAYS_HEAPS_BASE);
+        exit(13);
+    }
+}
+
+static int reserve_window(void)
+{
+    void *window = mmap(NULL, WINDOW_SIZE, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    if (window == MAP_FAILED) return fail("reserve window", 0);
+    khdays_window = window;
+#endif
     khdays_snd7_native_set_ds_base((uintptr_t)khdays_window);
     khdays_context_stack_source(window_stack, window_stack_release);
     return 1;
 }
 
-int khdays_memory_map(void)
+#ifdef _WIN32
+typedef HANDLE RamSection;
+#else
+typedef int RamSection;
+#endif
+
+static int map_ram(RamSection ram)
 {
-    HANDLE ram;
-    if (!reserve_window()) {
-        return 0;
-    }
-    ram = CreateFileMappingA(INVALID_HANDLE_VALUE, NULL, PAGE_READWRITE, 0, MAIN_RAM_SIZE, NULL);
-    if (ram == NULL) {
-        return fail("main RAM section", 0x02000000);
-    }
     /* Main RAM and its mirrors; the second leaves the DTCM's granule out. The two upper mirrors hold the
      * headers' heaps instead, unless the heaps are made as on the DS. */
     if (!view(ram, "main RAM", 0x02000000, 0, MAIN_RAM_SIZE) ||
@@ -360,6 +461,25 @@ int khdays_memory_map(void)
     } else if (!plain("the headers' heaps", KHDAYS_HEADERS_BASE, 0x03000000u - KHDAYS_HEADERS_BASE)) {
         return 0;
     }
+    return 1;
+}
+
+int khdays_memory_map(void)
+{
+    if (!reserve_window()) return 0;
+#ifdef _WIN32
+    HANDLE ram = CreateFileMappingA(INVALID_HANDLE_VALUE, NULL, PAGE_READWRITE, 0, MAIN_RAM_SIZE, NULL);
+    if (ram == NULL) return fail("main RAM section", 0x02000000);
+    int mapped = map_ram(ram);
+    CloseHandle(ram);
+#else
+    FILE *ram = tmpfile();
+    if (!ram) return fail("main RAM backing file", 0x02000000);
+    int mapped = (ftruncate(fileno(ram), MAIN_RAM_SIZE) == 0 || fail("size main RAM", 0x02000000)) &&
+                 map_ram(fileno(ram));
+    fclose(ram);
+#endif
+    if (!mapped) return 0;
     /* The I/O registers' and the IPC/card ports' DS ranges stay inaccessible: the port reaches them. */
     if (!(plain("ITCM", 0x01ff8000, 0x8000) && plain("DTCM", DTCM_BASE, 0x4000) &&
           plain("shared WRAM", 0x03000000, 0x8000) &&

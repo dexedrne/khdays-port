@@ -2,6 +2,11 @@
 // each file through the VFS so a mod replaces it. The layout is the original's (a bigger mod file past
 // the end, the FAT patched); gaps read 0xff; the three ranges the extraction drops stop the process.
 #include "rom.h"
+#ifndef _WIN32
+#include "../../host/app/cartridge.h"
+static const unsigned char *cartridge;
+static size_t cartridge_size;
+#endif
 #include "text_patches.h"
 
 extern "C" {
@@ -198,6 +203,36 @@ void read_region(KhdaysRomReader &reader, const Region &r, u32 offset, u8 *out, 
 
 extern "C" int khdays_rom_init(void)
 {
+#ifndef _WIN32
+    const char *rom = std::getenv("KHDAYS_ROM");
+#ifdef KHDAYS_IOS
+    rom = "Kh358.nds"; // process working directory is the app's Documents
+#endif
+    if (rom) {
+        cartridge = khdays_cartridge_open(rom, &cartridge_size);
+        if (!cartridge) {
+            khdays_host_tell_no_data(rom, "Expected a supported European 358/2 Days cartridge");
+            return 0;
+        }
+        header.assign(cartridge, cartridge + 512);
+        const u32 fnt = le32(cartridge + 0x40), fat_at = le32(cartridge + 0x48);
+        std::map<u32, std::string> names;
+        walk_fnt({cartridge + fnt, cartridge + fnt + le32(cartridge + 0x44)}, 0xf000, "", names);
+        fat.assign(cartridge + fat_at, cartridge + fat_at + le32(cartridge + 0x4c));
+        game_paths.resize(fat.size() / 8);
+        for (u32 id = 0; id < game_paths.size(); ++id) {
+            char unnamed[32];
+            std::snprintf(unnamed, sizeof(unnamed), "_unnamed/file_%05u.bin", id);
+            const auto found = names.find(id);
+            game_paths[id] = found == names.end() ? unnamed : found->second;
+            file_ids[game_paths[id]] = id;
+            u32 begin = le32(fat.data() + 8 * id), end = le32(fat.data() + 8 * id + 4);
+            if (end > begin) regions.push_back({begin, end, GAME_FILE, static_cast<int>(id)});
+        }
+        std::sort(regions.begin(), regions.end(), [](const Region &a, const Region &b) { return a.start < b.start; });
+        return 1;
+    }
+#endif
     if (!khdays::vfs::autodetect_data_root()) {
         std::error_code ec;
         const fs::path searched = fs::absolute("data/extracted", ec);
@@ -310,6 +345,14 @@ namespace {
 // thread can read them with a reader of its own.
 void read_rom(KhdaysRomReader &reader, u32 offset, u8 *destination, u32 size)
 {
+#ifndef _WIN32
+    if (cartridge) {
+        size_t count = offset < cartridge_size ? std::min<size_t>(size, cartridge_size - offset) : 0;
+        if (count) std::memcpy(destination, cartridge + offset, count);
+        std::memset(destination + count, 0xff, size - count);
+        return;
+    }
+#endif
     while (size != 0) {
         // The last region starting at or before offset.
         auto it = std::upper_bound(regions.begin(), regions.end(), offset,

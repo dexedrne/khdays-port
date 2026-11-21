@@ -5,7 +5,9 @@
 #define KHDAYS_DECOMP_COMPAT_H
 
 /* GCC/mwcc attributes (alignment hints) have no MSVC C spelling here. */
+#ifdef _MSC_VER
 #define __attribute__(x)
+#endif
 
 /* The ARM `clz` the decomp spells as `asm { clz x, x }` (prepare.py rewrites
  * it to this). */
@@ -45,7 +47,12 @@ struct khdays_data_init {
 #ifdef __cplusplus
 extern "C"
 #endif
-    __declspec(noreturn) void
+#ifdef _MSC_VER
+    __declspec(noreturn)
+#else
+    __attribute__((noreturn))
+#endif
+    void
     khdays_abi_gap(const char *what);
 #define KHDAYS_ABI_GAP(what) (khdays_abi_gap(what), 0)
 

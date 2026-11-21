@@ -8,7 +8,15 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#ifdef _WIN32
 #include <windows.h>
+#else
+#include <sys/stat.h>
+#include <unistd.h>
+#include <limits.h>
+#define MAX_PATH PATH_MAX
+#endif
+#include <SDL3/SDL.h>
 
 void khdays_log(const char *format, ...)
 {
@@ -111,11 +119,9 @@ int main(int argc, char **argv)
     if (argc > 1) {
         snprintf(folder, sizeof(folder), "%s", argv[1]);
     } else {
-        char temp[MAX_PATH];
-        GetTempPathA(sizeof(temp), temp);
-        snprintf(folder, sizeof(folder), "%skhdays-saveslots-test-%lu", temp, (unsigned long)GetCurrentProcessId());
+        snprintf(folder, sizeof(folder), "khdays-saveslots-%llu", (unsigned long long)SDL_GetPerformanceCounter());
     }
-    CreateDirectoryA(folder, NULL);
+    CHECK(SDL_CreateDirectory(folder));
 
     /* the chip: file 1 a save (day 10, count 5), file 2 deleted as the game deletes (its copies'
      * first 0x20 bytes zero, the rest left), file 3 broken (both copies' digests wrong) */
@@ -249,7 +255,13 @@ int main(int argc, char **argv)
 
     /* a commit that fails (file 50 read-only): the game told so, and file 50 as it is on the disk,
      * nothing of it left for the next commit */
+#ifdef _WIN32
     SetFileAttributesA(path, FILE_ATTRIBUTE_READONLY);
+#else
+    char parent[MAX_PATH + 32];
+    snprintf(parent, sizeof(parent), "%s/slots", folder);
+    CHECK(chmod(parent, 0500) == 0); /* POSIX rename checks the containing directory */
+#endif
     khdays_slots_show_page(47);
     make_copy(copy, 52, 14);
     game_write(slot_at(2, 0), copy, KHDAYS_SLOT_COPY);
@@ -258,14 +270,18 @@ int main(int argc, char **argv)
     CHECK(!khdays_slots_changed());
     CHECK(khdays_slots_state(49, &state) == KHDAYS_SLOT_SAVED && khdays_slots_field(state, 0, 9) == 51);
     CHECK(khdays_slots_commit());
+#ifdef _WIN32
     SetFileAttributesA(path, FILE_ATTRIBUTE_NORMAL);
+#else
+    CHECK(chmod(parent, 0700) == 0);
+#endif
     khdays_slots_set_port_view(0);
 
-    DeleteFileA(path);
+    SDL_RemovePath(path);
     snprintf(path, sizeof(path), "%s/slots", folder);
-    RemoveDirectoryA(path);
+    SDL_RemovePath(path);
     if (argc <= 1) {
-        RemoveDirectoryA(folder);
+        SDL_RemovePath(folder);
     }
     if (failures == 0) {
         printf("khdays-saveslots-test: all checks passed\n");

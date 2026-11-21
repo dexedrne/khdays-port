@@ -325,7 +325,12 @@ std::unique_ptr<Model> load(const std::string &name, const std::string &path, co
     assets::ImportedModel mod;
     try {
         const auto extension = u8(path).extension();
+#ifdef KHDAYS_HEADLESS_TEST_BUILD
+        if (extension == ".fbx" || extension == ".FBX") throw std::runtime_error("FBX is unavailable in the headless cartridge test");
+        mod = assets::import_gltf(u8(path));
+#else
         mod = extension == ".fbx" || extension == ".FBX" ? assets::import_fbx(u8(path)) : assets::import_gltf(u8(path));
+#endif
     } catch (const std::exception &e) {
         std::fprintf(stderr, "models: %s cannot be read (%s): the game's is drawn\n", path.c_str(), e.what());
         khdays_log("models: %s cannot be read (%s): the game's is drawn", path.c_str(), e.what());

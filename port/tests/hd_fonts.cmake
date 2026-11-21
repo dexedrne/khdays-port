@@ -5,9 +5,11 @@ set(KHDAYS_FONT_TEST_TARGETS)
 function(khdays_font_test name)
     set(target khdays-font-${name}-test)
     add_executable(${target} ${ARGN})
-    target_compile_options(${target} PRIVATE /W4 /WX
+    if(MSVC)
+        target_compile_options(${target} PRIVATE /W4 /WX
                            $<$<COMPILE_LANGUAGE:C>:/std:c17>
                            $<$<COMPILE_LANGUAGE:CXX>:/std:c++20 /EHsc>)
+    endif()
     target_compile_definitions(${target} PRIVATE _CRT_SECURE_NO_WARNINGS)
     add_test(NAME khdays-font-${name} COMMAND ${target})
     set_tests_properties(khdays-font-${name} PROPERTIES WORKING_DIRECTORY "${KHDAYS_FONT_TEST_DIR}")
@@ -24,9 +26,17 @@ khdays_font_test(nftr ../assets/tests/test_font.cpp ../assets/src/font.cpp ../as
 target_include_directories(khdays-font-nftr-test PRIVATE ../assets/include)
 
 add_library(khdays-font-scope-impl OBJECT runtime/menus/camp.c)
-target_compile_options(khdays-font-scope-impl PRIVATE /W1 /std:c17 /Gy /Gw)
+if(MSVC)
+    target_compile_options(khdays-font-scope-impl PRIVATE /W1 /std:c17 /Gy /Gw)
+else()
+    target_compile_options(khdays-font-scope-impl PRIVATE -ffunction-sections -fdata-sections)
+endif()
 khdays_font_test(scope tests/camp_font_scope_test.c $<TARGET_OBJECTS:khdays-font-scope-impl>)
-target_link_options(khdays-font-scope-test PRIVATE /OPT:REF)
+if(MSVC)
+    target_link_options(khdays-font-scope-test PRIVATE /OPT:REF)
+else()
+    target_link_options(khdays-font-scope-test PRIVATE -Wl,--gc-sections)
+endif()
 
 set(KHDAYS_FONT_LAYOUT_GEN "${KHDAYS_GEN}/rewritten/libs/nns/g2d/calls")
 add_library(khdays-font-layout-impl OBJECT
@@ -39,9 +49,18 @@ add_library(khdays-font-layout-impl OBJECT
     "${KHDAYS_GEN}/rewritten/src/engine/Obj_ForwardInnerPayload.c"
     "${KHDAYS_GEN}/rewritten/src/engine/Text_DrawWithShadow.c"
     "${KHDAYS_GEN}/rewritten/src/engine/Text_DrawDirectional_2.c")
-target_compile_options(khdays-font-layout-impl PRIVATE /W1 /std:c17 /Zp4)
+if(MSVC)
+    target_compile_options(khdays-font-layout-impl PRIVATE /W1 /std:c17 /Zp4)
+else()
+    target_compile_options(khdays-font-layout-impl PRIVATE -fpack-struct=4)
+    target_link_libraries(khdays-font-canvas-test PRIVATE m)
+    target_link_libraries(khdays-font-follow-test PRIVATE m)
+endif()
 target_include_directories(khdays-font-layout-impl PRIVATE compat "${KHDAYS_GEN}")
 khdays_font_test(layout tests/font_layout_test.c $<TARGET_OBJECTS:khdays-font-layout-impl>)
+if(NOT MSVC)
+    target_link_libraries(khdays-font-layout-test PRIVATE m)
+endif()
 target_include_directories(khdays-font-layout-test PRIVATE compat "${KHDAYS_GEN}")
 add_custom_target(khdays-font-tests DEPENDS ${KHDAYS_FONT_TEST_TARGETS})
 

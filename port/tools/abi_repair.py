@@ -470,14 +470,18 @@ def pad_short_calls(texts: dict[str, str]) -> tuple[dict[str, str], list[str]]:
         code = strip_comments_code(texts[rel][d.body[0] : d.body[1]], mask(rel)[d.body[0] : d.body[1]])
         return [param_words(p) for p in params], [names[k] for k in written_params(code, names)]
 
+    callers: dict[str, list[str]] = collections.defaultdict(list)
+    for rel, text in texts.items():
+        for name in set(re.findall(r"\b([A-Za-z_]\w*)\s*\(", text)):
+            if name in defined_in:
+                callers[name].append(rel)
+
     edits: dict[str, list[tuple[int, int, str]]] = collections.defaultdict(list)
     report = []
     for name in sorted(defined_in):
-        pattern = re.compile(rf"\b{re.escape(name)}\s*\(")
         linked = taken(name, def_file[name]) if name in def_file else None
-        for rel, text in texts.items():
-            if name not in text or not pattern.search(text):
-                continue
+        for rel in callers[name]:
+            text = texts[rel]
             definition = taken(name, rel) if rel in defined_in[name] else linked
             if not definition or not definition[0]:
                 continue

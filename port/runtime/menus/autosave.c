@@ -22,7 +22,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <windows.h>
+#include "../../host/app/sync.h"
 
 extern int Ov008_BeginSaveToSlot(KhdaysRef menu, u32 slot);
 extern int Ov008_PollSaveCardOp(KhdaysRef menu, int slot, int phase, int arg);
@@ -133,7 +133,7 @@ void khdays_autosave_mission_end(void)
 {
     const int cleared = khdays_autosave_results_cleared() || testing();
     if (trace()) {
-        fprintf(stderr, "autosave: results recorded, %s (setting %ld)\n", cleared ? "cleared" : "not cleared", mode);
+        fprintf(stderr, "autosave: results recorded, %s (setting %ld)\n", cleared ? "cleared" : "not cleared", (long)mode);
     }
     if (cleared && mode != MODE_OFF) {
         owed = 1;

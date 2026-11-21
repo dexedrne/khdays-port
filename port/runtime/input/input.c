@@ -23,6 +23,7 @@
 #include "../../host/app/host.h"
 
 #include <stdio.h>
+#include <SDL3/SDL.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -120,7 +121,7 @@ static const struct {
     {"MENU_RIGHT", KHDAYS_ACTION_MENU_RIGHT},
 };
 
-__declspec(noreturn) static void bad_script(const char *item)
+_Noreturn static void bad_script(const char *item)
 {
     fprintf(stderr, "KHDAYS_INPUT: cannot read \"%s\"\n", item);
     exit(2);
@@ -169,9 +170,9 @@ void khdays_input_init(void)
     if (text == NULL) {
         return;
     }
-    copy = _strdup(text);
+    copy = SDL_strdup(text);
     script = (Step *)calloc(strlen(text) / 2 + 1, sizeof(Step));
-    for (item = strtok_s(copy, " ", &rest); item != NULL; item = strtok_s(NULL, " ", &rest)) {
+    for (item = SDL_strtok_r(copy, " ", &rest); item != NULL; item = SDL_strtok_r(NULL, " ", &rest)) {
         Step step;
         char *end;
         if (item[0] == 's' || item[0] == 'u') {
@@ -185,21 +186,21 @@ void khdays_input_init(void)
         if (step.kind == '@') {
             if (strcmp(end + 1, "-") == 0) {
                 step.x = -1;
-            } else if (sscanf_s(end + 1, "%d,%d", &step.x, &step.y) != 2) {
+            } else if (sscanf(end + 1, "%d,%d", &step.x, &step.y) != 2) {
                 bad_script(item);
             }
         } else if (step.kind == '~' || step.kind == '^') {
-            if (sscanf_s(end + 1, "%d,%d", &step.x, &step.y) != 2) {
+            if (sscanf(end + 1, "%d,%d", &step.x, &step.y) != 2) {
                 bad_script(item);
             }
         } else if (step.kind == '+' || step.kind == '-') {
             for (size_t n = 0; n < sizeof(key_names) / sizeof(key_names[0]); ++n) {
-                if (_stricmp(end + 1, key_names[n].name) == 0) {
+                if (SDL_strcasecmp(end + 1, key_names[n].name) == 0) {
                     step.keys = key_names[n].bit;
                 }
             }
             for (size_t n = 0; n < sizeof(action_names) / sizeof(action_names[0]); ++n) {
-                if (_stricmp(end + 1, action_names[n].name) == 0) {
+                if (SDL_strcasecmp(end + 1, action_names[n].name) == 0) {
                     step.actions = action_names[n].bit;
                 }
             }
@@ -211,7 +212,7 @@ void khdays_input_init(void)
         }
         script[script_len++] = step;
     }
-    free(copy);
+    SDL_free(copy);
 }
 
 /* The anchors begin in the order the script gives them: the first that has

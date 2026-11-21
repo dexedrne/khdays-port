@@ -13,7 +13,7 @@
 
 #include <stdio.h>
 #include <string.h>
-#include <windows.h>
+#include "../../host/app/sync.h"
 
 extern int GetLanguage(void);
 int khdays_language_wanted(void); /* language.c */

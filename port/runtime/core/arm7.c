@@ -33,7 +33,7 @@ enum {
     TAG_CTRDG = 13,
 };
 
-__declspec(noreturn) static void unimplemented(u32 tag, u32 data, const char *what)
+_Noreturn static void unimplemented(u32 tag, u32 data, const char *what)
 {
     fprintf(stderr, "arm7: tag %u, data 0x%07x: %s\n", tag, data, what);
     fflush(stderr);

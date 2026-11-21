@@ -4,7 +4,18 @@
 # port/tools/prepare.py to generate KHDAYS_GEN.
 cmake_minimum_required(VERSION 3.25)
 set(CMAKE_MSVC_DEBUG_INFORMATION_FORMAT Embedded)  # /Z7: no shared PDB to contend on
-project(khdays_native C CXX ASM_MASM)
+project(khdays_native C CXX)
+if(MSVC)
+    enable_language(ASM_MASM)
+else()
+    enable_language(ASM)
+    set(CMAKE_C_STANDARD 17)
+    set(CMAKE_CXX_STANDARD 20)
+endif()
+if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
+    enable_language(OBJC)
+    add_compile_definitions(KHDAYS_IOS)
+endif()
 if(WIN32)
     enable_language(RC)  # the executable icon (resources/game.rc)
 endif()
@@ -14,9 +25,13 @@ endif()
 file(STRINGS "${CMAKE_CURRENT_SOURCE_DIR}/../VERSION" KHDAYS_VERSION LIMIT_COUNT 1)
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/../VERSION")
 # only the files that tell it (the update check, the settings menu's corner): a new version rebuilds them alone
-set_source_files_properties(host/app/updates.c host/settings/settings_menu.cpp
+set_source_files_properties(host/app/updates.c host/app/updates_ios.c host/settings/settings_menu.cpp
                             PROPERTIES COMPILE_DEFINITIONS "KHDAYS_VERSION=\"${KHDAYS_VERSION}\"")
 
+option(KHDAYS_HEADLESS_TEST_BUILD "Build the Linux cartridge acceptance runner without optional replacement assets" OFF)
+if(KHDAYS_HEADLESS_TEST_BUILD AND NOT CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    message(FATAL_ERROR "The headless test build requires Linux")
+endif()
 set(KHDAYS_GEN "" CACHE PATH "Output directory of port/tools/prepare.py")
 if(NOT EXISTS "${KHDAYS_GEN}/sources.cmake")
     message(FATAL_ERROR "KHDAYS_GEN does not hold prepare.py's output: ${KHDAYS_GEN}")
@@ -24,14 +39,16 @@ endif()
 include("${KHDAYS_GEN}/sources.cmake")
 
 if(NOT CMAKE_SIZEOF_VOID_P EQUAL 8)
-    message(FATAL_ERROR "The native build is for x64 Windows: use port/build.py")
+    message(FATAL_ERROR "The native game requires a 64-bit host")
 endif()
 
 set(DECOMP "${CMAKE_CURRENT_SOURCE_DIR}/../external/khdays-decomp")
 
 # Optimized code keeps its frame pointers: the crash and stall reports walk
 # the stack by them (diag.c).
-add_compile_options($<$<AND:$<CONFIG:Release>,$<NOT:$<COMPILE_LANGUAGE:ASM_MASM>>>:/Oy->)
+if(MSVC)
+    add_compile_options($<$<AND:$<CONFIG:Release>,$<NOT:$<COMPILE_LANGUAGE:ASM_MASM>>>:/Oy->)
+endif()
 # The C library's portable functions (getenv, fopen, sscanf...), not MSVC's _s versions of them.
 add_compile_definitions(_CRT_SECURE_NO_WARNINGS)
 
@@ -49,7 +66,11 @@ FetchContent_Declare(
         SHA256=f07b958a9ac5020fb7a44cadb957f658b2149c3c8abb4f63145fac9303249db7
     DOWNLOAD_EXTRACT_TIMESTAMP TRUE
 )
-FetchContent_MakeAvailable(SDL3)
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND NOT FETCHCONTENT_SOURCE_DIR_SDL3)
+    find_package(SDL3 CONFIG REQUIRED)
+else()
+    FetchContent_MakeAvailable(SDL3)
+endif()
 
 # PNG in and out (the HD replacements and the graphics dump): stb, at the
 # commit THIRD_PARTY_NOTICES.md records (stb has no release tags; a shallow
@@ -74,7 +95,9 @@ FetchContent_MakeAvailable(cgltf)
 
 # FBX in (a mod's models): ufbx's three files, read through
 # assets/src/fbx.cpp.
-include("${CMAKE_CURRENT_SOURCE_DIR}/../assets/fetch_ufbx.cmake")
+if(NOT KHDAYS_HEADLESS_TEST_BUILD)
+    include("${CMAKE_CURRENT_SOURCE_DIR}/../assets/fetch_ufbx.cmake")
+endif()
 
 # FLAC for the replaced sounds (mods/<Mod>/sounds): dr_flac, one header, at
 # the commit THIRD_PARTY_NOTICES.md records. Only its source is wanted
@@ -96,7 +119,9 @@ FetchContent_Declare(
     GIT_TAG c871f2be022ece7ef4f64230b4fb8e1fb9eb6023
     SOURCE_SUBDIR none
 )
-FetchContent_MakeAvailable(pl_mpeg)
+if(NOT KHDAYS_HEADLESS_TEST_BUILD)
+    FetchContent_MakeAvailable(pl_mpeg)
+endif()
 
 # The settings menu's drawing: Dear ImGui (MIT, the release the studio pins) with its SDL_Renderer
 # backend; the menu takes its input itself and has its own font, so no platform backend and none of
@@ -118,7 +143,9 @@ add_library(khdays-host-imgui STATIC
 target_include_directories(khdays-host-imgui PUBLIC "${imgui_SOURCE_DIR}" "${imgui_SOURCE_DIR}/backends")
 target_compile_definitions(khdays-host-imgui PUBLIC IMGUI_DISABLE_DEFAULT_FONT IMGUI_DISABLE_OBSOLETE_FUNCTIONS)
 target_link_libraries(khdays-host-imgui PUBLIC SDL3::SDL3)
-target_compile_options(khdays-host-imgui PRIVATE /std:c++20 /EHsc)
+if(MSVC)
+    target_compile_options(khdays-host-imgui PRIVATE /std:c++20 /EHsc)
+endif()
 
 # Gameplay mods' scripts (runtime/scripts): Lua 5.4 (MIT), its core and the libraries the mods are
 # given; not its interpreter, compiler, files, debug or modules.
@@ -129,12 +156,20 @@ FetchContent_Declare(
     DOWNLOAD_EXTRACT_TIMESTAMP TRUE
     SOURCE_SUBDIR none
 )
+if(KHDAYS_HEADLESS_TEST_BUILD)
+    find_package(PkgConfig REQUIRED)
+    pkg_check_modules(lua54 REQUIRED IMPORTED_TARGET lua5.4)
+    add_library(khdays-lua ALIAS PkgConfig::lua54)
+else()
 FetchContent_MakeAvailable(lua)
 file(GLOB khdays_lua_sources "${lua_SOURCE_DIR}/src/*.c")
 list(FILTER khdays_lua_sources EXCLUDE REGEX "/(lua|luac|liolib|ldblib|loadlib|linit)\\.c$")
 add_library(khdays-lua STATIC ${khdays_lua_sources})
 target_include_directories(khdays-lua PUBLIC "${lua_SOURCE_DIR}/src")
-target_compile_options(khdays-lua PRIVATE /W3 /wd4244 /wd4324)
+if(MSVC)
+    target_compile_options(khdays-lua PRIVATE /W3 /wd4244 /wd4324)
+endif()
+endif()
 
 # The menu's font, in the executable so that it alone still updates a
 # release: Roboto Medium (Apache License 2.0), from ImGui's own archive.
@@ -167,6 +202,12 @@ FetchContent_Declare(
     DOWNLOAD_EXTRACT_TIMESTAMP TRUE
     SOURCE_SUBDIR none
 )
+if(KHDAYS_HEADLESS_TEST_BUILD)
+    file(WRITE "${KHDAYS_MENU_FONT_DIR}/pad_icons.h" "#include <array>
+struct PadIcon { const char *name; const unsigned char *png; unsigned size; };
+static constexpr std::array<PadIcon, 0> khdays_pad_icons{};
+")
+else()
 FetchContent_MakeAvailable(kenney_input_prompts)
 set(KHDAYS_PAD_ICONS
     "Xbox Series:xbox_button_color_a" "Xbox Series:xbox_button_color_b" "Xbox Series:xbox_button_color_x"
@@ -246,41 +287,30 @@ if(NOT pad_icons_old STREQUAL pad_icons_text)
     file(WRITE "${KHDAYS_MENU_FONT_DIR}/pad_icons.h" "${pad_icons_text}")
 endif()
 
+endif()
+
 # The DS's 2D display engines and its 3D rendering engine in software, pure
 # (they read the state they are given): the references the port's own
 # graphics are checked against, shared by the game and the tests.
 add_library(khdays-gpu STATIC gpu/gpu2d.c gpu/gpu3d.c gpu/texdecode.c gpu/vram_map.c)
-target_compile_options(khdays-gpu PRIVATE /W4 /std:c17)
+if(MSVC)
+    target_compile_options(khdays-gpu PRIVATE /W4 /std:c17)
+endif()
 
 # The sound: the DS's channels and mixer, the port's own sound driver and
 # mixer, the music streams' reader, the replacements and the offline render.
 # Plain C with no SDL and no operating system calls, shared by the game and
 # khdays-sound-test.
-add_library(khdays-sound STATIC
-    sound/archive.c
-    sound/bus.c
-    sound/categories.c
-    sound/channels.c
-    sound/mix_ds.c
-    sound/mix_pc.c
-    sound/render.c
-    sound/replace.c
-    sound/snd7_alarm.c
-    sound/snd7_bank.c
-    sound/snd7_channel.c
-    sound/snd7_command.c
-    sound/snd7_driver.c
-    sound/snd7_hw.c
-    sound/snd7_os.c
-    sound/snd7_seq.c
-    sound/snd7_tables.c
-    sound/stream_reader.c
-    sound/third_party_decoders.c)
-target_compile_options(khdays-sound PRIVATE /W4 /std:c17)
+add_subdirectory(sound)
+if(MSVC)
+    target_compile_options(khdays-sound PRIVATE /W4 /std:c17)
+endif()
 # Ogg Vorbis (stb_vorbis.c) and FLAC (dr_flac.h), compiled in with the rest:
 # no library loads with the process. Their own code keeps its warnings.
-target_include_directories(khdays-sound PRIVATE "${stb_SOURCE_DIR}" "${dr_libs_SOURCE_DIR}")
-set_source_files_properties(sound/third_party_decoders.c PROPERTIES COMPILE_OPTIONS "/W0")
+
+if(MSVC)
+    set_source_files_properties(sound/third_party_decoders.c TARGET_DIRECTORY khdays-sound PROPERTIES COMPILE_OPTIONS "/W0")
+endif()
 
 # The port's own graphics: the frame description made from what
 # the game asks for, and its composition -- shared with the GPU's shaders --
@@ -290,13 +320,27 @@ add_library(khdays-gfx STATIC
     gfx/describe.c
     gfx/g3d_geometry.c
     gfx/g3d_interp.c)
-target_compile_options(khdays-gfx PRIVATE /W4 /std:c17)
+if(MSVC)
+    target_compile_options(khdays-gfx PRIVATE /W4 /std:c17)
+elseif(UNIX)
+    target_link_libraries(khdays-gfx PUBLIC m)
+endif()
 
 # The input layer -- the control profile and its settings file, the
 # bindings, the devices, the settings menu (its FPS and ping displays in the
 # game's own font), and the runtime's pure parts of the enhancements (analog movement's
 # arithmetic, the command-menu sequencer) -- shared by the game and
 # khdays-input-test.
+if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
+    set(host_instance host/app/instance_ios.c)
+    set(host_updates host/app/updates_ios.c)
+elseif(NOT WIN32)
+    set(host_instance host/app/instance_posix.c)
+    set(host_updates host/app/updates_ios.c)
+else()
+    set(host_instance host/app/instance_win.c)
+    set(host_updates host/app/updates.c host/app/update_install_win.c host/net/https_win.c)
+endif()
 add_library(khdays-host-input STATIC
     host/app/profile.c
     host/app/bindings.c
@@ -310,24 +354,25 @@ add_library(khdays-host-input STATIC
     runtime/scripts/queue.c          # the Mods page: what it asks of the mods,
     runtime/scripts/view.c           # and what it shows of them
     host/render/png_io.c
-    host/app/instance_win.c          # the player's slot on the PC
+    ${host_instance}
     runtime/input/analog.c
     runtime/input/sequencers.c
     ../assets/src/font.cpp       # the port's NFTR decoder
     ../assets/src/message.cpp)   # its LZ decompression
 target_include_directories(khdays-host-input PRIVATE ../assets/include "${stb_SOURCE_DIR}" "${KHDAYS_MENU_FONT_DIR}")
 target_link_libraries(khdays-host-input PUBLIC SDL3::SDL3 khdays-host-imgui)
-target_compile_options(khdays-host-input PRIVATE
-    $<$<COMPILE_LANGUAGE:C>:/W4 /std:c17>
-    $<$<COMPILE_LANGUAGE:CXX>:/W4 /std:c++20 /EHsc>)
+if(MSVC)
+    target_compile_options(khdays-host-input PRIVATE
+        $<$<COMPILE_LANGUAGE:C>:/W4 /std:c17>
+        $<$<COMPILE_LANGUAGE:CXX>:/W4 /std:c++20 /EHsc>)
+endif()
 
 # The game: every source the DS build links and the HAL, rewritten with every pointer a reference
 # (prepare.py, port/tools/references), each including only compat/khdays_references.h and the build's
 # numbers. Struct members align to at most 4 bytes as mwcc lays them out (/Zp4); mwcc's -char signed
 # -enum int are MSVC's own (docs/BUILD.md, "Compiler settings worth knowing").
-add_library(khdays-game OBJECT ${KHDAYS_REWRITTEN})
-target_include_directories(khdays-game PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/compat" "${KHDAYS_GEN}")
-target_compile_options(khdays-game PRIVATE /W0 /Zp4 /std:c17)
+# Keep the generated files' per-object Make targets out of the top-level Makefile.
+add_subdirectory(tools/game)
 
 # The MobiClip frame decoder as the decomp reconstructed it in portable C++
 # (libs/mobiclip/video/portable; not in the DS build, which links the ARM
@@ -338,23 +383,14 @@ add_library(khdays-mobiclip OBJECT
     "${MOBICLIP_PORTABLE}/mobiclip_frame_core.cpp"
     "${MOBICLIP_PORTABLE}/mobiclip_reference.cpp")
 target_include_directories(khdays-mobiclip PRIVATE "${MOBICLIP_PORTABLE}")
-target_compile_options(khdays-mobiclip PRIVATE /std:c++20 /EHsc)
+if(MSVC)
+    target_compile_options(khdays-mobiclip PRIVATE /std:c++20 /EHsc)
+endif()
 
 # The one-screen picture's compositions (ui/compositions/port_days.txt),
 # compiled in as bytes so the executable needs no file beside it; edited, they
 # are read again.
-function(khdays_embed_text name file)
-    set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${file}")
-    file(READ "${file}" hex HEX)
-    string(LENGTH "${hex}" digits)
-    math(EXPR size "${digits} / 2")
-    string(REGEX REPLACE "([0-9a-f][0-9a-f])" "0x\\1," bytes "${hex}")
-    file(CONFIGURE OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/${name}.c" CONTENT
-"/* Generated by port/CMakeLists.txt from ${file}. */
-const unsigned char khdays_${name}[] = {${bytes} 0};
-const unsigned int khdays_${name}_size = ${size}u;
-")
-endfunction()
+include(tools/embed_text.cmake)
 set(KHDAYS_PORT_COMPOSITIONS "${CMAKE_CURRENT_SOURCE_DIR}/ui/compositions/port_days.txt")
 khdays_embed_text(compositions_port "${KHDAYS_PORT_COMPOSITIONS}")
 # The theater's HD scenes in place of the game's (movies/hd_scenes.txt), compiled in the same way.
@@ -362,8 +398,15 @@ khdays_embed_text(scenes_port "${CMAKE_CURRENT_SOURCE_DIR}/movies/hd_scenes.txt"
 # The Stop magic's numbers and words the game never made (runtime/battle/stop_magic.txt), the same way.
 khdays_embed_text(stop_magic_text "${CMAKE_CURRENT_SOURCE_DIR}/runtime/battle/stop_magic.txt")
 
+if(WIN32)
+    set(native_host_sources host/movies/movie_hd_win.c resources/game.rc runtime/core/clock.c host/app/context_win.c
+        host/app/context_x64.asm host/app/files_win.c host/net/net_win.c)
+else()
+    set(native_host_sources host/movies/movie_hd_unavailable.c runtime/sound/dump_path_posix.cpp runtime/core/clock_sdl.c host/app/context_posix.c host/app/context_arm64.S
+        host/app/files_posix.c host/app/cartridge.c host/net/net_posix.c)
+endif()
 add_executable(khdays-native
-    resources/game.rc   # the executable's icon (port/resources/game.ico)
+    ${native_host_sources}
     $<TARGET_OBJECTS:khdays-game>
     $<TARGET_OBJECTS:khdays-mobiclip>
     runtime/core/arm7.c
@@ -371,7 +414,6 @@ add_executable(khdays-native
     runtime/core/boot.c
     runtime/core/card.c
     runtime/core/data_init.c
-    runtime/core/clock.c
     runtime/input/controls_hooks.c
     runtime/core/diag.c
     runtime/display/display.c
@@ -434,13 +476,8 @@ add_executable(khdays-native
     runtime/core/start.c
     runtime/core/vram.c
     host/app/window.c
-    host/app/updates.c                 # a newer release, told of on the title,
+    ${host_updates}
     host/app/release_version.c
-    host/app/update_install_win.c      # its installer run to update this copy
-    host/net/https_win.c               # ... asked of GitHub through WinHTTP
-    host/app/context_win.c
-    host/app/context_x64.asm             # the contexts' switch (host/app/context.h)
-    host/app/files_win.c
     host/app/sound_output.c
     host/settings/settings_sample.cpp       # the settings menu's volume samples
     host/render/gpu_present.c
@@ -470,18 +507,15 @@ add_executable(khdays-native
     runtime/core/files.c
     runtime/core/session_log.c
     runtime/movies/video.c
-    runtime/movies/video_mod.c
     runtime/movies/movie_hd.c             # an HD video in a movie's place
     runtime/movies/scene_trace.c          # KHDAYS_TRACE_SCENES: the field's event scripts
     runtime/movies/scene_map.c            # the theater's HD scenes: the map
     runtime/movies/scenes.c               # its files, and the scene the event runs
-    host/movies/movie_hd_win.c            # the HD video through Media Foundation
     host/movies/movie_subtitles.c         # the theater's subtitles over the HD video
     host/movies/theater_music.c           # ... and its music
     host/movies/music_schedule.c
     runtime/net/net_session.c          # the multiplayer's session
     runtime/net/mp_predict.c           # a guest's prediction of its own character
-    host/net/net_win.c                 # ... on Winsock
     ui/elements.c                  # the port's own presentation
     ui/layout.c
     ui/parts.c
@@ -511,7 +545,6 @@ add_executable(khdays-native
     ../assets/src/audio.cpp        # the sound archive's streams and waves, for the menu's samples
     ../assets/src/gltf_export.cpp
     ../assets/src/gltf.cpp         # a mod's models (runtime/mods/models.cpp)
-    ../assets/src/fbx.cpp          # ... as FBX
     ../assets/src/image.cpp        # their textures in PNG, JPEG, TGA, BMP (its own stb_image)
     ../assets/src/graphics2d.cpp   # the game's 2D sheets, for the rooms' signal
     ../assets/src/cell.cpp         # their cells
@@ -520,22 +553,34 @@ target_include_directories(khdays-native PRIVATE ../assets/include)
 # the frame decoder's state (runtime/movies/video.c)
 set_source_files_properties(runtime/movies/video.c PROPERTIES INCLUDE_DIRECTORIES "${MOBICLIP_PORTABLE}")
 # the port's wording holds the game's own texts in UTF-16 literals, written in UTF-8
-set_source_files_properties(runtime/core/text_patches.cpp PROPERTIES COMPILE_OPTIONS "/utf-8")
+if(MSVC)
+    set_source_files_properties(runtime/core/text_patches.cpp PROPERTIES COMPILE_OPTIONS "/utf-8")
+endif()
 # the window's areas (runtime/core/memory.c), the function references' table
 # (runtime/core/window.c), the DS addresses the port reads (khdays_ds_symbols.h)
 target_include_directories(khdays-native PRIVATE "${KHDAYS_GEN}")
 target_include_directories(khdays-native PRIVATE "${stb_SOURCE_DIR}" "${cgltf_SOURCE_DIR}" "${pl_mpeg_SOURCE_DIR}"
                                                   "${ufbx_SOURCE_DIR}")
-target_compile_options(khdays-native PRIVATE
-    $<$<COMPILE_LANGUAGE:C>:/W4 /std:c17>
-    $<$<COMPILE_LANGUAGE:CXX>:/W4 /std:c++20 /EHsc>)
+if(MSVC)
+    target_compile_options(khdays-native PRIVATE
+        $<$<COMPILE_LANGUAGE:C>:/W4 /std:c17>
+        $<$<COMPILE_LANGUAGE:CXX>:/W4 /std:c++20 /EHsc>)
+endif()
 
 # Media Foundation (host/movies/movie_hd_win.c): Windows' own libraries.
 # ufbx, as it is: third-party, not held to the port's warnings.
-add_library(khdays-ufbx STATIC "${ufbx_SOURCE_DIR}/ufbx.c")
-target_link_libraries(khdays-native PRIVATE khdays-ufbx)
+if(KHDAYS_HEADLESS_TEST_BUILD)
+    target_compile_definitions(khdays-native PRIVATE KHDAYS_HEADLESS_TEST_BUILD)
+    target_sources(khdays-native PRIVATE runtime/movies/video_mod_cartridge.c)
+else()
+    target_sources(khdays-native PRIVATE runtime/movies/video_mod.c ../assets/src/fbx.cpp)
+    add_library(khdays-ufbx STATIC "${ufbx_SOURCE_DIR}/ufbx.c")
+    target_link_libraries(khdays-native PRIVATE khdays-ufbx)
+endif()
 target_link_libraries(khdays-native PRIVATE khdays-lua)
-target_link_libraries(khdays-native PRIVATE khdays-gfx khdays-gpu khdays-sound khdays-host-input SDL3::SDL3 dbghelp winmm delayimp
+target_link_libraries(khdays-native PRIVATE khdays-gfx khdays-gpu khdays-sound khdays-host-input SDL3::SDL3)
+if(WIN32)
+target_link_libraries(khdays-native PRIVATE dbghelp winmm delayimp
                       mfplat mfreadwrite mfuuid ole32 ws2_32 iphlpapi advapi32 winhttp)
 # The DS's own addresses are held, inaccessible, first thing in main
 # (memory.c), so that an access at one stops the game. DLLs loaded with the
@@ -555,26 +600,76 @@ target_link_options(khdays-native PRIVATE
     /SUBSYSTEM:WINDOWS
     /ENTRY:mainCRTStartup)
 
+endif()
+
+if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
+    set(ios "${CMAKE_CURRENT_SOURCE_DIR}/../tools/ios")
+    target_sources(khdays-host-input PRIVATE host/app/mobile_touch.c)
+    target_sources(khdays-native PRIVATE "${ios}/ios_main.m" "${ios}/Settings.bundle/Root.plist")
+    set_source_files_properties("${ios}/Settings.bundle/Root.plist" PROPERTIES MACOSX_PACKAGE_LOCATION "Resources/Settings.bundle")
+    set_target_properties(khdays-native PROPERTIES MACOSX_BUNDLE TRUE
+        MACOSX_BUNDLE_INFO_PLIST "${ios}/Info.plist"
+        XCODE_ATTRIBUTE_PRODUCT_BUNDLE_IDENTIFIER beer.vyvanse.khdays
+        XCODE_ATTRIBUTE_TARGETED_DEVICE_FAMILY "1,2")
+    target_link_libraries(khdays-native PRIVATE "-framework GameController" "-framework UIKit")
+endif()
+# The input layer's tests (controls, bindings, devices through SDL's virtual
+# gamepads): ctest --test-dir build/port/obj-x64
+if(WIN32 OR CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    enable_testing()
+    add_executable(khdays-input-test tests/input_test.c ../assets/src/filesystem.cpp)
+    target_include_directories(khdays-input-test PRIVATE ../assets/include)
+    target_link_libraries(khdays-input-test PRIVATE khdays-host-input)
+    if(MSVC)
+        target_compile_options(khdays-input-test PRIVATE
+            $<$<COMPILE_LANGUAGE:C>:/W4 /std:c17>
+            $<$<COMPILE_LANGUAGE:CXX>:/W4 /std:c++20 /EHsc>)
+    endif()
+    add_test(NAME khdays-input COMMAND khdays-input-test)
+    if(MSVC OR CMAKE_C_COMPILER_ID STREQUAL "Clang")
+        include(tests/fuzz.cmake)
+    endif()
+    # Recorded frame packages (KHDAYS_RECORD_FRAMES, in saves/frames: the
+    # player's game data, never in the repository) checked against the pictures
+    # the game showed; skipped without recordings.
+    add_executable(khdays-render-test tests/render_test.c host/render/gpu_raster3d.c host/render/gpu_hd.c runtime/display/frame_package.c)
+    target_link_libraries(khdays-render-test PRIVATE khdays-gpu khdays-gfx SDL3::SDL3)
+    if(MSVC)
+        target_compile_options(khdays-render-test PRIVATE /W4 /std:c17)
+    endif()
+    add_test(NAME khdays-render COMMAND khdays-render-test "${CMAKE_CURRENT_SOURCE_DIR}/../saves/frames")
+    set_tests_properties(khdays-render PROPERTIES SKIP_RETURN_CODE 77)
+
+endif()
+if(NOT WIN32)
+    set_property(TARGET khdays-native PROPERTY ENABLE_EXPORTS ON)
+    if(CMAKE_DL_LIBS)
+        target_link_libraries(khdays-native PRIVATE ${CMAKE_DL_LIBS})
+    endif()
+    if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+        enable_testing()
+        find_package(Python3 REQUIRED COMPONENTS Interpreter)
+        include(tests/hd_fonts.cmake)
+        set(KHDAYS_TEST_ROM "" CACHE FILEPATH "European cartridge for the native title test")
+        if(KHDAYS_TEST_ROM)
+            add_test(NAME khdays-title COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/../tools/ios/test_title.py"
+                "$<TARGET_FILE:khdays-native>" "${KHDAYS_TEST_ROM}")
+            set_tests_properties(khdays-title PROPERTIES TIMEOUT 120)
+        endif()
+    endif()
+    return() # host tests have a standalone build in tools/ios
+endif()
+
 # Renders a DeSmuME savestate's display state and compares it with what
 # DeSmuME showed (port/tools/savestate_gpu.py extracts the input).
 add_executable(khdays-gpu-test tests/savestate_test.c)
 target_link_libraries(khdays-gpu-test PRIVATE khdays-gpu)
 target_compile_options(khdays-gpu-test PRIVATE /W4 /std:c17)
 
-# The input layer's tests (controls, bindings, devices through SDL's virtual
-# gamepads): ctest --test-dir build/port/obj-x64
-enable_testing()
-add_executable(khdays-input-test tests/input_test.c ../assets/src/filesystem.cpp)
-target_include_directories(khdays-input-test PRIVATE ../assets/include)
-target_link_libraries(khdays-input-test PRIVATE khdays-host-input)
-target_compile_options(khdays-input-test PRIVATE
-    $<$<COMPILE_LANGUAGE:C>:/W4 /std:c17>
-    $<$<COMPILE_LANGUAGE:CXX>:/W4 /std:c++20 /EHsc>)
-add_test(NAME khdays-input COMMAND khdays-input-test)
 # The course of an HD movie against a scripted game and video.
 add_executable(khdays-movie-hd-test tests/movie_hd_test.c runtime/movies/movie_hd.c runtime/movies/scene_map.c
                runtime/core/clock.c)
-target_link_libraries(khdays-movie-hd-test PRIVATE winmm)
+target_link_libraries(khdays-movie-hd-test PRIVATE winmm SDL3::SDL3)
 target_compile_options(khdays-movie-hd-test PRIVATE /W4 /std:c17)
 add_test(NAME khdays-movie-hd COMMAND khdays-movie-hd-test)
 add_executable(khdays-scenes-test tests/scenes_test.c runtime/movies/scene_map.c)
@@ -700,15 +795,7 @@ add_test(NAME khdays-saveslots COMMAND khdays-saveslots-test)
 
 # Gameplay mods' scripts (runtime/scripts): manifests, the load order, the sandbox, the events and the
 # state names, against a game of the test's own.
-add_executable(khdays-script-test tests/script_test.c runtime/scripts/scripts.c runtime/scripts/sandbox.c
-               runtime/scripts/manifest.c runtime/scripts/order.c runtime/scripts/folders.cpp
-               runtime/scripts/mods_log.c runtime/scripts/queue.c runtime/scripts/api_events.c
-               runtime/scripts/api_mod.c runtime/scripts/api_state.c runtime/scripts/api_menus.c
-               runtime/scripts/api_actions.c runtime/scripts/api_v2.c runtime/scripts/api_enemies.c
-               runtime/scripts/api_run.c runtime/scripts/api_screens.c runtime/scripts/api_deck.c
-               runtime/scripts/api_time.c runtime/scripts/api_memory.c runtime/scripts/screens.c
-               runtime/scripts/view.c runtime/core/sha256.c)
-target_link_libraries(khdays-script-test PRIVATE khdays-lua SDL3::SDL3)
+include(tests/scripts.cmake)
 target_compile_options(khdays-script-test PRIVATE
     $<$<COMPILE_LANGUAGE:C>:/W4 /std:c17>
     $<$<COMPILE_LANGUAGE:CXX>:/W4 /std:c++20 /EHsc>)
@@ -719,7 +806,7 @@ add_test(NAME khdays-script COMMAND khdays-script-test)
 # replacements; no game data needed.
 add_executable(khdays-sound-test tests/sound_test.c runtime/sound/sound_bridge.c runtime/sound/sound_mods.c
     runtime/core/session_log.c host/app/instance_win.c)
-target_link_libraries(khdays-sound-test PRIVATE khdays-sound)
+target_link_libraries(khdays-sound-test PRIVATE khdays-sound SDL3::SDL3)
 target_compile_options(khdays-sound-test PRIVATE /W4 /std:c17)
 # The native driver's part reads its tables from the ROM's ARM7 binary
 # (the player's, extracted into data/; skipped without it).
@@ -727,40 +814,7 @@ file(GLOB KHDAYS_ARM7_BIN "${CMAKE_CURRENT_SOURCE_DIR}/../data/extracted/*/syste
 list(GET KHDAYS_ARM7_BIN 0 KHDAYS_ARM7_BIN_FIRST)
 add_test(NAME khdays-sound COMMAND khdays-sound-test "${KHDAYS_ARM7_BIN_FIRST}")
 
-# Recorded frame packages (KHDAYS_RECORD_FRAMES, in saves/frames: the
-# player's game data, never in the repository) checked against the pictures
-# the game showed; skipped without recordings.
-add_executable(khdays-render-test tests/render_test.c host/render/gpu_raster3d.c host/render/gpu_hd.c runtime/display/frame_package.c)
-target_link_libraries(khdays-render-test PRIVATE khdays-gpu khdays-gfx SDL3::SDL3)
-target_compile_options(khdays-render-test PRIVATE /W4 /std:c17)
-add_test(NAME khdays-render COMMAND khdays-render-test "${CMAKE_CURRENT_SOURCE_DIR}/../saves/frames")
-set_tests_properties(khdays-render PROPERTIES SKIP_RETURN_CODE 77)
-
 # ---- The quality tools -------------------------------------------
-
-# The fuzzers: libFuzzer through MSVC, with AddressSanitizer, over a reader of
-# what arrives from outside (the server's datagrams, a router's answers, the
-# game's session, a mod's mod.ini and the load order); not in Debug (MSVC's AddressSanitizer does not combine with
-# its run-time checks). Each replays its kept inputs (port/fuzz/<name>/)
-# and fuzzes 15 s in the test suite; port/tools/fuzz.py runs them longer.
-set(KHDAYS_FUZZ_SECONDS 15)
-function(khdays_fuzz_target name)
-    if(CMAKE_BUILD_TYPE STREQUAL "Debug")
-        return()
-    endif()
-    add_executable(khdays-fuzz-${name} ${ARGN})
-    # /DEBUG: a program database beside it, for the reports' lines
-    target_compile_options(khdays-fuzz-${name} PRIVATE /W4 /std:c17 /fsanitize=address /fsanitize=fuzzer)
-    target_link_options(khdays-fuzz-${name} PRIVATE /DEBUG /INCREMENTAL:NO)
-    # libFuzzer writes what it finds to the first directory: the tree's, so
-    # the kept inputs (the second) change only through port/tools/fuzz.py
-    set(corpus "${CMAKE_CURRENT_SOURCE_DIR}/fuzz/${name}")
-    set(found "${CMAKE_BINARY_DIR}/fuzz-${name}-corpus")
-    file(MAKE_DIRECTORY "${found}")
-    add_test(NAME khdays-fuzz-${name}
-             COMMAND khdays-fuzz-${name} -max_total_time=${KHDAYS_FUZZ_SECONDS} -timeout=10
-                     "-artifact_prefix=${CMAKE_BINARY_DIR}/fuzz-${name}-" "${found}" "${corpus}")
-endfunction()
 
 # The memory-checking build (port/build.py --asan, build/port/obj-asan-x64):
 # AddressSanitizer on the port's own code -- not on the decompilation's
@@ -792,15 +846,6 @@ endif()
 if(KHDAYS_ASAN_DLL AND NOT CMAKE_BUILD_TYPE STREQUAL "Debug")
     file(COPY "${KHDAYS_ASAN_DLL}" DESTINATION "${CMAKE_BINARY_DIR}")
 endif()
-
-khdays_fuzz_target(server fuzz/fuzz_server.c server/server_core.c host/net/net_stub.c)
-khdays_fuzz_target(portmap fuzz/fuzz_portmap.c server/portmap.c host/net/net_stub.c)
-khdays_fuzz_target(session fuzz/fuzz_session.c host/net/net_stub.c runtime/core/session_log.c host/app/instance_win.c
-                   runtime/core/sha1.c)
-if(TARGET khdays-fuzz-session)
-    target_link_libraries(khdays-fuzz-session PRIVATE SDL3::SDL3)
-endif()
-khdays_fuzz_target(mods fuzz/fuzz_mods.c runtime/scripts/manifest.c runtime/scripts/order.c runtime/core/sha256.c)
 
 # The static analysis (port/tools/analyze.py, in the Release tree's tests): the port's own sources of
 # each target compiled again with /analyze and their own flags, not linked, built only when asked;

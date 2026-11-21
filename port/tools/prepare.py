@@ -2112,6 +2112,8 @@ def ui_hook(text: str, rel: str, name: str, part: str, port: str, kind: str = "r
         port_decl = f"extern void {port}({', '.join(told) or 'void'});"
     else:
         port_decl = f"extern {head.strip()} {port}({text[d.params[0] : d.params[1]]});"
+    if port == "khdays_ui_text_freed":
+        port_decl = "extern void khdays_ui_text_freed(const void *heap, const void *block);"
     if kind == "around":
         if not void:
             raise SystemExit("UI around hooks require a void function")
@@ -3811,9 +3813,8 @@ def main() -> int:
                 ds_data[n] = a
     converted: dict[str, int] = {}
     # C-defined globals the DS names nowhere: statics of a split unit (PHANTOMS).
-    phantom_names = {
-        n for n in owners if n not in ds_data and not any(n in {s for s, _, _ in m.symbols} for m in modules)
-    }
+    ds_names = {name for m in modules for name, _, _ in m.symbols}
+    phantom_names = owners.keys() - ds_names
     for rel in list(texts):
         text = texts[rel]
         module = module_id(module_of[rel])

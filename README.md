@@ -24,6 +24,11 @@ game code is the original's, readable and moddable; the platform layer is new.
 
 AI-assisted coding tools were used to help make this possible.
 
+
+## iPhone and iPad (work in progress)
+
+This branch adds an iOS build: SDL for iOS, the two DS screens stacked or side by side (made for foldables too), touch on the bottom screen, on-screen controls when no controller is connected, and MFi / Switch Pro / DualSense controllers. It reaches the title screen on Linux; the iPhone build is being tested. You still need your own European copy of the game; put it in the app's Documents folder as `Kh358.nds`. Build steps are in [tools/ios/MAC-STEPS.md](tools/ios/MAC-STEPS.md).
+
 ## Status
 
 The whole game runs natively from the decompilation: the title and its menus,

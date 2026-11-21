@@ -15,7 +15,13 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#ifdef _WIN32
 #include <windows.h>
+#else
+#include <limits.h>
+#define MAX_PATH PATH_MAX
+#endif
+#include <SDL3/SDL.h>
 
 #define RENDER_RATE 48000u
 #define RENDER_LIMIT 600u /* seconds */
@@ -48,6 +54,7 @@ static uint32_t rd32(const uint8_t *p)
 
 /* --- Where it goes ------------------------------------------------------------------ */
 
+#ifdef _WIN32
 /* The repository `path` is in (the nearest directory above it, or it, with
  * a .git), into `repository`; 0 if none. */
 static int repository_of(const char *path, char *repository, size_t size)
@@ -92,6 +99,8 @@ int khdays_dump_allowed(const char *directory, char *full, size_t size)
     return 0;
 }
 
+#endif
+
 /* Every directory above the file at `path`. */
 static void make_directories(const char *path)
 {
@@ -101,7 +110,7 @@ static void make_directories(const char *path)
         if ((*p == '/' || *p == '\\') && p != at && p[-1] != ':') {
             const char c = *p;
             *p = '\0';
-            CreateDirectoryA(at, NULL);
+            SDL_CreateDirectory(at);
             *p = c;
         }
     }

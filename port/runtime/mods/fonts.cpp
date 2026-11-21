@@ -7,6 +7,10 @@ extern "C" {
 extern "C" int khdays_mods_find(const char *relative, char *path, int size);
 
 #include <charconv>
+#ifdef __APPLE__
+#include <cerrno>
+#include <xlocale.h>
+#endif
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -250,8 +254,16 @@ private:
                     fail("invalid JSON exponent");
             }
             if (fractional) {
+#ifdef __APPLE__
+                // Older Apple libc++ ships only the integer overload of from_chars.
+                char *end;
+                errno = 0;
+                value.real = strtod_l(text_.c_str() + begin, &end, LC_C_LOCALE);
+                if (errno == ERANGE || end != text_.data() + pos_)
+#else
                 const auto result = std::from_chars(text_.data() + begin, text_.data() + pos_, value.real);
                 if (result.ec != std::errc{} || result.ptr != text_.data() + pos_)
+#endif
                     fail("JSON number out of range");
                 if (!std::isfinite(value.real))
                     fail("nonfinite JSON number");

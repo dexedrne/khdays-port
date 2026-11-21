@@ -16,7 +16,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <windows.h>
+#include "../../host/app/sync.h"
+#include <SDL3/SDL.h>
 
 extern int GetLanguage(void);     /* the game's: gLangPath's language */
 int khdays_language_wanted(void); /* language.c */
@@ -377,7 +378,7 @@ void khdays_movie_hd_stream(int slot, const char *path, int replaced)
         return;
     }
     for (int i = 0; i < part_count; ++i) {
-        if (GetFileAttributesA(parts[i].file) == INVALID_FILE_ATTRIBUTES) {
+        if (!SDL_GetPathInfo(parts[i].file, NULL)) {
             if (tell_once(movie)) {
                 khdays_log("movie %s: no HD video (%s); the game's movie plays", movie, parts[i].file);
             }
@@ -710,7 +711,7 @@ static int scene_course(const char *key, uint32_t event_state, char *const *stem
     }
     for (int i = 0; i < count; ++i) {
         khdays_movie_hd_scene_file(stems[i], file, sizeof(file));
-        if (GetFileAttributesA(file) == INVALID_FILE_ATTRIBUTES) {
+        if (!SDL_GetPathInfo(file, NULL)) {
             if (tell_once(key)) {
                 khdays_log("scene %s: no HD video %s; the game's scene plays", key, file);
                 fprintf(stderr, "scenes: %s: no HD video %s; the game's scene plays\n", key, file);
@@ -813,7 +814,7 @@ int khdays_movie_hd_voice(const char *key, char *const *stems, int count)
             break;
         }
         khdays_movie_hd_scene_file(stems[i], files[i], 1024);
-        if (GetFileAttributesA(files[i]) == INVALID_FILE_ATTRIBUTES) {
+        if (!SDL_GetPathInfo(files[i], NULL)) {
             if (tell_once(key)) {
                 khdays_log("scene %s: no HD video %s; the game's page alone", key, files[i]);
                 fprintf(stderr, "scenes: %s: no HD video %s; the game's page alone\n", key, files[i]);

@@ -10,11 +10,17 @@
 #include "../runtime/movies/movie_hd.h"
 #include "../runtime/movies/scenes.h"
 
+#ifdef _WIN32
 #include <direct.h>
+#define chdir _chdir
+#else
+#include <unistd.h>
+#endif
 #include <stdarg.h>
 #include <stdio.h>
 #include <string.h>
-#include <windows.h>
+#include <SDL3/SDL.h>
+#include <stdlib.h>
 
 static int failures;
 #define CHECK(c)                                                                                                       \
@@ -187,22 +193,26 @@ static int held(void)
 /* A scene's course past the game's fade to black (half a second): its videos begin at the next poll. */
 static void past_the_fade(void)
 {
-    Sleep(600);
+    SDL_Delay(600);
     khdays_movie_hd_poll();
 }
 
+#ifndef _WIN32
+_Noreturn void khdays_hal_unimplemented(const char *what)
+{
+    fprintf(stderr, "clock: %s\n", what);
+    abort();
+}
+#endif
+
 int main(void)
 {
-    char folder[MAX_PATH], previous[MAX_PATH];
+    char folder[80];
+    char *previous = SDL_GetCurrentDirectory();
     const uint16_t START = KHDAYS_KEY_START, A = KHDAYS_KEY_A;
-    GetCurrentDirectoryA(MAX_PATH, previous);
-    GetTempPathA(MAX_PATH, folder);
-    strncat(folder, "khdays-movie-hd-test", MAX_PATH - strlen(folder) - 1);
-    _mkdir(folder);
-    SetCurrentDirectoryA(folder);
-    _mkdir("data");
-    _mkdir("data/cutscenes");
-    _mkdir("data/cutscenes/cinematics");
+    snprintf(folder, sizeof(folder), "khdays-movie-%llu", (unsigned long long)SDL_GetPerformanceCounter());
+    if (!previous || !SDL_CreateDirectory(folder) || chdir(folder)) return 1;
+    SDL_CreateDirectory("data/cutscenes/cinematics");
     touch("data/cutscenes/cinematics/hd802.mp4");
     touch("data/cutscenes/cinematics/hd843.mp4");
     khdays_clock_init();
@@ -250,9 +260,9 @@ int main(void)
 
     /* a mod's video before the player's own */
     mod_has_843 = 1;
-    _mkdir("mods");
-    _mkdir("mods/m");
-    _mkdir("mods/m/movies");
+    SDL_CreateDirectory("mods");
+    SDL_CreateDirectory("mods/m");
+    SDL_CreateDirectory("mods/m/movies");
     touch("mods/m/movies/hd843.mp4");
     khdays_movie_hd_stream(1, "843.z", 0);
     CHECK(strcmp(opened_path, "mods/m/movies/hd843.mp4") == 0);
@@ -288,7 +298,7 @@ int main(void)
         khdays_movie_hd_host_buttons(0);
         khdays_movie_hd_host_buttons(KHDAYS_KEY_DOWN);
         CHECK(khdays_movie_hd_movie_pause(&selected, &lit, &language) && selected == 1 && lit == 1);
-        Sleep(300); /* past 16 frames: the entry's other look */
+        SDL_Delay(300); /* past 16 frames: the entry's other look */
         CHECK(khdays_movie_hd_movie_pause(&selected, &lit, &language) && lit == 2);
         khdays_movie_hd_host_buttons(0);
         khdays_movie_hd_host_buttons(A); /* Skip */
@@ -384,7 +394,7 @@ int main(void)
     CHECK(held());
     {
         const u64 a = khdays_clock_cycles();
-        Sleep(20);
+        SDL_Delay(20);
         CHECK(khdays_clock_cycles() == a); /* the time stands still */
     }
     status_now = 1;
@@ -392,7 +402,7 @@ int main(void)
     CHECK(!held());
     {
         const u64 a = khdays_clock_cycles();
-        Sleep(20);
+        SDL_Delay(20);
         CHECK(khdays_clock_cycles() > a);
     }
     khdays_movie_hd_game_buttons(0);
@@ -460,7 +470,7 @@ int main(void)
         khdays_movie_hd_host_buttons(START); /* no pause before the videos */
         khdays_movie_hd_poll();
         CHECK(!khdays_movie_hd_showing() && !khdays_movie_hd_scene_paused());
-        Sleep(600);
+        SDL_Delay(600);
         CHECK(khdays_movie_hd_game_level() == 0.0f && !khdays_movie_hd_showing()); /* black, until the poll */
         khdays_movie_hd_poll();
         CHECK(khdays_movie_hd_showing() && held() && muted && started && khdays_movie_hd_game_level() == 0.0f);
@@ -481,7 +491,7 @@ int main(void)
         CHECK(*(uint32_t *)(event + 0x588) == 1 && sound_effects_stopped == stopped_before + 1);
         CHECK(khdays_movie_hd_scene_ended() == 1); /* the port's skip: the videos were watched */
         CHECK(!khdays_movie_hd_showing() && !muted && !held() && khdays_movie_hd_game_level() < 0.5f);
-        Sleep(600);
+        SDL_Delay(600);
         CHECK(khdays_movie_hd_game_level() == 1.0f); /* up again */
         khdays_movie_hd_game_buttons(0);
         khdays_movie_hd_game_buttons(0);
@@ -570,9 +580,9 @@ int main(void)
         CHECK(khdays_movie_hd_voice("mnl#0", stems, 1) == 0 && voices == 1); /* movies = pc or ds */
         graphics_flags = KHDAYS_HOST_MOVIES_HD;
     }
-    DeleteFileA("data/cutscenes/cinematics/hd000.mp4");
-    DeleteFileA("data/cutscenes/cinematics/hd010.mp4");
-    DeleteFileA("data/cutscenes/cinematics/hd011.mp4");
+    SDL_RemovePath("data/cutscenes/cinematics/hd000.mp4");
+    SDL_RemovePath("data/cutscenes/cinematics/hd010.mp4");
+    SDL_RemovePath("data/cutscenes/cinematics/hd011.mp4");
 
     /* the scene map's movies: hd833 played in two parts, the first for 833, the second before hd848 for
      * 848, each with its subtitles; the game's own 834; the video shown last (a scene it shows too is
@@ -633,9 +643,9 @@ int main(void)
         khdays_movie_hd_reset();
         CHECK(!khdays_movie_hd_last_shown("hd802")); /* the game's reset forgets it */
         khdays_scene_map_free(&scene_map);
-        DeleteFileA("data/cutscenes/cinematics/hd833.mp4");
-        DeleteFileA("data/cutscenes/cinematics/hd834.mp4");
-        DeleteFileA("data/cutscenes/cinematics/hd848.mp4");
+        SDL_RemovePath("data/cutscenes/cinematics/hd833.mp4");
+        SDL_RemovePath("data/cutscenes/cinematics/hd834.mp4");
+        SDL_RemovePath("data/cutscenes/cinematics/hd848.mp4");
     }
 
     /* failing to open: the game's movie, said once */
@@ -644,13 +654,14 @@ int main(void)
     khdays_movie_hd_stream(1, "/mv/802.mods", 0);
     CHECK(!khdays_movie_hd_showing() && told_cannot == 1);
 
-    DeleteFileA("data/cutscenes/cinematics/hd802.mp4");
-    DeleteFileA("data/cutscenes/cinematics/hd843.mp4");
-    RemoveDirectoryA("data/cutscenes/cinematics");
-    RemoveDirectoryA("data/cutscenes");
-    RemoveDirectoryA("data");
-    SetCurrentDirectoryA(previous);
-    RemoveDirectoryA(folder);
+    SDL_RemovePath("data/cutscenes/cinematics/hd802.mp4");
+    SDL_RemovePath("data/cutscenes/cinematics/hd843.mp4");
+    SDL_RemovePath("data/cutscenes/cinematics");
+    SDL_RemovePath("data/cutscenes");
+    SDL_RemovePath("data");
+    if (chdir(previous)) return 1;
+    SDL_free(previous);
+    SDL_RemovePath(folder);
     if (failures == 0) {
         printf("movie_hd_test: all checks passed\n");
     }

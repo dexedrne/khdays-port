@@ -64,6 +64,7 @@ const cgltf_image* base_color_image(const cgltf_primitive& primitive) {
 
 // A small JSON reader for the port's own extras (khdays_sky, khdays_scroll,
 // khdays_frames, khdays_loop): cgltf keeps an object's extras as JSON text.
+struct JsonMember;
 struct Json final {
     enum class Kind { null, boolean, number, string, array, object };
     Kind kind = Kind::null;
@@ -71,20 +72,27 @@ struct Json final {
     double number = 0.0;
     std::string text;
     std::vector<Json> items;
-    std::vector<std::pair<std::string, Json>> members;
+    std::vector<JsonMember> members;
 
-    const Json* get(const char* key) const {
-        for (const auto& [name, value] : members) {
-            if (name == key) {
-                return &value;
-            }
-        }
-        return nullptr;
-    }
+    const Json* get(const char* key) const;
     bool is_true() const {
         return kind == Kind::boolean && boolean;
     }
 };
+
+struct JsonMember {
+    std::string name;
+    Json value;
+};
+
+const Json* Json::get(const char* key) const {
+    for (const auto& [name, value] : members) {
+        if (name == key) {
+            return &value;
+        }
+    }
+    return nullptr;
+}
 
 class JsonReader final {
 public:
@@ -188,12 +196,15 @@ private:
 };
 
 // An object's extras, or null when it has none (or they are not JSON).
-Json extras(const cgltf_extras& e) {
-    if (e.data == nullptr) {
+Json extras(const cgltf_data* data, const cgltf_extras& e) {
+    cgltf_size size = 0;
+    if (cgltf_copy_extras_json(data, &e, nullptr, &size) != cgltf_result_success || size <= 1) {
         return {};
     }
     try {
-        return JsonReader(e.data).value();
+        std::string json(size, 0);
+        if (cgltf_copy_extras_json(data, &e, json.data(), &size) != cgltf_result_success) return {};
+        return JsonReader(json.c_str()).value();
     } catch (const std::exception&) {
         return {};
     }
@@ -242,7 +253,7 @@ std::vector<ImportedAnimation> read_animations(const cgltf_data* data) {
         const cgltf_animation& animation = data->animations[a];
         ImportedAnimation out;
         out.name = animation.name != nullptr ? animation.name : "animation_" + std::to_string(a);
-        const Json e = extras(animation.extras);
+        const Json e = extras(data, animation.extras);
         const Json* loop = e.get("khdays_loop");
         out.loop = loop != nullptr && loop->is_true();
         const Json* from = e.get("khdays_loop_from");
@@ -422,7 +433,7 @@ ImportedModel import_gltf(const std::filesystem::path& input_path) {
         cgltf_node_transform_local(&node, out.local.data());
         result.nodes.push_back(std::move(out));
         for (const cgltf_node* up = &node; up != nullptr && sky[n] == 0; up = up->parent) {
-            const Json e = extras(up->extras);
+            const Json e = extras(data, up->extras);
             const Json* flag = e.get("khdays_sky");
             sky[n] = flag != nullptr && flag->is_true() ? 1 : 0;
         }
@@ -556,7 +567,7 @@ ImportedModel import_gltf(const std::filesystem::path& input_path) {
             }
             out_mesh.sky = sky[n] != 0;
             if (primitive.material != nullptr) {
-                read_moving_textures(extras(primitive.material->extras), tex_w, tex_h, texture_key, picture, out_mesh);
+                read_moving_textures(extras(data, primitive.material->extras), tex_w, tex_h, texture_key, picture, out_mesh);
             }
 
             const auto vertex_count = positions->count;

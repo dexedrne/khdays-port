@@ -24,7 +24,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <windows.h>
+#include "../../host/app/sync.h"
 
 static SRWLOCK lock = SRWLOCK_INIT;
 static const KhdaysSnd7Driver *driver;
@@ -398,7 +398,7 @@ static LONG64 ticks_now(void)
 /* Runs the channels up to `cycle`; the mixer takes an output sample at each
  * of its instants (every 1024 cycles, as the DS's PWM does, or at the PC's
  * rate). */
-static void run(void *context, u64 cycle)
+static void run(void *context, uint64_t cycle)
 {
     const LONG64 start = profiling ? ticks_now() : 0;
     (void)context;
@@ -579,7 +579,7 @@ static void stream_heard(int handle)
     a = khdays_sound_bridge_archive();
     if (a == NULL ||
         !khdays_sound_archive_identifier(a, KHDAYS_SOUND_STREAM, (int)waiting - 1, 0, name, sizeof(name))) {
-        snprintf(name, sizeof(name), "strm/%ld", waiting - 1);
+        snprintf(name, sizeof(name), "strm/%ld", (long)waiting - 1);
     }
     if (delay_stderr) {
         fprintf(stderr, "sound: stream %s prepared after %.1f ms, heard after %.1f ms\n", name,

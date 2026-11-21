@@ -13,7 +13,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <windows.h>
+#include "../../host/app/sync.h"
+#include <SDL3/SDL.h>
 
 #if defined(_MSC_VER)
 #pragma warning(push, 0)
@@ -33,7 +34,8 @@ static struct {
     int width, height, left, top;
     volatile LONG target; /* the game's frame index + 1; 0 before its first */
     volatile LONG stop;
-    HANDLE thread, wake;
+    SDL_Thread *thread;
+    SDL_Semaphore *wake;
     /* the sound's ring, stereo frames at `rate` */
     float *ring;
     u32 ring_frames;
@@ -59,12 +61,12 @@ static void show(const plm_frame_t *frame)
     khdays_textures_change_end(mod.picture);
 }
 
-static DWORD WINAPI decode(LPVOID unused)
+static int SDLCALL decode(void *unused)
 {
     plm_frame_t *ahead = NULL; /* decoded, not due yet */
     (void)unused;
     while (!mod.stop) {
-        WaitForSingleObject(mod.wake, 4);
+        SDL_WaitSemaphoreTimeout(mod.wake, 4);
         if (mod.target > 0) {
             const double due = (double)(mod.target - 1) / mod.fps;
             for (;;) {
@@ -110,10 +112,9 @@ static void stop_replacement(void)
     InterlockedExchange(&mod.active, 0);
     InterlockedExchange(&mod.sound_on, 0);
     InterlockedExchange(&mod.stop, 1);
-    SetEvent(mod.wake);
-    WaitForSingleObject(mod.thread, INFINITE);
-    CloseHandle(mod.thread);
-    CloseHandle(mod.wake);
+    SDL_SignalSemaphore(mod.wake);
+    SDL_WaitThread(mod.thread, NULL);
+    SDL_DestroySemaphore(mod.wake);
     plm_destroy(mod.video);
     if (mod.audio != NULL) {
         plm_destroy(mod.audio);
@@ -252,8 +253,18 @@ static void mod_opened(int slot, const char *path)
     mod.read = 0.0;
     mod.target = 0;
     mod.stop = 0;
-    mod.wake = CreateEventA(NULL, FALSE, FALSE, NULL);
-    mod.thread = CreateThread(NULL, 0, decode, NULL, 0, NULL);
+    mod.wake = SDL_CreateSemaphore(0);
+    mod.thread = mod.wake && (!mod.ring_frames || mod.ring) ? SDL_CreateThread(decode, "movie", NULL) : NULL;
+    if (!mod.thread) {
+        fprintf(stderr, "movies: cannot start decoder for %s\n", file);
+        if (mod.wake) SDL_DestroySemaphore(mod.wake);
+        free(mod.ring);
+        mod.ring = NULL;
+        plm_destroy(mod.video);
+        if (mod.audio) plm_destroy(mod.audio);
+        mod.video = mod.audio = NULL;
+        return;
+    }
     InterlockedExchange(&mod.active, 1);
     fprintf(stderr, "movies: %s drawn instead from %s (%dx%d, %s)\n", mod.id, file, plm_get_width(mod.video),
             plm_get_height(mod.video), mod.audio != NULL ? "with its sound" : "no sound");
@@ -269,7 +280,7 @@ void khdays_video_mod_frame(u32 index)
     if (mod.audio != NULL) {
         InterlockedExchange(&mod.sound_on, 1);
     }
-    SetEvent(mod.wake);
+    SDL_SignalSemaphore(mod.wake);
 }
 
 int khdays_video_mod_picture(void)

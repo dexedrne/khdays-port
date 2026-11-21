@@ -1,3 +1,4 @@
+#include <stddef.h>
 /* A BG layer as the parts read it (bg.h). */
 #include "bg.h"
 #include "../runtime/core/io.h"

@@ -5,6 +5,7 @@ parser; of the pragmas, pack and optimize stay.
 
 from __future__ import annotations
 
+import os
 import re
 import shutil
 import subprocess
@@ -66,6 +67,8 @@ class PreprocessError(Exception):
 
 
 def compiler(env: dict[str, str]) -> str:
+    if os.name != "nt":
+        return shutil.which("clang", path=env.get("PATH")) or "clang"
     cl = shutil.which("cl", path=env.get("PATH") or env.get("Path"))
     if cl is None:
         raise PreprocessError("no cl in the Visual Studio environment")
@@ -76,6 +79,11 @@ def preprocess(source: Path, flags: Flags, env: dict[str, str], cl: str | None =
     """`source` preprocessed (line markers kept), in ISO C's dialect -- or as
     the preprocessor wrote it, `raw`."""
     args = [cl or compiler(env), "/nologo", "/E", "/Zp4"] + flags.arguments()
+    if os.name != "nt":
+        args = [cl or compiler(env), "--target=x86_64-pc-windows-msvc", "-fms-extensions", "-E",
+                *(f"-I{p}" for p in flags.includes), *(f"-D{d}" for d in flags.defines)]
+        for header in flags.forced:
+            args.extend(["-include", str(header)])
     if source.suffix == ".cpp":
         raise PreprocessError(f"{source}: C++ is not the type pass's")
     r = subprocess.run(

@@ -8,7 +8,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <windows.h>
+
 
 unsigned char *khdays_window;
 
@@ -19,7 +19,7 @@ static void stop(const char *what, unsigned long long value, const void *caller)
     khdays_log("stop: %s 0x%llx (from %s, %p)", what, value, function, caller);
     khdays_log_close();
     fflush(stderr);
-    ExitProcess(5);
+    _Exit(5);
 }
 
 #if defined(_MSC_VER)
@@ -58,10 +58,20 @@ typedef struct {
     khdays_function_pointer function;
 } FunctionRecord;
 
+#include "../../compat/sections.h"
+#ifdef _MSC_VER
 #pragma section(".khfr$a", read)
 #pragma section(".khfr$z", read)
 __declspec(allocate(".khfr$a")) static const FunctionRecord first_function = {0, 0};
 __declspec(allocate(".khfr$z")) static const FunctionRecord last_function = {0, 0};
+#define RECORD_BEGIN (&first_function + 1)
+#define RECORD_END (&last_function)
+#else
+extern const FunctionRecord records_begin[] KHDAYS_SECTION_START(khfr);
+extern const FunctionRecord records_end[] KHDAYS_SECTION_END(khfr);
+#define RECORD_BEGIN records_begin
+#define RECORD_END records_end
+#endif
 
 static FunctionRecord *numbered;
 static size_t numbered_count;
@@ -75,14 +85,14 @@ static int by_reference(const void *a, const void *b)
 static void sort_numbered(void)
 {
     size_t n = 0;
-    for (const FunctionRecord *r = &first_function + 1; r < &last_function; ++r) {
+    for (const FunctionRecord *r = RECORD_BEGIN; r < RECORD_END; ++r) {
         n += r->function != NULL;
     }
     numbered = (FunctionRecord *)malloc((n ? n : 1) * sizeof(FunctionRecord));
     if (numbered == NULL) {
         khdays_hal_unimplemented("no memory for the function references' table");
     }
-    for (const FunctionRecord *r = &first_function + 1; r < &last_function; ++r) {
+    for (const FunctionRecord *r = RECORD_BEGIN; r < RECORD_END; ++r) {
         if (r->function != NULL) {
             numbered[numbered_count++] = *r;
         }

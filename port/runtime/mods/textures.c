@@ -10,11 +10,12 @@
 #include "../../host/app/host.h"
 #include "../../host/render/png_io.h"
 
-#include <intrin.h>
+#include <SDL3/SDL_bits.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <windows.h>
+#include "../../host/app/sync.h"
+#include <SDL3/SDL.h>
 
 static int env_read;
 static int trace;
@@ -229,9 +230,7 @@ static volatile LONG nreplacements;
 /* Which block holds entry `id`. */
 static unsigned long block_of(int id)
 {
-    unsigned long k;
-    _BitScanReverse(&k, (unsigned long)id / BLOCK + 1);
-    return k;
+    return SDL_MostSignificantBitIndex32((unsigned)id / BLOCK + 1);
 }
 
 /* Entry `id` (which must exist). */
@@ -254,7 +253,7 @@ static Replacement *new_entry(int n, const char *name)
         blocks[k] = block;
     }
     e = entry(n);
-    e->name = _strdup(name);
+    e->name = SDL_strdup(name);
     return e->name != NULL ? e : NULL;
 }
 
@@ -441,7 +440,7 @@ static void make_directories(const char *path)
         if ((path[i] == '/' || path[i] == '\\') && i > 0) {
             memcpy(part, path, (size_t)i);
             part[i] = '\0';
-            CreateDirectoryA(part, NULL);
+            SDL_CreateDirectory(part);
         }
     }
 }

@@ -13,7 +13,7 @@ typedef int s32;
 typedef long long s64;
 /* A native address as an integer (an instruction's, for the diagnostics):
  * the C runtime's uintptr_t, which the game's side does without. */
-#if defined(_WIN64)
+#if defined(_WIN64) || defined(__LP64__)
 typedef unsigned long long khdays_uptr;
 #else
 typedef unsigned int khdays_uptr;
@@ -27,7 +27,12 @@ extern "C" {
 /* Stops the process naming a routine the port has not implemented yet. The
  * HAL never guesses at behaviour: a path that reaches one of these is a gap to
  * fill from the SDK/hardware documentation, not something to paper over. */
-__declspec(noreturn) void khdays_hal_unimplemented(const char *what);
+#ifdef _MSC_VER
+__declspec(noreturn)
+#else
+__attribute__((noreturn))
+#endif
+void khdays_hal_unimplemented(const char *what);
 
 #define KHDAYS_HAL_TODO(name)                                                                                          \
     void name(void)                                                                                                    \

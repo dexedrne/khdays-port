@@ -24,9 +24,10 @@
 #include <SDL3/SDL.h>
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
-#include <windows.h>
 #ifdef _WIN32
+#include <windows.h>
 #include <direct.h>
 #define change_folder _chdir
 #else
@@ -142,6 +143,16 @@ static char working_folder_note[1024];
  * and saves/ lie beside it. Started where data/extracted is (the repository's root), nothing changes. */
 static void take_working_folder(void)
 {
+#ifdef KHDAYS_IOS
+    const char *documents = SDL_GetUserFolder(SDL_FOLDER_DOCUMENTS);
+    if (!documents || change_folder(documents)) {
+        fprintf(stderr, "Cannot enter the app Documents folder\n");
+        exit(1);
+    }
+    snprintf(working_folder_note, sizeof(working_folder_note), "working folder: Documents");
+#elif !defined(_WIN32)
+    snprintf(working_folder_note, sizeof(working_folder_note), "working folder: launch directory");
+#else
     const char *own = SDL_GetBasePath();
     if (SDL_GetPathInfo("data/extracted", NULL)) {
         snprintf(working_folder_note, sizeof(working_folder_note),
@@ -153,10 +164,12 @@ static void take_working_folder(void)
         snprintf(working_folder_note, sizeof(working_folder_note),
                  "working folder: the one it was started in, without data/extracted (its own could not be taken)");
     }
+#endif
     fprintf(stderr, "khdays-native: %s\n", working_folder_note);
 }
 
 /* Whether a standard handle is unset (nothing given to the process for that stream). */
+#ifdef _WIN32
 static int std_handle_free(DWORD which)
 {
     HANDLE h = GetStdHandle(which);
@@ -181,14 +194,28 @@ static void attach_parent_console(void)
     }
 }
 
+#endif
+
+#ifdef KHDAYS_IOS
+int khdays_game_main(int argc, char **argv)
+#else
 int main(int argc, char **argv)
+#endif
 {
     /* first: claim the DS's address ranges before anything else (the symbol handler, SDL) allocates
      * there */
     if (!khdays_memory_map()) {
         return 1;
     }
+#ifdef _WIN32
     attach_parent_console();
+#endif
+#ifdef KHDAYS_HEADLESS_TEST_BUILD
+    if (!getenv("KHDAYS_HEADLESS")) {
+        fprintf(stderr, "This cartridge test build requires KHDAYS_HEADLESS\n");
+        return 1;
+    }
+#endif
     take_working_folder();
     khdays_diag_init();
     if (argc >= 2 && strcmp(argv[1], "--dump-sounds") == 0) {

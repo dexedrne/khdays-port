@@ -12,7 +12,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <windows.h>
 
 #define U16(address) (*(volatile u16 *)KHDAYS_W(address))
 #define U32(address) (*(volatile u32 *)KHDAYS_W(address))
@@ -83,7 +82,7 @@ static void console_mac(volatile u8 *mac)
     static const u8 fallback[6] = {0x00, 0x09, 0xbf, 0x12, 0x34, 0x56};
     const char *env = getenv("KHDAYS_MAC");
     unsigned v[6];
-    if (env != NULL && sscanf_s(env, "%x:%x:%x:%x:%x:%x", &v[0], &v[1], &v[2], &v[3], &v[4], &v[5]) == 6) {
+    if (env != NULL && sscanf(env, "%x:%x:%x:%x:%x:%x", &v[0], &v[1], &v[2], &v[3], &v[4], &v[5]) == 6) {
         for (int i = 0; i < 6; ++i) {
             mac[i] = (u8)v[i];
         }

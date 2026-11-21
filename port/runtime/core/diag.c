@@ -1,3 +1,6 @@
+#ifndef _WIN32
+#define _GNU_SOURCE
+#endif
 /* Diagnostics (runtime.h): a named stack on a crash, where a stalled game spins
  * (KHDAYS_STALL_SECONDS=N), memory watches and update traces. Names come from the build's PDB through
  * DbgHelp. */
@@ -14,6 +17,7 @@
 #include "window.h"
 #include "io.h"
 
+#ifdef _WIN32
 /* the HAL's, in the rewritten game's data area */
 #include "khdays_data_area.h"
 static unsigned khdays_cpsr_value(void)
@@ -21,10 +25,13 @@ static unsigned khdays_cpsr_value(void)
     return *(const unsigned *)KHDAYS_W(KHDAYS_DATA_khdays_cpsr);
 }
 
+#endif
+#include <stdint.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#ifdef _WIN32
 #include <windows.h>
 #include <dbghelp.h>
 
@@ -479,6 +486,24 @@ void khdays_diag_init(void)
     }
 }
 
+#else
+#include <dlfcn.h>
+#include <execinfo.h>
+#include <unistd.h>
+
+static const char *symbol_name(const void *address)
+{
+    Dl_info info;
+    return dladdr(address, &info) && info.dli_sname ? info.dli_sname : "?";
+}
+
+void khdays_diag_init(void)
+{
+    if (getenv("KHDAYS_STALL_SECONDS") || getenv("KHDAYS_WATCH"))
+        fprintf(stderr, "diagnostics: stall and hardware watch monitors require the Windows host\n");
+}
+#endif
+
 /* printf to stderr, for a temporary hook in the game's C (prepare.py HOOKS). */
 void khdays_debugf(const char *format, ...)
 {
@@ -491,20 +516,31 @@ void khdays_debugf(const char *format, ...)
 
 void khdays_diag_stack(void)
 {
+#ifndef _WIN32
+    void *frames[48];
+    int count = backtrace(frames, 48);
+    backtrace_symbols_fd(frames, count, STDERR_FILENO);
+#else
     CONTEXT context;
     RtlCaptureContext(&context);
     print_stack(GetCurrentThread(), &context);
+#endif
 }
 
 unsigned long long khdays_diag_symbol(const char *name)
 {
+#ifndef _WIN32
+    return (uintptr_t)dlsym(RTLD_DEFAULT, name);
+#else
     char buffer[sizeof(SYMBOL_INFO) + 256];
     SYMBOL_INFO *symbol = (SYMBOL_INFO *)buffer;
     symbol->SizeOfStruct = sizeof(SYMBOL_INFO);
     symbol->MaxNameLen = 255;
     return SymFromName(GetCurrentProcess(), name, symbol) ? (unsigned long long)symbol->Address : 0;
+#endif
 }
 
+#ifdef _WIN32
 /* The name of the native function at `address`, for traces. */
 static const char *symbol_name(const void *address)
 {
@@ -536,6 +572,8 @@ static const char *symbol_name(const void *address)
     return "?";
 }
 
+#endif
+
 const char *khdays_diag_function_at(const void *address)
 {
     return symbol_name(address);
@@ -544,6 +582,17 @@ const char *khdays_diag_function_at(const void *address)
 void khdays_diag_callers(char *out, int size, int skip)
 {
     void *frames[24];
+#ifndef _WIN32
+    int count = backtrace(frames, 24);
+    int used = 0;
+    if (size <= 0) return;
+    out[0] = 0;
+    for (int i = skip + 1; i < count; ++i) {
+        int n = snprintf(out + used, size - used, "%s%s", used ? " < " : "", symbol_name(frames[i]));
+        if (n < 0 || n >= size - used) break;
+        used += n;
+    }
+#else
     const USHORT count = CaptureStackBackTrace((DWORD)skip + 1, 24, frames, NULL);
     out[0] = '\0';
     for (USHORT i = 0; i < count; ++i) {
@@ -552,6 +601,7 @@ void khdays_diag_callers(char *out, int size, int skip)
         }
         strncat_s(out, (size_t)size, symbol_name(frames[i]), _TRUNCATE);
     }
+#endif
 }
 
 /* KHDAYS_TRACE_SCRIPT: prints each step of the action-script interpreter (func_02020e58) that differs
@@ -625,10 +675,12 @@ void khdays_check_update(int fn, int next)
 
 static void check_update(intptr_t fn, intptr_t next)
 {
-    extern char __ImageBase;
     static int trace = -1;
+#ifdef _WIN32
+    extern char __ImageBase;
     const IMAGE_NT_HEADERS *nt;
     const u8 *base = (const u8 *)&__ImageBase;
+#endif
     khdays_input_update_ran((khdays_uptr)fn);
     khdays_cinelist_update_ran((khdays_uptr)fn);
     khdays_roomlist_update_ran((khdays_uptr)fn);
@@ -680,10 +732,15 @@ static void check_update(intptr_t fn, intptr_t next)
     if (next == 0 || next == -1 || next == -2) {
         return;
     }
+#ifdef _WIN32
     nt = (const IMAGE_NT_HEADERS *)(base + ((const IMAGE_DOS_HEADER *)base)->e_lfanew);
     if ((const u8 *)next >= base && (const u8 *)next < base + nt->OptionalHeader.SizeOfImage) {
         return;
     }
+#else
+    Dl_info info;
+    if (dladdr((const void *)next, &info)) return;
+#endif
     fprintf(stderr,
             "khdays-native: the update %s returned 0x%08x as the object's next update, "
             "which is not code\n",

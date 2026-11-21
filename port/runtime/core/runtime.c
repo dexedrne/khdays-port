@@ -44,6 +44,9 @@ int khdays_runtime_init(int argc, char **argv)
     }
     khdays_input_init();
     khdays_display_init();
+#ifndef _WIN32
+    khdays_clock_init(); /* the SDL audio and video threads can read it during startup */
+#endif
     if (!khdays_host_start()) {
         return 0;
     }
@@ -51,7 +54,9 @@ int khdays_runtime_init(int argc, char **argv)
     khdays_io_reset();
     khdays_io_guard_init();
     khdays_threads_init();
+#ifdef _WIN32
     khdays_clock_init();
+#endif
     if (getenv("KHDAYS_TEST_IPC") != NULL) {
         /* an IPC register read at its DS address, as a game access the port does not reach: the guard stops
          * the game, naming it (io_guard.c) */

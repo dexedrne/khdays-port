@@ -4,6 +4,7 @@
  * is the one header it includes. */
 #ifndef KHDAYS_REFERENCES_H
 #define KHDAYS_REFERENCES_H
+#include "sections.h"
 
 /* A pointer of the game's: 4 bytes, the DS address it had. */
 typedef unsigned int khdays_ref;

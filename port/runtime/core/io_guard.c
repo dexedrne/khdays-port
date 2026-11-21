@@ -10,7 +10,14 @@
 #include "window.h"
 
 #include <stdio.h>
+#ifdef _WIN32
 #include <windows.h>
+#else
+#include <signal.h>
+#include <stdint.h>
+#include <stdlib.h>
+#include <unistd.h>
+#endif
 
 static int is_io(u32 address)
 {
@@ -75,6 +82,7 @@ static const char *register_name(u32 address)
     return "not named";
 }
 
+#ifdef _WIN32
 /* An address of the DS's own ranges (memory.c's map), outside the window. */
 static int at_ds_address(const unsigned char *host)
 {
@@ -132,3 +140,43 @@ void khdays_io_guard_init(void)
 {
     AddVectoredExceptionHandler(1, io_guard);
 }
+
+#else
+/* SA_RESETHAND lets an unrelated synchronous fault retry with its normal disposition. */
+static void io_fault(int signal_number, siginfo_t *info, void *context)
+{
+    (void)context;
+    uintptr_t address = (uintptr_t)info->si_addr;
+    uintptr_t offset = address - (uintptr_t)khdays_window;
+    if (info->si_code <= 0) {
+        raise(signal_number);
+        return;
+    }
+    if (offset < KHDAYS_HEAPS_END) address = offset;
+    if (address <= UINT32_MAX && is_io((u32)address)) {
+        const char *name = register_name((u32)address);
+        size_t length = 0;
+        while (name[length]) ++length;
+        write(STDERR_FILENO, "unhandled DS register: ", sizeof("unhandled DS register: ") - 1);
+        write(STDERR_FILENO, name, length);
+        write(STDERR_FILENO, "\n", 1);
+        _exit(4);
+    }
+    if (offset >= KHDAYS_HEAPS_END && address >= 0x01ff8000 && address < 0x0b000000) {
+        write(STDERR_FILENO, "access outside DS window\n", sizeof("access outside DS window\n") - 1);
+        _exit(6);
+    }
+}
+
+void khdays_io_guard_init(void)
+{
+    struct sigaction action = {0};
+    action.sa_sigaction = io_fault;
+    action.sa_flags = SA_SIGINFO | SA_RESETHAND;
+    sigemptyset(&action.sa_mask);
+    if (sigaction(SIGSEGV, &action, NULL) || sigaction(SIGBUS, &action, NULL)) {
+        perror("install DS address guard");
+        exit(1);
+    }
+}
+#endif

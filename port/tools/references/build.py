@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import multiprocessing
 import os
 import re
 import traceback
@@ -62,7 +63,7 @@ def _init(cache: str, tools: str, arch: str):
     import build as native_build
     from .preprocess import Flags, compiler
 
-    _env = native_build.msvc_env(arch)  # preprocessed as that compiler sees it
+    _env = native_build.msvc_env(arch) if os.name == "nt" else dict(os.environ)  # preprocessed as that compiler sees it
     _cl = compiler(_env)
     _flags = Flags.game_side()
     _flags_key = hashlib.sha1("\n".join(_flags.arguments()).encode()).hexdigest()
@@ -107,12 +108,12 @@ def _stat(path: str) -> list[int] | None:
     return _stats[path]
 
 
-LINE_MARKER = re.compile(r'^#line \d+ "((?:[^"\\]|\\.)*)"', re.M)
+LINE_MARKER = re.compile(r'^#(?:line)?\s+\d+ "((?:[^"\\]|\\.)*)"', re.M)
 
 
 def _sources_of(text: str) -> list[str]:
     """The files a preprocessed text came from, by its line markers."""
-    return sorted({m[1].replace("\\\\", "\\") for m in LINE_MARKER.finditer(text)})
+    return sorted({m[1].replace("\\\\", "\\") for m in LINE_MARKER.finditer(text) if not m[1].startswith("<")})
 
 
 def _entry(source: str) -> tuple[Path, Path]:
@@ -358,7 +359,12 @@ def rewrite_all(
     processes = processes or max(1, (os.cpu_count() or 2) - 1)
     cache = gen / "references"
     cache.mkdir(parents=True, exist_ok=True)
-    with ProcessPoolExecutor(processes, initializer=_init, initargs=(str(cache), tools_key(), arch)) as pool:
+    if os.name != "nt":
+        processes = min(4, processes)
+    with ProcessPoolExecutor(
+        processes, mp_context=multiprocessing.get_context("spawn"), initializer=_init,
+        initargs=(str(cache), tools_key(), arch),
+    ) as pool:
         found = list(pool.map(_definitions, [s for s, _ in jobs], chunksize=32))
         failures = [f"{s}: {err}" for s, _, _, _, err in found if err]
         if failures:

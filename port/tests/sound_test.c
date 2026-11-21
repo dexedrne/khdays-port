@@ -427,13 +427,26 @@ static void command(uint32_t address, uint32_t next, uint32_t id, uint32_t a0, u
 
 static int load_arm7(const char *path)
 {
-    FILE *f = path != NULL ? fopen(path, "rb") : NULL;
+    const char *rom = getenv("KHDAYS_ROM");
+    FILE *f = path ? fopen(path, "rb") : rom ? fopen(rom, "rb") : NULL;
+    long base = 0;
     uint32_t hash = 0x811c9dc5u;
     size_t got;
     if (f == NULL) {
         return 0;
     }
-    fseek(f, KHDAYS_SND7_SEGMENT_OFFSET, SEEK_SET);
+    if (!path) {
+        unsigned char bytes[4];
+        if (fseek(f, 0x30, SEEK_SET) || fread(bytes, 1, 4, f) != 4) {
+            fclose(f);
+            return 0;
+        }
+        base = bytes[0] | bytes[1] << 8 | bytes[2] << 16 | (uint32_t)bytes[3] << 24;
+    }
+    if (fseek(f, base + KHDAYS_SND7_SEGMENT_OFFSET, SEEK_SET)) {
+        fclose(f);
+        return 0;
+    }
     got = fread(native_segment, 1, sizeof(native_segment), f);
     fclose(f);
     for (size_t i = 0; i < got; ++i) {

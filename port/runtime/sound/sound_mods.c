@@ -9,7 +9,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <windows.h>
+#include "../../host/app/sync.h"
+#include <SDL3/SDL.h>
 
 /* The decoded files kept, at most (a few minutes of stereo music is tens of
  * MB): past it, the least recently used that nothing plays are let go, and
@@ -34,20 +35,18 @@ typedef struct Entry {
 static Entry *entries;
 static u64 uses;
 static SRWLOCK queue_lock = SRWLOCK_INIT;
-static CONDITION_VARIABLE queue_filled = CONDITION_VARIABLE_INIT;
+static SDL_Semaphore *queue_filled;
 static Entry **queue; /* the decoder's, the first next (grows) */
 static int queued, queue_room;
 
-static DWORD WINAPI decoder(LPVOID unused)
+static int SDLCALL decoder(void *unused)
 {
     (void)unused;
     for (;;) {
         Entry *e;
         char why[160];
+        SDL_WaitSemaphore(queue_filled);
         AcquireSRWLockExclusive(&queue_lock);
-        while (queued == 0) {
-            SleepConditionVariableSRW(&queue_filled, &queue_lock, INFINITE, 0);
-        }
         e = queue[0];
 #pragma warning(suppress : 6386) /* queued > 0 here (the wait above): one fewer, never a wrap */
         memmove(queue, queue + 1, (size_t)--queued * sizeof(queue[0]));
@@ -69,8 +68,15 @@ static void enqueue(Entry *e, int now)
     static int started;
     int at = -1;
     if (!started) {
+        queue_filled = SDL_CreateSemaphore(0);
+        SDL_Thread *thread = queue_filled ? SDL_CreateThread(decoder, "sound-decoder", NULL) : NULL;
+        if (!thread) {
+            SDL_DestroySemaphore(queue_filled);
+            fprintf(stderr, "sound: cannot start decoder: %s\n", SDL_GetError());
+            return;
+        }
+        SDL_DetachThread(thread);
         started = 1;
-        CreateThread(NULL, 0, decoder, NULL, 0, NULL);
     }
     AcquireSRWLockExclusive(&queue_lock);
     if (e->state == LET_GO) {
@@ -87,7 +93,7 @@ static void enqueue(Entry *e, int now)
         InterlockedExchange(&e->state, QUEUED);
         queue[queued] = e;
         at = queued++;
-        WakeConditionVariable(&queue_filled);
+        SDL_SignalSemaphore(queue_filled);
     } else {
         for (int i = 0; i < queued && at < 0; ++i) {
             at = queue[i] == e ? i : -1;
@@ -130,28 +136,27 @@ void khdays_sound_mods_trace(int on)
     trace = on;
 }
 
-/* mods/<Mod>/sounds, in the folder the mods' order reads (the VFS's mods
- * root, "mods" beside the game). */
+/* Does any visible mod provide this directory below its sounds root? */
+static int sound_folder(const char *relative)
+{
+    char **mods = SDL_GlobDirectory("mods", "*", 0, NULL);
+    int found = 0;
+    for (int i = 0; mods && mods[i] && !found; ++i) {
+        char path[600];
+        SDL_PathInfo info;
+        if (mods[i][0] == '.') continue;
+        int n = snprintf(path, sizeof(path), "mods/%s/sounds/%s", mods[i], relative);
+        found = n >= 0 && (size_t)n < sizeof(path) && SDL_GetPathInfo(path, &info) && info.type == SDL_PATHTYPE_DIRECTORY;
+    }
+    SDL_free(mods);
+    return found;
+}
+
 int khdays_sound_mods_present(void)
 {
     static int present = -1;
     if (present < 0) {
-        WIN32_FIND_DATAA found;
-        HANDLE h = FindFirstFileA("mods\\*", &found);
-        present = 0;
-        if (h != INVALID_HANDLE_VALUE) {
-            do {
-                char sounds[600];
-                DWORD attributes;
-                if (!(found.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) || found.cFileName[0] == '.') {
-                    continue;
-                }
-                snprintf(sounds, sizeof(sounds), "mods\\%s\\sounds", found.cFileName);
-                attributes = GetFileAttributesA(sounds);
-                present = attributes != INVALID_FILE_ATTRIBUTES && (attributes & FILE_ATTRIBUTE_DIRECTORY);
-            } while (!present && FindNextFileA(h, &found));
-            FindClose(h);
-        }
+        present = sound_folder("");
         if (present) {
             fprintf(stderr, "sound: mods with sounds found: their files replace the originals\n");
         }
@@ -214,39 +219,28 @@ static Entry *entry_for(const char *identifier, const KhdaysOriginalLoop *loop)
     return entry_want(entry_find(identifier), loop);
 }
 
-/* Whether a found file is a folder of its own (not "." or ".."). */
-static int is_folder(const WIN32_FIND_DATAA *found)
-{
-    return (found->dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) && found->cFileName[0] != '.';
-}
-
-/* A mod's sequence archive's entries (mods/<mod>/sounds/seqarc/<archive>/<entry>.*), queued to decode. */
+/* Queue the entries from one sequence archive. */
 static void decode_archive_ahead(const char *mod, const char *archive)
 {
-    char pattern[600];
-    WIN32_FIND_DATAA file;
-    HANDLE found;
-    snprintf(pattern, sizeof(pattern), "mods\\%s\\sounds\\seqarc\\%s\\*", mod, archive);
-    found = FindFirstFileA(pattern, &file);
-    if (found == INVALID_HANDLE_VALUE) {
-        return;
-    }
-    do {
-        char identifier[160];
-        const char *dot = strrchr(file.cFileName, '.');
+    char path[600];
+    snprintf(path, sizeof(path), "mods/%s/sounds/seqarc/%s", mod, archive);
+    char **files = SDL_GlobDirectory(path, "*", 0, NULL);
+    for (int i = 0; files && files[i]; ++i) {
+        char identifier[160], full[900];
+        const char *dot = strrchr(files[i], '.');
+        SDL_PathInfo info;
         Entry *e;
-        if ((file.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) || dot == NULL) {
-            continue;
-        }
+        snprintf(full, sizeof(full), "%s/%s", path, files[i]);
+        if (!dot || !SDL_GetPathInfo(full, &info) || info.type != SDL_PATHTYPE_FILE) continue;
         /* the mods' order picks the file (entry_find), whichever mod it was seen in */
-        snprintf(identifier, sizeof(identifier), "seqarc/%s/%.*s", archive, (int)(dot - file.cFileName),
-                 file.cFileName);
+        snprintf(identifier, sizeof(identifier), "seqarc/%s/%.*s", archive, (int)(dot - files[i]),
+                 files[i]);
         e = entry_find(identifier);
         if (e != NULL && e->state == LET_GO) {
             enqueue(e, 0);
         }
-    } while (FindNextFileA(found, &file));
-    FindClose(found);
+    }
+    SDL_free(files);
 }
 
 /* The voices' streams the mods have (sounds/strm/<name>, a stream of a voices' player: PLAYER_STRM_V01's
@@ -278,37 +272,21 @@ static void decode_voice_streams_ahead(const KhdaysSoundArchive *archive)
 static void decode_entries_ahead(const KhdaysSoundArchive *sdat)
 {
     static int done;
-    WIN32_FIND_DATAA mod;
-    HANDLE mods;
-    if (done || sdat == NULL) {
-        return;
-    }
+    if (done || sdat == NULL) return;
     done = 1;
     decode_voice_streams_ahead(sdat);
-    mods = FindFirstFileA("mods\\*", &mod);
-    if (mods == INVALID_HANDLE_VALUE) {
-        return;
+    char **mods = SDL_GlobDirectory("mods", "*", 0, NULL);
+    for (int i = 0; mods && mods[i]; ++i) {
+        char path[600];
+        if (mods[i][0] == '.') continue;
+        snprintf(path, sizeof(path), "mods/%s/sounds/seqarc", mods[i]);
+        char **archives = SDL_GlobDirectory(path, "*", 0, NULL);
+        for (int j = 0; archives && archives[j]; ++j) {
+            if (archives[j][0] != '.') decode_archive_ahead(mods[i], archives[j]);
+        }
+        SDL_free(archives);
     }
-    do {
-        char pattern[600];
-        WIN32_FIND_DATAA archive;
-        HANDLE archives;
-        if (!is_folder(&mod)) {
-            continue;
-        }
-        snprintf(pattern, sizeof(pattern), "mods\\%s\\sounds\\seqarc\\*", mod.cFileName);
-        archives = FindFirstFileA(pattern, &archive);
-        if (archives == INVALID_HANDLE_VALUE) {
-            continue;
-        }
-        do {
-            if (is_folder(&archive)) {
-                decode_archive_ahead(mod.cFileName, archive.cFileName);
-            }
-        } while (FindNextFileA(archives, &archive));
-        FindClose(archives);
-    } while (FindNextFileA(mods, &mod));
-    FindClose(mods);
+    SDL_free(mods);
 }
 
 /* --- The waves --------------------------------------------------------------------- */
@@ -319,22 +297,7 @@ static void set_entry(Entry **slot, Entry *e);
 static int wave_folders(void)
 {
     static int found = -1;
-    if (found < 0) {
-        WIN32_FIND_DATAA mod;
-        HANDLE h = FindFirstFileA("mods\\*", &mod);
-        found = 0;
-        if (h != INVALID_HANDLE_VALUE) {
-            do {
-                char wave[600];
-                DWORD attributes;
-                snprintf(wave, sizeof(wave), "mods\\%s\\sounds\\wave", mod.cFileName);
-                attributes = GetFileAttributesA(wave);
-                found = mod.cFileName[0] != '.' && attributes != INVALID_FILE_ATTRIBUTES &&
-                        (attributes & FILE_ATTRIBUTE_DIRECTORY);
-            } while (!found && FindNextFileA(h, &mod));
-            FindClose(h);
-        }
-    }
+    if (found < 0) found = sound_folder("wave");
     return found;
 }
 
@@ -366,8 +329,6 @@ static int has_folder(const KhdaysSoundArchive *archive, int number)
     static signed char *known; /* by archive number: 0 not looked at, 1 has, -1 has not (grows) */
     static int known_count;
     char identifier[160], *slash;
-    WIN32_FIND_DATAA mod;
-    HANDLE h;
     if (number < 0) {
         return 0;
     }
@@ -393,20 +354,7 @@ static int has_folder(const KhdaysSoundArchive *archive, int number)
         return 0;
     }
     *slash = '\0'; /* wave/<archive> */
-    h = FindFirstFileA("mods\\*", &mod);
-    if (h != INVALID_HANDLE_VALUE) {
-        do {
-            char folder[600];
-            DWORD attributes;
-            snprintf(folder, sizeof(folder), "mods\\%s\\sounds\\%s", mod.cFileName, identifier);
-            attributes = GetFileAttributesA(folder);
-            if (mod.cFileName[0] != '.' && attributes != INVALID_FILE_ATTRIBUTES &&
-                (attributes & FILE_ATTRIBUTE_DIRECTORY)) {
-                known[number] = 1;
-            }
-        } while (known[number] < 0 && FindNextFileA(h, &mod));
-        FindClose(h);
-    }
+    known[number] = sound_folder(identifier) ? 1 : -1;
     return known[number] > 0;
 }
 

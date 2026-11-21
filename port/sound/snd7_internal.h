@@ -9,6 +9,7 @@
 #include "snd7.h"
 
 #include <stdint.h>
+#include <stddef.h>
 
 /* --- The driver's world ------------------------------------------------------------ */
 
@@ -191,7 +192,7 @@ void snd7_interval_timer_stop(void);  /* 0x037fefb4 */
 
 /* What the ARM7 would do past what the port models (a printf format):
  * said, and the port stops. */
-__declspec(noreturn) void snd7_stop(const char *format, ...);
+_Noreturn void snd7_stop(const char *format, ...);
 
 void snd7_command_init(void);             /* 0x03801ed8 */
 void snd7_command_process(void);          /* 0x03801f1c */

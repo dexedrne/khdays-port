@@ -6,7 +6,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <windows.h>
+#include <SDL3/SDL.h>
 
 #define SIZE 65536
 #define STOPS 100
@@ -32,40 +32,37 @@ static int child(const char *path)
 
 int main(int argc, char **argv)
 {
-    char folder[MAX_PATH], path[MAX_PATH + 32], command[2 * MAX_PATH + 64], self[MAX_PATH];
+    char path[4096], name[80];
+    const char *folder = argc > 1 ? argv[1] : ".";
     static unsigned char read[SIZE + 1];
     int seen[2] = {0, 0};
     make_images();
     if (argc == 3 && strcmp(argv[1], "--child") == 0) {
         return child(argv[2]);
     }
-    if (argc >= 2) {
-        snprintf(folder, sizeof(folder), "%s", argv[1]);
-    } else {
-        GetTempPathA(sizeof(folder), folder);
-    }
-    snprintf(path, sizeof(path), "%s\\khdays-save-test-%lu.sav", folder, (unsigned long)GetCurrentProcessId());
-    GetModuleFileNameA(NULL, self, sizeof(self));
+    snprintf(name, sizeof(name), "khdays-save-%llu.sav", (unsigned long long)SDL_GetPerformanceCounter());
+    snprintf(path, sizeof(path), "%s/%s", folder, name);
     if (!khdays_host_write_file_atomic(path, images[0], SIZE)) {
         fprintf(stderr, "cannot write %s\n", path);
         return 1;
     }
-    srand((unsigned)GetTickCount());
+    srand((unsigned)SDL_GetTicks());
     for (int stop = 0; stop < STOPS; ++stop) {
-        STARTUPINFOA startup = {sizeof(startup)};
-        PROCESS_INFORMATION process;
+        const char *args[] = {argv[0], "--child", path, NULL};
+        SDL_Process *writer = SDL_CreateProcess(args, false);
         long n;
         int which = -1;
-        snprintf(command, sizeof(command), "\"%s\" --child \"%s\"", self, path);
-        if (!CreateProcessA(NULL, command, NULL, NULL, FALSE, 0, NULL, NULL, &startup, &process)) {
-            fprintf(stderr, "cannot start the writer (error %lu)\n", GetLastError());
+        if (!writer) {
+            fprintf(stderr, "cannot start writer: %s\n", SDL_GetError());
             return 1;
         }
-        Sleep((DWORD)(20 + rand() % 100)); /* the writer started, then stopped mid-way */
-        TerminateProcess(process.hProcess, 9);
-        WaitForSingleObject(process.hProcess, INFINITE);
-        CloseHandle(process.hThread);
-        CloseHandle(process.hProcess);
+        SDL_Delay(20 + rand() % 100);
+        if (!SDL_KillProcess(writer, true) || !SDL_WaitProcess(writer, true, NULL)) {
+            fprintf(stderr, "cannot stop writer: %s\n", SDL_GetError());
+            SDL_DestroyProcess(writer);
+            return 1;
+        }
+        SDL_DestroyProcess(writer);
         n = khdays_host_read_file(path, read, sizeof(read));
         for (int k = 0; k < 2; ++k) {
             if (n == SIZE && memcmp(read, images[k], SIZE) == 0) {
@@ -80,21 +77,17 @@ int main(int argc, char **argv)
     }
     {
         /* the writers' temporary files left by the stops: removed */
-        char pattern[MAX_PATH + 48];
-        WIN32_FIND_DATAA found;
-        HANDLE find;
-        snprintf(pattern, sizeof(pattern), "%s.*.tmp", path);
-        find = FindFirstFileA(pattern, &found);
-        if (find != INVALID_HANDLE_VALUE) {
-            do {
-                char leftover[2 * MAX_PATH];
-                snprintf(leftover, sizeof(leftover), "%s\\%s", folder, found.cFileName);
-                DeleteFileA(leftover);
-            } while (FindNextFileA(find, &found));
-            FindClose(find);
+        char pattern[96];
+        snprintf(pattern, sizeof(pattern), "%s.*", name);
+        char **files = SDL_GlobDirectory(folder, pattern, 0, NULL);
+        for (int i = 0; files && files[i]; ++i) {
+            char leftover[4096];
+            snprintf(leftover, sizeof(leftover), "%s/%s", folder, files[i]);
+            SDL_RemovePath(leftover);
         }
+        SDL_free(files);
     }
-    DeleteFileA(path);
+    SDL_RemovePath(path);
     printf("%d interrupted saves: the file whole each time (the first image %d times, the second %d)\n", STOPS, seen[0],
            seen[1]);
     return 0;

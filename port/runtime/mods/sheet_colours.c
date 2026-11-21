@@ -13,7 +13,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <windows.h>
+#include "../../host/app/sync.h"
+#include <SDL3/SDL.h>
 
 #define LOOK_EVERY 8    /* VBlanks between looks at what is shown */
 #define WRITE_EVERY 300 /* VBlanks between writes of what changed */
@@ -479,7 +480,7 @@ static void make_directories(const char *path)
         if ((path[i] == '/' || path[i] == '\\') && i > 0) {
             memcpy(part, path, (size_t)i);
             part[i] = '\0';
-            CreateDirectoryA(part, NULL);
+            SDL_CreateDirectory(part);
         }
     }
 }

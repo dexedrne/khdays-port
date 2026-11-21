@@ -4,9 +4,13 @@
 
 #include <stdarg.h>
 #include <stdio.h>
+#include <time.h>
 #include <stdlib.h>
 #include <string.h>
-#include <windows.h>
+#include "../../host/app/sync.h"
+#ifndef _WIN32
+#include <sys/stat.h>
+#endif
 
 static FILE *file;
 static SRWLOCK lock = SRWLOCK_INIT;
@@ -20,16 +24,30 @@ static int opened_for_setting; /* this log was opened because they did */
 static void open_now(void)
 {
     char path[160];
-    SYSTEMTIME now;
+    struct tm now;
+    time_t stamp = time(NULL);
+#ifdef _WIN32
+    if (localtime_s(&now, &stamp)) return;
+#else
+    if (!localtime_r(&stamp, &now)) return;
+#endif
     /* saves/logs -- a further player's copy on the PC: saves/player<N>/logs */
     const char *folder = khdays_host_user_folder();
+#ifdef _WIN32
     CreateDirectoryA("saves", NULL);
     CreateDirectoryA(folder, NULL);
     snprintf(path, sizeof(path), "%s/logs", folder);
     CreateDirectoryA(path, NULL);
-    GetLocalTime(&now);
-    snprintf(path, sizeof(path), "%s/logs/session-%04u%02u%02u-%02u%02u%02u.log", folder, now.wYear, now.wMonth,
-             now.wDay, now.wHour, now.wMinute, now.wSecond);
+#else
+    mkdir("saves", 0700);
+    mkdir(folder, 0700);
+    snprintf(path, sizeof(path), "%s/logs", folder);
+    mkdir(path, 0700);
+#endif
+    char filename[48], timestamp[32];
+    if (!strftime(filename, sizeof(filename), "session-%Y%m%d-%H%M%S.log", &now) ||
+        !strftime(timestamp, sizeof(timestamp), "%Y-%m-%d %H:%M:%S", &now)) return;
+    snprintf(path, sizeof(path), "%s/logs/%s", folder, filename);
     file = fopen(path, "w");
     if (file == NULL) {
         fprintf(stderr, "log: cannot write %s\n", path);
@@ -38,8 +56,7 @@ static void open_now(void)
     QueryPerformanceFrequency(&frequency);
     QueryPerformanceCounter(&started);
     fprintf(stderr, "log: this session's log is %s (F12 marks it)\n", path);
-    fprintf(file, "khdays-native session log, %04u-%02u-%02u %02u:%02u:%02u\n", now.wYear, now.wMonth, now.wDay,
-            now.wHour, now.wMinute, now.wSecond);
+    fprintf(file, "khdays-native session log, %s\n", timestamp);
     fflush(file);
 }
 
@@ -136,7 +153,7 @@ void khdays_log_mark(void)
 void khdays_log_close(void)
 {
     /* a crash may come inside a line, the lock held: then only flushed */
-    const BOOLEAN locked = TryAcquireSRWLockExclusive(&lock);
+    const int locked = TryAcquireSRWLockExclusive(&lock);
     if (file != NULL) {
         fflush(file);
         if (locked) {

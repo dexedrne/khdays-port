@@ -12,7 +12,7 @@
 
 #include <stdio.h>
 #include <stdlib.h>
-#include <windows.h>
+#include "../../host/app/sync.h"
 
 #define FIRMWARE_LANGUAGE 0x027ffc80u + 0x64u
 #define DATABASES 0x21 /* MsgDb_InitTable's entries */
@@ -47,7 +47,7 @@ static void read_switches(void)
     while (text != NULL && *text != '\0') {
         unsigned frame = 0, language = 0;
         int used = 0;
-        if (sscanf_s(text, "%u:%u%n", &frame, &language, &used) != 2) {
+        if (sscanf(text, "%u:%u%n", &frame, &language, &used) != 2) {
             fprintf(stderr, "language: KHDAYS_LANGUAGE_SWITCH: \"%s\" is not frame:language\n", text);
             return;
         }

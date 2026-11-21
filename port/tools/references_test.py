@@ -23,7 +23,7 @@ typedef unsigned char u8;
 """
 LITERAL = (
     "static const char khdays_image_f_lit0[] = {value};"
-    '__declspec(allocate(".khdi$m")) struct khdays_data_init khdays_place_f_lit0 = '
+    'KHDAYS_DATA_RECORD struct khdays_data_init khdays_place_f_lit0 = '
     "{{KHDAYS_DATA(f_lit0), &khdays_image_f_lit0, sizeof(khdays_image_f_lit0), -4}};"
     '_Static_assert(sizeof(khdays_image_f_lit0) == KHDAYS_DATA_SIZE_f_lit0, "f_lit0");'
 )
@@ -36,6 +36,7 @@ typedef int khdays_function_pointer;
 def without_directives(c_text: str) -> str:
     """The text without its comments and preprocessor lines (#line, #include)."""
     text = re.sub(r"/\*.*?\*/", " ", c_text, flags=re.S)
+    text = re.sub(r"\bKHDAYS_(?:DATA|FUNCTION)_RECORD\b", "", text)
     text = re.sub(r"__declspec\(allocate\(\"[^\"]*\"\)\)", "", text)
     return "\n".join(line for line in text.splitlines() if not line.lstrip().startswith("#"))
 
@@ -61,6 +62,18 @@ class Rewrite(unittest.TestCase):
             "struct S { khdays_ref a; char b; }; khdays_ref f(khdays_ref c);"
             " void g(void) { khdays_ref p; struct S s; }",
         )
+
+    def test_ds_long_width(self):
+        self.check("long f(unsigned long x) { return (long)(x + 1UL); }",
+                   "int f(unsigned int x) { return (int)(x + 1U); }")
+        self.check("long long f(long long x) { return x + 1LL; }",
+                   "long long f(long long x) { return x + 1LL; }")
+
+    def test_ds_compiler_extensions(self):
+        self.check("inline int f(void) {return 1;}", "inline static int f(void) {return 1;}")
+        self.check("extern void f(void); static void f(void) {}", "static void f(void); static void f(void) {}")
+        self.check("int f(char *p) { ++((int *)p); return; }",
+                   "int f(khdays_ref p) { p += sizeof(int); return 0; }")
 
     def test_dereference(self):
         self.check("int f(int *p) { return *p; }", "int f(khdays_ref p) { return (*(int *)KHDAYS_W(p)); }")
@@ -145,7 +158,7 @@ class Rewrite(unittest.TestCase):
         self.check(
             "static int count = 3; int *table[2]; int f(void) { static int n; return count + n; }",
             "static int khdays_image_f_count = 3;"
-            ' __declspec(allocate(".khdi$m")) struct khdays_data_init khdays_place_f_count ='
+            ' KHDAYS_DATA_RECORD struct khdays_data_init khdays_place_f_count ='
             " {KHDAYS_DATA(f_count), &khdays_image_f_count, sizeof(khdays_image_f_count), -4};"
             ' _Static_assert(sizeof(int) == KHDAYS_DATA_SIZE_f_count, "f_count");'
             ' _Static_assert(sizeof(khdays_ref [2]) == KHDAYS_DATA_SIZE_table, "table");'
@@ -163,7 +176,7 @@ class Rewrite(unittest.TestCase):
             " sizeof(data_02001000__khdays_init), -1 };",
             "struct khdays_data_init { unsigned int address; khdays_ref init; unsigned int size; int module; };"
             " int data_02001000__khdays_init = 5;"
-            ' __declspec(allocate(".khdi$m")) struct khdays_data_init khdays_init_data_02001000 ='
+            ' KHDAYS_DATA_RECORD struct khdays_data_init khdays_init_data_02001000 ='
             " {0x02001000u, (const void *)&data_02001000__khdays_init, sizeof(data_02001000__khdays_init), -1};",
             Index(ds_objects={"data_02001000": 0x02001000}),
         )
