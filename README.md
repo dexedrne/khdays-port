@@ -29,6 +29,8 @@ AI-assisted coding tools were used to help make this possible.
 
 This branch adds an iOS build: SDL for iOS, the two DS screens stacked or side by side (made for foldables too), touch on the bottom screen, on-screen controls when no controller is connected, and MFi / Switch Pro / DualSense controllers. It reaches the title screen on Linux; the iPhone build is being tested. You still need your own European copy of the game; put it in the app's Documents folder as `Kh358.nds`. Build steps are in [tools/ios/MAC-STEPS.md](tools/ios/MAC-STEPS.md).
 
+**App icon:** use the [KH Melon Mix](https://github.com/vitor251093/KHMelonMix) logo. Save it as a PNG, run `python3 tools/ios/make_icon.py logo.png ../my-icon/Assets.xcassets`, then build with `ICON_CATALOG=$PWD/../my-icon/Assets.xcassets`. The repository's own icon is only a placeholder.
+
 ## Status
 
 The whole game runs natively from the decompilation: the title and its menus,
