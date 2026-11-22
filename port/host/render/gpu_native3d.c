@@ -64,6 +64,13 @@ enum { EFFECT_NONE, EFFECT_ALPHA, EFFECT_ADD, EFFECT_SUBTRACT, EFFECT_DARKEN, EF
  * translucent bit (the first selection marker blends over the world's pixels whatever their ID). */
 #define CLEAR_MASKS (-1)
 #define CLEAR_TRANSLUCENT (-2)
+/* A mod model's clip volume (gfx/g3d.h KHDAYS_G3D_CLIP): its front faces drawn as the coat's black inside at the
+ * nearest wall's depth, then, in the pass after the split, its wall's depth alone for what follows; and the split
+ * between the two passes (the targets keep what they hold, the depth starts again at the rear plane, the stencil
+ * keeps its IDs). */
+#define CLIP_FILL (-3)
+#define CLIP_WALL (-4)
+#define PASS_SPLIT (-5)
 
 /* the depth (a whole number of 24 bits, exact in a float) in a float target: a render pass clears a target with
  * float values, which Direct3D 12 converts for an integer format and Vulkan gives as their bits -- an R32_UINT
@@ -89,6 +96,8 @@ static SDL_GPUTextureUsageFlags target_reads(void)
 static SDL_GPUShader *polygon_vs, *polygon_ps, *polygon_ps_z, *rear_vs, *rear_ps;
 static SDL_GPUComputePipeline *pack;
 static SDL_GPUGraphicsPipeline *pipelines[KEYS], *rears[OUTPUTS], *clear_masks, *clear_translucent;
+/* A clip volume's black inside (its front faces, nearest by the depth test) and its wall's depth (both sides). */
+static SDL_GPUGraphicsPipeline *clip_fill, *clip_wall;
 static SDL_GPUTextureFormat depth_format;
 static SDL_GPUTexture *target[TARGETS], *depth;
 static int target_w, target_h;
@@ -297,7 +306,8 @@ static SDL_GPUStencilOpState stencil_ops(SDL_GPUCompareOp compare, SDL_GPUStenci
 static SDL_GPUGraphicsPipeline *make_graphics(SDL_GPUShader *vs, SDL_GPUShader *ps,
                                               const SDL_GPUColorTargetDescription *targets,
                                               SDL_GPUCompareOp depth_compare, int depth_write,
-                                              SDL_GPUStencilOpState stencil, Uint8 compare_mask, Uint8 write_mask)
+                                              SDL_GPUStencilOpState stencil, Uint8 compare_mask, Uint8 write_mask,
+                                              SDL_GPUCullMode cull)
 {
     SDL_GPUGraphicsPipelineCreateInfo info;
     SDL_GPUVertexBufferDescription buffer;
@@ -323,7 +333,7 @@ static SDL_GPUGraphicsPipeline *make_graphics(SDL_GPUShader *vs, SDL_GPUShader *
     info.fragment_shader = ps;
     info.primitive_type = SDL_GPU_PRIMITIVETYPE_TRIANGLELIST;
     info.rasterizer_state.fill_mode = SDL_GPU_FILLMODE_FILL;
-    info.rasterizer_state.cull_mode = SDL_GPU_CULLMODE_NONE;
+    info.rasterizer_state.cull_mode = cull;
     info.multisample_state.sample_count = SDL_GPU_SAMPLECOUNT_1;
     info.depth_stencil_state.compare_op = depth_compare;
     info.depth_stencil_state.enable_depth_test = true;
@@ -385,7 +395,7 @@ static SDL_GPUGraphicsPipeline *polygon_pipeline(int key)
             polygon_targets(t, rules != STENCIL_MASK && rules != STENCIL_SHADOW_PRE, write, blending, out);
         }
         pipelines[key] = make_graphics(polygon_vs, z ? polygon_ps_z : polygon_ps, t, depth_ops[compare], write, s,
-                                       compare_mask, write_mask);
+                                       compare_mask, write_mask, SDL_GPU_CULLMODE_NONE);
         remember('p', key, pipelines[key] != NULL);
     }
     return pipelines[key];
@@ -404,11 +414,46 @@ static SDL_GPUGraphicsPipeline *make_full(int clear_bit, int out)
     if (clear_bit != 0) {
         return make_graphics(rear_vs, rear_ps, t, SDL_GPU_COMPAREOP_ALWAYS, 0,
                              stencil_ops(SDL_GPU_COMPAREOP_ALWAYS, SDL_GPU_STENCILOP_ZERO, SDL_GPU_STENCILOP_ZERO),
-                             0xff, (Uint8)clear_bit);
+                             0xff, (Uint8)clear_bit, SDL_GPU_CULLMODE_NONE);
     }
     return make_graphics(rear_vs, rear_ps, t, SDL_GPU_COMPAREOP_ALWAYS, 1,
                          stencil_ops(SDL_GPU_COMPAREOP_ALWAYS, SDL_GPU_STENCILOP_REPLACE, SDL_GPU_STENCILOP_REPLACE),
-                         0xff, 0xff);
+                         0xff, 0xff, SDL_GPU_CULLMODE_NONE);
+}
+
+/* A clip volume's two pipelines (gfx/geometry.c khdays_g3d_clip_polygon: black, opaque, its colours and alpha).
+ * The clip drawn here instead of being left to the compute pass is sonofskywalker3's Android beta 12 fix (MIT,
+ * github.com/sonofskywalker3/khdays-358-android): a coat used to put the whole 3D picture on the slow path.
+ * The fill draws the volume's outer faces alone -- cull FRONT: rig.cpp clip_volumes_of winds them outward, and
+ * the view's y flip (native3d.hlsl's to_clip) turns that winding over, so they are the card's back faces -- and
+ * the depth test keeps the nearest wall and writes it, with the coat's black inside into the colour and the depth
+ * the composition reads. The wall draws both sides: the nearest wall's depth alone, for what follows to be left
+ * out behind it. */
+static void make_clip(void)
+{
+    const SDL_GPUColorComponentFlags all =
+        SDL_GPU_COLORCOMPONENT_R | SDL_GPU_COLORCOMPONENT_G | SDL_GPU_COLORCOMPONENT_B | SDL_GPU_COLORCOMPONENT_A;
+    SDL_GPUColorTargetDescription t[TARGETS];
+    memset(t, 0, sizeof(t));
+    for (int i = 0; i < TARGETS; ++i) {
+        t[i].format = formats[i];
+        t[i].blend_state.enable_color_write_mask = true;
+    }
+    blend(&t[0], SDL_GPU_BLENDFACTOR_ONE, SDL_GPU_BLENDFACTOR_ONE_MINUS_SRC_ALPHA, SDL_GPU_BLENDFACTOR_ZERO,
+          SDL_GPU_BLENDFACTOR_ONE_MINUS_SRC_ALPHA, SDL_GPU_BLENDOP_ADD);
+    t[0].blend_state.color_write_mask = all;
+    t[5].blend_state.color_write_mask = SDL_GPU_COLORCOMPONENT_R;
+    clip_fill = make_graphics(polygon_vs, polygon_ps, t, SDL_GPU_COMPAREOP_LESS, 1,
+                              stencil_ops(SDL_GPU_COMPAREOP_ALWAYS, SDL_GPU_STENCILOP_KEEP, SDL_GPU_STENCILOP_KEEP),
+                              0, 0, SDL_GPU_CULLMODE_FRONT);
+    /* the wall, and the polygons before the volume drawn again for their depth alone: no colour, the depth
+     * written, no stencil written (its IDs came with the first pass) */
+    for (int i = 0; i < TARGETS; ++i) {
+        t[i].blend_state.color_write_mask = 0;
+    }
+    clip_wall = make_graphics(polygon_vs, polygon_ps, t, SDL_GPU_COMPAREOP_LESS, 1,
+                              stencil_ops(SDL_GPU_COMPAREOP_ALWAYS, SDL_GPU_STENCILOP_KEEP, SDL_GPU_STENCILOP_KEEP),
+                              0, 0, SDL_GPU_CULLMODE_NONE);
 }
 
 /* The pipelines made during play, kept between starts (the Android port's idea: its "Compiling shaders" first
@@ -628,6 +673,10 @@ void khdays_native3d_close(void)
         SDL_ReleaseGPUGraphicsPipeline(device, clear_masks);
     if (clear_translucent != NULL)
         SDL_ReleaseGPUGraphicsPipeline(device, clear_translucent);
+    if (clip_fill != NULL)
+        SDL_ReleaseGPUGraphicsPipeline(device, clip_fill);
+    if (clip_wall != NULL)
+        SDL_ReleaseGPUGraphicsPipeline(device, clip_wall);
     if (pack != NULL)
         SDL_ReleaseGPUComputePipeline(device, pack);
     if (polygon_vs != NULL)
@@ -642,7 +691,7 @@ void khdays_native3d_close(void)
         SDL_ReleaseGPUShader(device, rear_ps);
     if (corner_buffer != NULL)
         SDL_ReleaseGPUBuffer(device, corner_buffer);
-    clear_masks = clear_translucent = NULL;
+    clear_masks = clear_translucent = clip_fill = clip_wall = NULL;
     pack = NULL;
     polygon_vs = polygon_ps = polygon_ps_z = rear_vs = rear_ps = NULL;
     corner_buffer = NULL;
@@ -691,11 +740,13 @@ int khdays_native3d_open(SDL_GPUDevice *d)
     if (polygon_vs != NULL && polygon_ps != NULL && polygon_ps_z != NULL && rear_vs != NULL && rear_ps != NULL) {
         clear_masks = make_full(0x80, 0);
         clear_translucent = make_full(0x40, 0);
+        make_clip();
     }
     corner_buffer_size = 1u << 16;
     corner_buffer = make_corner_buffer(corner_buffer_size);
     if (polygon_vs == NULL || polygon_ps == NULL || polygon_ps_z == NULL || rear_vs == NULL || rear_ps == NULL ||
-        pack == NULL || clear_masks == NULL || clear_translucent == NULL || corner_buffer == NULL) {
+        pack == NULL || clear_masks == NULL || clear_translucent == NULL || clip_fill == NULL || clip_wall == NULL ||
+        corner_buffer == NULL) {
         char why[256];
         SDL_strlcpy(why, SDL_GetError(), sizeof(why));
         khdays_native3d_close();
@@ -707,15 +758,61 @@ int khdays_native3d_open(SDL_GPUDevice *d)
     return 1;
 }
 
-int khdays_native3d_count(const KhdaysG3dList *list, int32_t hidden)
+/* A mod model's clip volumes (g3d.h KHDAYS_G3D_CLIP), all of them in one run with the model's own polygons after
+ * it: the run's first and last, or -1. The card's rasterizer draws them (make_clip) when the model's polygons
+ * (KHDAYS_G3D_CLIP_OWNER) come before any other polygon after the run; another order, or a volume after a polygon
+ * that is neither, hands the list to raster3d.hlsl as before (it keeps the clip for whatever it draws). */
+static void clip_run(const KhdaysG3dList *list, int count, int *first, int *last, int *owners_end)
 {
-    const int32_t raster3d_only = KHDAYS_G3D_SEQUENCE | KHDAYS_G3D_CLIP | (KHDAYS_G3D_SHADOW_RECEIVER & ~hidden);
-    for (int i = 0; i < list->npolys; ++i) {
-        if (list->polys[i].flags & raster3d_only) {
-            return i;
+    int f = -1, l = -1;
+    *first = *last = *owners_end = -1;
+    for (int i = 0; i < count; ++i) {
+        if (list->polys[i].flags & KHDAYS_G3D_CLIP) {
+            if (f < 0) {
+                f = i;
+            }
+            l = i;
         }
     }
-    return list->npolys;
+    if (f < 0) {
+        return;
+    }
+    for (int i = f; i <= l; ++i) {
+        if (!(list->polys[i].flags & KHDAYS_G3D_CLIP)) {
+            return; /* not one run */
+        }
+    }
+    int e = l;
+    while (e + 1 < count && (list->polys[e + 1].flags & KHDAYS_G3D_CLIP_OWNER)) {
+        ++e;
+    }
+    for (int i = e + 1; i < count; ++i) {
+        if (list->polys[i].flags & (KHDAYS_G3D_CLIP | KHDAYS_G3D_CLIP_OWNER)) {
+            return; /* a volume, or an owner, after the rest */
+        }
+    }
+    *first = f;
+    *last = l;
+    *owners_end = e;
+}
+
+int khdays_native3d_count(const KhdaysG3dList *list, int32_t hidden)
+{
+    const int32_t raster3d_only = KHDAYS_G3D_SEQUENCE | (KHDAYS_G3D_SHADOW_RECEIVER & ~hidden);
+    int clip_first, clip_last, owners_end, stop = list->npolys;
+    clip_run(list, list->npolys, &clip_first, &clip_last, &owners_end);
+    for (int i = 0; i < list->npolys; ++i) {
+        if (list->polys[i].flags & raster3d_only) {
+            stop = i;
+            break;
+        }
+    }
+    if (clip_first >= 0) {
+        /* no raster3d.hlsl pass follows: the card draws the volumes and everything after them; otherwise the
+         * volumes stay raster3d.hlsl's (its clip must see them, and it cannot read the card's wall depth) */
+        return stop == list->npolys ? list->npolys : clip_first;
+    }
+    return stop;
 }
 
 static int corners_for(uint32_t more)
@@ -828,23 +925,23 @@ static int add_to_run(const KhdaysG3dList *list, int index, int opaque_key, uint
     return 1;
 }
 
-/* The draws of the first `count` polygons, by gpu3d.c plot's rules: which pixels a polygon may make
- * translucent (texture formats with alpha, its own alpha, a mod's vertex alpha, a replacement), its depth
- * test and writes, its stencil rules. */
-static int build(const KhdaysG3dList *list, int count, int32_t hidden, uint32_t disp3dcnt, int out)
+/* What build() carries from one polygon to the next: the list's rules and the state the draws join. */
+typedef struct Builder {
+    const KhdaysG3dList *list;
+    int out, blending, zbuffer, shadows;
+    uint32_t disp3dcnt;
+    int32_t hidden;
+    int masks, markers, lines;
+} Builder;
+
+/* Polygon `i` drawn by gpu3d.c plot's rules: which pixels it may make translucent (texture formats with alpha,
+ * its own alpha, a mod's vertex alpha, a replacement), its depth test and writes, its stencil rules. */
+static int add_polygon_draw(Builder *b, int i)
 {
-    const int zbuffer = (list->swap_params & 2u) == 0u;
-    static int said;
-    const int blending = (disp3dcnt & 8u) != 0;
-    int shadows = 0, masks = 0, markers = 0, lines = 0;
-    draw_count = 0;
-    corner_count = 0;
-    run_count = 0;
-    for (int i = 0; i < count; ++i) {
-        const uint32_t attr = list->polys[i].attr;
-        shadows |= ((attr >> 4) & 3u) == 3u && ((attr >> 24) & 63u) != 0u;
-    }
-    for (int i = 0; i < count; ++i) {
+    const KhdaysG3dList *list = b->list;
+    const int zbuffer = b->zbuffer, blending = b->blending, out = b->out, hidden = b->hidden;
+    const uint32_t disp3dcnt = b->disp3dcnt;
+    {
         const KhdaysG3dPolygon *p = &list->polys[i];
         const uint32_t attr = p->attr, mode = (attr >> 4) & 3u, id = (attr >> 24) & 63u, alpha = (attr >> 16) & 31u;
         const uint32_t format = (p->tex >> 26) & 7u;
@@ -855,22 +952,22 @@ static int build(const KhdaysG3dList *list, int count, int32_t hidden, uint32_t 
         /* an opaque pixel writes the depth, a translucent one when the polygon says */
         const int write_opaque = !marker, write_translucent = !marker && (attr & 0x800u) != 0;
         /* the opaque polygon's ID only matters to shadows (not on their own ID): without them all one */
-        const uint8_t opaque_reference = (uint8_t)(shadows ? id : 0u);
+        const uint8_t opaque_reference = (uint8_t)(b->shadows ? id : 0u);
         const int opaque_key = KEY(depth_test, write_opaque, STENCIL_OPAQUE, blending, out, z);
         const int translucent_key =
             KEY(depth_test, write_translucent, (p->flags & KHDAYS_G3D_MOD) ? STENCIL_ANY_ID : STENCIL_SAME_ID, blending,
                 out, z);
         int ok;
         if (p->flags & hidden) {
-            continue; /* drawn by no one (gpu_raster3d.c hidden_flags) */
+            return 1; /* drawn by no one (gpu_raster3d.c hidden_flags) */
         }
         if (p->count < 1 || p->first < 0 || p->first > list->nverts - p->count || p->ymax < 0.0f ||
             p->ymin >= (float)KHDAYS_FRAME_H) {
-            continue; /* outside the list's vertices (raster3d leaves it out too), or above or below the picture */
+            return 1; /* outside the list's vertices (raster3d leaves it out too), or above or below the picture */
         }
         if (p->count < 3) {
-            ++lines;
-            continue;
+            ++b->lines;
+            return 1;
         }
         if (p->flags & KHDAYS_G3D_EFFECT) { /* a KH2 effect's: its own blend and depth rules, as sent */
             const int effect_depth = (p->flags & KHDAYS_G3D_EFFECT_NO_DEPTH_TEST) ? DEPTH_ALWAYS : DEPTH_LESS;
@@ -884,34 +981,34 @@ static int build(const KhdaysG3dList *list, int count, int32_t hidden, uint32_t 
                              0, 0)) {
                 return 0;
             }
-            continue;
+            return 1;
         }
         if (mode != 3u && alpha == 31u &&
             ((p->flags & KHDAYS_G3D_MOD) || (textured && (format == 1u || format == 6u || p->replacement >= 0)))) {
             if (!add_to_run(list, i, opaque_key, opaque_reference, translucent_key, (uint8_t)(0x40u | id))) {
                 return 0;
             }
-            continue;
+            return 1;
         }
         if (run_count > 0 && !flush_run(list)) {
             return 0;
         }
         if (mode == 3u && id == 0u) {
-            if (!masks && new_draw(CLEAR_MASKS, 0, 1) == NULL) {
+            if (!b->masks && new_draw(CLEAR_MASKS, 0, 1) == NULL) {
                 return 0;
             }
-            masks = 1;
+            b->masks = 1;
             if (!add_polygon(p, i, PIXELS_ALL, KEY(depth_test, 0, STENCIL_MASK, blending, out, z), 0x80, 0)) {
                 return 0;
             }
-            continue;
+            return 1;
         }
-        masks = 0;
-        if (marker && !markers) {
+        b->masks = 0;
+        if (marker && !b->markers) {
             if (new_draw(CLEAR_TRANSLUCENT, 0, 1) == NULL) {
                 return 0;
             }
-            markers = 1;
+            b->markers = 1;
         }
         if (mode == 3u) {
             ok = add_polygon(p, i, PIXELS_ALL, KEY(DEPTH_ALWAYS, 0, STENCIL_SHADOW_PRE, blending, out, z),
@@ -927,12 +1024,89 @@ static int build(const KhdaysG3dList *list, int count, int32_t hidden, uint32_t 
             return 0;
         }
     }
+    return 1;
+}
+
+/* The draws of the first `count` polygons: those before a clip volume's run, the volume's inside, then -- after
+ * the split -- the polygons before the volumes drawn again for their depth (the split starts the depth afresh),
+ * the model's own polygons, the wall's depth, and everything else. Draw order is the list's but for the volumes'
+ * inside, which the coat and the rest are drawn on (raster3d.hlsl's rule, docs/RENDERING.md). */
+static int build(const KhdaysG3dList *list, int count, int32_t hidden, uint32_t disp3dcnt, int out)
+{
+    Builder b;
+    int clip_first, clip_last, owners_end;
+    int ok = 1;
+    draw_count = 0;
+    corner_count = 0;
+    run_count = 0;
+    SDL_zero(b);
+    b.list = list;
+    b.out = out;
+    b.zbuffer = (list->swap_params & 2u) == 0u;
+    b.blending = (disp3dcnt & 8u) != 0;
+    b.disp3dcnt = disp3dcnt;
+    b.hidden = hidden;
+    for (int i = 0; i < count; ++i) {
+        const uint32_t attr = list->polys[i].attr;
+        b.shadows |= ((attr >> 4) & 3u) == 3u && ((attr >> 24) & 63u) != 0u;
+    }
+    clip_run(list, count, &clip_first, &clip_last, &owners_end);
+    /* those before a volume, and the volume's inside */
+    for (int i = 0; ok && i < (clip_first >= 0 ? clip_first : count); ++i) {
+        ok = add_polygon_draw(&b, i);
+    }
+    if (ok && clip_first >= 0) {
+        const KhdaysG3dPolygon *p;
+        ok = run_count == 0 || flush_run(list); /* the polygons before the volume are drawn and done */
+        for (int i = clip_first; ok && i <= clip_last; ++i) {
+            p = &list->polys[i];
+            ok = p->count < 3 || p->first < 0 || p->first > list->nverts - p->count ||
+                 add_polygon(p, i, PIXELS_ALL, CLIP_FILL, 0, 0);
+        }
+        ok = ok && new_draw(PASS_SPLIT, 0, 1) != NULL;
+        /* the polygons before the volume for their depth alone: the depth starts again at the rear plane, and
+         * what they hid the coat with must be there again (their colour and IDs came with the first pass) */
+        for (int i = 0; ok && i < clip_first; ++i) {
+            const uint32_t alpha = (list->polys[i].attr >> 16) & 31u, mode = (list->polys[i].attr >> 4) & 3u;
+            p = &list->polys[i];
+            if ((p->flags & hidden) || (p->flags & (KHDAYS_G3D_EFFECT | KHDAYS_G3D_MARKER)) || mode == 3u ||
+                alpha != 31u || p->count < 3 || p->first < 0 || p->first > list->nverts - p->count) {
+                continue;
+            }
+            ok = add_polygon(p, i, PIXELS_ALL, CLIP_WALL, 0, 0);
+        }
+        /* the model's own polygons, on the inside */
+        for (int i = clip_last + 1; ok && i <= owners_end; ++i) {
+            ok = add_polygon_draw(&b, i);
+        }
+        ok = ok && (run_count == 0 || flush_run(list));
+        /* the wall's depth, for what follows to be left out behind it */
+        for (int i = clip_first; ok && i <= clip_last; ++i) {
+            p = &list->polys[i];
+            ok = p->count < 3 || p->first < 0 || p->first > list->nverts - p->count ||
+                 add_polygon(p, i, PIXELS_ALL, CLIP_WALL, 0, 0);
+        }
+        for (int i = owners_end + 1; ok && i < count; ++i) {
+            ok = add_polygon_draw(&b, i);
+        }
+    }
+    if (!ok) {
+        return 0;
+    }
     if (run_count > 0 && !flush_run(list)) {
         return 0;
     }
-    if (lines > 0 && !said) {
-        said = 1;
-        fprintf(stderr, "native 3D: %d polygons of fewer than three corners not drawn (said once)\n", lines);
+    if (SDL_getenv("KHDAYS_NATIVE_DRAWS") != NULL) {
+        for (int i = 0; i < draw_count; ++i)
+            fprintf(stderr, "native draws: %d: key %d, %u corners, ref %u\n", i, draws[i].key, draws[i].count,
+                    (unsigned)draws[i].reference);
+    }
+    if (b.lines > 0) {
+        static int said;
+        if (!said) {
+            said = 1;
+            fprintf(stderr, "native 3D: %d polygons of fewer than three corners not drawn (said once)\n", b.lines);
+        }
     }
     return 1;
 }
@@ -950,8 +1124,26 @@ int khdays_native3d_prepare(const KhdaysG3dList *list, int count, int32_t hidden
     /* raster3d.hlsl drawing after reads the opaque polygons' IDs too: its shadows fall on their receiver's */
     outputs |= (frame->disp3dcnt & 0x20u) || count < list->npolys ? OUT_IDS : 0;
     outputs |= (outputs & (OUT_FOG | OUT_IDS)) || count < list->npolys ? OUT_DEPTH : 0;
+    if (SDL_getenv("KHDAYS_NATIVE_DRAWS") != NULL) {
+        int f, l, e;
+        clip_run(list, count, &f, &l, &e);
+        fprintf(stderr, "native 3D: clip volumes %d..%d, owners to %d, count %d of %d\n", f, l, e, count,
+                list->npolys);
+    }
     if (!build(list, count, hidden, frame->disp3dcnt, outputs)) {
         return SDL_SetError("out of memory for the native 3D's draws");
+    }
+    {
+        /* the coat's clip volumes: the list no longer falls to the compute pass for them (said once a run) */
+        static int said;
+        int f, l, e;
+        clip_run(list, count, &f, &l, &e);
+        if (!said && f >= 0) {
+            said = 1;
+            fprintf(stderr, "native 3D: the clip volume of a mod model (%d polygons) drawn by the card: its black "
+                            "inside, the model's own polygons and its wall%s\n", l - f + 1,
+                    count < list->npolys ? "; raster3d.hlsl draws the rest" : "; the whole list, no compute pass");
+        }
     }
     for (int i = 0; i < draw_count; ++i) {
         if (draws[i].key >= 0 && polygon_pipeline(draws[i].key) == NULL) {
@@ -1010,6 +1202,7 @@ void khdays_native3d_draw(SDL_GPUCommandBuffer *cmd, const KhdaysNative3dFrame *
     SDL_GPUColorTargetInfo colours[TARGETS];
     SDL_GPUDepthStencilTargetInfo ds;
     SDL_GPURenderPass *pass;
+    int written[TARGETS];
     SDL_zero(pr);
     pr.scale = (uint32_t)frame->scale;
     pr.width = (uint32_t)frame->width;
@@ -1044,10 +1237,10 @@ void khdays_native3d_draw(SDL_GPUCommandBuffer *cmd, const KhdaysNative3dFrame *
         SDL_zeroa(colours);
         for (int i = 0; i < TARGETS; ++i) {
             colours[i].texture = target[i];
-            const int written = (target_output[i] & ~outputs) == 0;
+            written[i] = (target_output[i] & ~outputs) == 0;
             colours[i].load_op =
-                written && !(frame->disp3dcnt & 0x4000u) ? SDL_GPU_LOADOP_CLEAR : SDL_GPU_LOADOP_DONT_CARE;
-            colours[i].store_op = written ? SDL_GPU_STOREOP_STORE : SDL_GPU_STOREOP_DONT_CARE;
+                written[i] && !(frame->disp3dcnt & 0x4000u) ? SDL_GPU_LOADOP_CLEAR : SDL_GPU_LOADOP_DONT_CARE;
+            colours[i].store_op = written[i] ? SDL_GPU_STOREOP_STORE : SDL_GPU_STOREOP_DONT_CARE;
             colours[i].cycle = true;
         }
         /* an empty pixel (alpha 0) takes the first translucent colour drawn on it whole; a shown one is the
@@ -1073,6 +1266,13 @@ void khdays_native3d_draw(SDL_GPUCommandBuffer *cmd, const KhdaysNative3dFrame *
         ds.cycle = true;
         ds.clear_stencil = (Uint8)id;
     }
+    for (int i = 0; i < draw_count; ++i) {
+        if (draws[i].key == CLIP_FILL) {
+            written[0] = written[5] = 1; /* the inside's depth and colour are the composition's, whatever it reads */
+            colours[0].store_op = colours[5].store_op = SDL_GPU_STOREOP_STORE;
+            break;
+        }
+    }
     SDL_PushGPUVertexUniformData(cmd, 0, &pr, sizeof(pr));
     SDL_PushGPUFragmentUniformData(cmd, 0, &pr, sizeof(pr));
     pass = SDL_BeginGPURenderPass(cmd, colours, TARGETS, &ds);
@@ -1093,12 +1293,38 @@ void khdays_native3d_draw(SDL_GPUCommandBuffer *cmd, const KhdaysNative3dFrame *
         }
         for (int i = 0; i < draw_count; ++i) {
             const Draw *d = &draws[i];
-            SDL_GPUGraphicsPipeline *pipeline = d->key >= 0             ? pipelines[d->key]
-                                                : d->key == CLEAR_MASKS ? clear_masks
-                                                                        : clear_translucent;
+            SDL_GPUGraphicsPipeline *pipeline;
+            if (d->key == PASS_SPLIT) {
+                /* the volumes' inside is drawn: the depth starts again at the rear plane (it was cleared
+                 * before the fill, whose walls are no one's to test against), the stencil keeps its IDs, the
+                 * targets what they hold */
+                SDL_EndGPURenderPass(pass);
+                for (int t = 0; t < TARGETS; ++t) {
+                    colours[t].load_op = written[t] ? SDL_GPU_LOADOP_LOAD : SDL_GPU_LOADOP_DONT_CARE;
+                    colours[t].cycle = false; /* the same cycle as the pass before */
+                }
+                ds.cycle = false;
+                ds.load_op = SDL_GPU_LOADOP_CLEAR;
+                ds.stencil_load_op = SDL_GPU_LOADOP_LOAD;
+                ds.stencil_store_op = SDL_GPU_STOREOP_DONT_CARE;
+                pass = SDL_BeginGPURenderPass(cmd, colours, TARGETS, &ds);
+                if (pass == NULL) {
+                    return;
+                }
+                SDL_BindGPUVertexStorageBuffers(pass, 0, buffers, 4);
+                SDL_BindGPUFragmentStorageBuffers(pass, 0, buffers, 4);
+                bound = NULL;
+                reference = -1;
+                continue;
+            }
+            pipeline = d->key >= 0                  ? pipelines[d->key]
+                       : d->key == CLEAR_MASKS      ? clear_masks
+                       : d->key == CLEAR_TRANSLUCENT ? clear_translucent
+                       : d->key == CLIP_FILL        ? clip_fill
+                                                    : clip_wall;
             if (pipeline != bound) {
                 SDL_BindGPUGraphicsPipeline(pass, pipeline);
-                if (d->key >= 0) {
+                if (d->key >= 0 || d->key == CLIP_FILL || d->key == CLIP_WALL) {
                     /* after the pipeline: Direct3D 12's takes the corners' stride from the one bound */
                     SDL_BindGPUVertexBuffers(pass, 0, &binding, 1);
                 }
@@ -1109,7 +1335,7 @@ void khdays_native3d_draw(SDL_GPUCommandBuffer *cmd, const KhdaysNative3dFrame *
                 SDL_SetGPUStencilReference(pass, d->reference);
                 reference = (int)d->reference;
             }
-            if (d->key < 0) {
+            if (d->key == CLEAR_MASKS || d->key == CLEAR_TRANSLUCENT) {
                 SDL_DrawGPUPrimitives(pass, 3, 1, 0, 0);
             } else {
                 SDL_DrawGPUPrimitives(pass, d->count, 1, d->first, 0);

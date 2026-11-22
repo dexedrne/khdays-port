@@ -56,6 +56,16 @@ The picture rate (`port/host/render/picture_pace.h`): 120 pictures a second whil
 
 `KHDAYS_PICTURE_RATE=120`, `60` or `game` in `khdays-env.txt` pins the rate (for comparing); `auto` is the rule. `KHDAYS_PACE_LOG=N` makes the summary every N seconds. `KHDAYS_AUTO_PIXELS` and `KHDAYS_AUTO_2D_PIXELS` change auto's budgets (the 3D's pixels, 835,584 by default; the 2D's, twice that; 0 for the 2D at the window's scale). `SDL_IOS_HIDE_HOME_INDICATOR=2` dims the home indicator instead of hiding it.
 
+## Phone checklist: a coat's scene and the character shadows (round 7)
+
+A KH2 model with its `clip_world` volume (Roxas's cutscene coat `e_rox_hb`, the hooded models) used to hand every polygon after the volume to the compute rasterizer (`raster3d.hlsl`); the card now draws the volume's inside, the model and the wall itself. The soft masks of **Enhanced character shadows** are only that compute pass's: a picture the card draws whole builds none of them.
+
+| Do | Expect | A failure looks like |
+| --- | --- | --- |
+| Launch with `KHDAYS_PROFILE_GPU=1` in `khdays-env.txt` and play a cutscene with Roxas in the coat (Day 6 or later, or a Mission Mode coat), or turn `clip_world` on in a test coat's `.secondary.txt`. | One line `native 3D: the clip volume of a mod model (N polygons) drawn by the card: its black inside, the model's own polygons and its wall; the whole list, no compute pass`, and the `pace:` lines' `ms of 3D` are the native rasterizer's. The coat does not show the room through its inside. | `... ; raster3d.hlsl draws the rest` or no line: the volume is not the first of its run (send the list's scene), or the card could not make the two clip pipelines and `host: the card's rasterizer cannot draw the 3D` came first. The coat's inside showing the floor: send the `clip_world` line and a picture. |
+| Same launch with `KHDAYS_3D=compute` for one scene. | The same picture (the inside's polygon ID may differ where only a translucent piece of the coat blends on it); the `pace:` lines show the compute pass's cost for comparison. | A visibly different inside or coat. Send both pictures. |
+| Settings → Enhancements → Enhanced character shadows **On**, in a field with an NPC. | Once `host: the character shadows' masks are not made: the card draws the game's own shadows with the stencil (said once)`; the shadows look as before; the `pace:` 3D cost does not jump. | The line `the enhanced character shadows are left out (...)`: send the `SDL_GetError` text. `pace:` 60 with no compute pass: send the lines. |
+
 ## Reading the phone's console
 
 The window reports pictures 1, 30, 300, 900 and 1800, and the second picture after each change of size or safe area.

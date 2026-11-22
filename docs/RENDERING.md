@@ -517,7 +517,29 @@ Roxas's coat (its clip volume comes first in the list), left out the whole room
 (a black screen under the dialog boxes, fixed 2026-11-06).
 `native3d_pack.hlsl` then writes `raster3d.hlsl`'s
 two targets, which `compose.hlsl`, the one-screen picture and the capture read
-as before. The native sequences (a mod's KH2-style HUD) blend with the scene in
+as before.
+
+A mod model's clip volume (above, "Clip volumes") is drawn by the card too, so
+a scene with KH2 Roxas's coat keeps this rasterizer for the whole list instead
+of falling to `raster3d.hlsl` at the volume's first polygon (the Android port's
+beta 12 fix; 16-22 pictures a second there, 51-60 after). Its front faces
+(`SDL_GPU_CULLMODE_FRONT`: the volume is wound outward, and the view's y flip
+turns that winding over) are drawn black at the nearest wall's depth, in a pass
+of their own, before the model's own polygons: the coat draws on that inside,
+and the depth the composition reads takes the wall's. A second render pass then
+starts the depth at the rear plane again (the targets and the stencil keep what
+they hold), replays the polygons before the volume for their depth alone, draws
+the model's own polygons, writes the wall's depth (both faces, nearest wins) and
+finally everything else, which the wall's depth leaves out behind it. The
+volume run must be followed by its model's polygons (`KHDAYS_G3D_CLIP_OWNER`)
+and nothing else may follow out of that order; a list with a native sequence or
+an enhanced shadow's receiver after the volume keeps the old split. The inside's
+polygon ID is the rear plane's where only a translucent piece of the model
+blends on it (`raster3d.hlsl` there keeps the last piece's); everything else is
+the same. `KHDAYS_NATIVE_DRAWS=1` prints the draws, and one line says whether
+the card took the clip volume.
+
+The native sequences (a mod's KH2-style HUD) blend with the scene in
 ways the card's blending cannot, so the list from the first of them on is drawn
 by `raster3d.hlsl`, starting from what the targets hold. The pictures are
 `gpu3d.c`'s but where the card's interpolation moves a texel or an edge by a

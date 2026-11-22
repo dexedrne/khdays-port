@@ -79,6 +79,7 @@ static uint32_t shadow_cells_capacity;
 static int shadows_off;   /* their pipelines could not be made: the native shadows stay */
 static int shadows_ready; /* this list's mask can be drawn; if not, its native shadows stay and no receiver is drawn */
 static uint32_t shadow_groups, shadow_bytes, shadow_entries; /* prepare_shadows' for draw_shadows */
+static int shadow_masks_made; /* prepare_shadows(list, 1) made this frame's: the card's rasterizer draws the game's */
 
 static SDL_GPUComputePipeline *raster, *compose;
 static SDL_GPUComputePipeline *fxaa; /* the antialiasing's pass (fxaa3d.hlsl); NULL: the card could not make it */
@@ -805,8 +806,12 @@ static uint32_t build_tiles(const KhdaysG3dList *list, const KhdaysG3dVertex *ve
 }
 
 /* The mask has its own overhead tile index; it never uses the camera's screen tiles. Before build_tiles, which
- * reuses `box` and hides what depends on this. 0: no buffers for it this frame. */
-static int prepare_shadows(const KhdaysG3dList *list)
+ * reuses `box` and hides what depends on this. 0: no buffers for it this frame.
+ *
+ * `build` 0 only finds the casters and makes room for their masks: the card's own rasterizer draws the game's
+ * masks with the stencil and never reads these (native3d.hlsl), so a picture it draws whole skips the raster, the
+ * blur and this CPU index (prepare_shadows(list, 1) the moment anything is left to raster3d.hlsl). */
+static int prepare_shadows(const KhdaysG3dList *list, int build)
 {
     uint32_t groups = 0, total = 0;
     shadow_groups = 0;
@@ -824,6 +829,9 @@ static int prepare_shadows(const KhdaysG3dList *list)
     }
     if (groups > UINT32_MAX / 256u || !shadow_masks_for(groups))
         return 0;
+    shadow_groups = groups; /* the masks are this frame's, once made below */
+    if (!build)
+        return 1;
     const uint32_t cells = groups * 256u;
     if (cells > shadow_cells_capacity) {
         uint32_t *grown = SDL_realloc(shadow_counts, (size_t)cells * sizeof(*grown));
@@ -906,12 +914,13 @@ static int prepare_shadows(const KhdaysG3dList *list)
     shadow_groups = groups;
     shadow_bytes = bytes;
     shadow_entries = entries;
+    shadow_masks_made = 1;
     return 1;
 }
 
 static void draw_shadows(SDL_GPUCommandBuffer *cmd, const KhdaysG3dList *list)
 {
-    if (!shadows_ready || !shadow_groups)
+    if (!shadows_ready || !shadow_groups || !shadow_masks_made)
         return;
     const uint32_t groups = shadow_groups;
     SDL_GPUCopyPass *copy = SDL_BeginGPUCopyPass(cmd);
@@ -1363,11 +1372,12 @@ static int draw_body(const KhdaysFramePackage *p, int scale, int texture_smoothi
             return 0;
         }
     }
+    shadow_masks_made = 0; /* (the masks are raster3d.hlsl's, made below only if it draws) */
     if (hud_apart && drawing_hud) { /* the HUD's pass: no world under it for a shadow to fall on */
         shadow_groups = 0;
         shadows_ready = 1;
     } else {
-        shadows_ready = prepare_shadows(list);
+        shadows_ready = prepare_shadows(list, 0);
     }
     if (!shadows_ready) {
         static int said;
@@ -1403,6 +1413,34 @@ static int draw_body(const KhdaysFramePackage *p, int scale, int texture_smoothi
     }
     if (native) {
         drawn_natively = khdays_native3d_count(list, hidden_flags());
+    }
+    rest = !native || drawn_natively < list->npolys;
+    /* the soft masks are raster3d.hlsl's alone: a picture the card draws whole makes none of them (no raster, no
+     * blur, no index), the card drawing the game's own masks with the stencil */
+    if (rest && shadows_ready && shadow_groups != 0) {
+        if (!prepare_shadows(list, 1)) {
+            static int said;
+            if (!said) {
+                said = 1;
+                fprintf(stderr,
+                        "host: the enhanced character shadows are left out (%s); if this persists, turn them off in "
+                        "Settings, Enhancements (said once)\n",
+                        SDL_GetError());
+            }
+            shadows_ready = 0;
+            native = 0;
+            drawn_natively = 0;
+            rest = 1;
+        }
+    } else if (!rest) {
+        static int said;
+        if (shadow_groups != 0 && !said) {
+            said = 1;
+            fprintf(stderr, "host: the character shadows' masks are not made: the card draws the game's own "
+                            "shadows with the stencil (said once)\n");
+        }
+    }
+    if (native) {
         if (!khdays_native3d_prepare(list, drawn_natively, hidden_flags(), &frame, &corner_bytes)) {
             fprintf(stderr, "host: the card's rasterizer cannot draw the 3D (%s): raster3d.hlsl draws it\n",
                     SDL_GetError());
@@ -1410,6 +1448,9 @@ static int draw_body(const KhdaysFramePackage *p, int scale, int texture_smoothi
             native = native_ready = 0;
             drawn_natively = 0;
             corner_bytes = 0;
+            if (shadows_ready && shadow_groups != 0 && !prepare_shadows(list, 1)) {
+                shadows_ready = 0; /* (raster3d.hlsl then draws the game's own shadows) */
+            }
         }
     }
     rest = !native || drawn_natively < list->npolys;

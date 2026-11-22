@@ -86,6 +86,17 @@ receiver depth and polygon identity, and blends without changing floor depth.
 Duplicate receiver triangles do not compound the shadow alpha. Shader sources
 are compiled by `port/tools/build_shaders.py` into all three existing formats.
 
+The masks are `raster3d.hlsl`'s alone: the card's own rasterizer draws the
+game's masks with the stencil and never reads them (`native3d.hlsl`). So a
+picture the card draws whole builds no mask at all -- no tile index on the CPU,
+no raster pass, no soft blur -- and the casts cost the depth-tested triangles
+the list already holds. The tile index and the two dispatches come back the
+moment any of the list is left to `raster3d.hlsl` (a native sequence, or the
+card without its rasterizer). This is the cheaper path the Android port's beta
+12 describes; on a picture with no compute pass it removes the enhancement's
+whole per-frame cost, and the picture is unchanged because nothing read the
+masks there.
+
 ## Provenance and limits
 
 Days integration was researched against `khdays-decomp` commit

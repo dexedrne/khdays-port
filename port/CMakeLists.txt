@@ -526,19 +526,6 @@ target_include_directories(khdays-kh2-limit-timing-test PRIVATE "${DECOMP}/inclu
 target_compile_options(khdays-kh2-limit-timing-test PRIVATE /W4 /std:c17)
 add_test(NAME khdays-kh2-limit-timing COMMAND khdays-kh2-limit-timing-test)
 
-add_executable(khdays-kh2-gpu-test tests/kh2_sequence_gpu_test.cpp ui/heart_points.cpp host/render/kh2_sequence_gpu.c host/render/gpu_hd.c host/render/gpu_raster3d.c host/render/gpu_native3d.c)
-target_link_libraries(khdays-kh2-gpu-test PRIVATE khdays-kh2-gauge khdays-gpu khdays-gfx SDL3::SDL3)
-target_compile_options(khdays-kh2-gpu-test PRIVATE
-    $<$<COMPILE_LANGUAGE:C>:/W4 /std:c17>
-    $<$<COMPILE_LANGUAGE:CXX>:/W4 /std:c++20 /EHsc>)
-add_test(NAME khdays-kh2-gpu COMMAND khdays-kh2-gpu-test)
-set_tests_properties(khdays-kh2-gpu PROPERTIES SKIP_RETURN_CODE 77)
-# the HD pictures on the card: growth, the 3D's pictures coming and going past the most (needs a card)
-add_executable(khdays-gpu-hd-test tests/gpu_hd_test.c host/render/gpu_hd.c gfx/mips.c)
-target_link_libraries(khdays-gpu-hd-test PRIVATE SDL3::SDL3)
-target_compile_options(khdays-gpu-hd-test PRIVATE /W4 /std:c17)
-add_test(NAME khdays-gpu-hd COMMAND khdays-gpu-hd-test)
-set_tests_properties(khdays-gpu-hd PROPERTIES SKIP_RETURN_CODE 77)
 
 add_executable(khdays-kh2-sequence-viewer tools/kh2_sequence_viewer.cpp host/render/png_io.c)
 target_include_directories(khdays-kh2-sequence-viewer PRIVATE "${stb_SOURCE_DIR}")
@@ -546,6 +533,32 @@ target_link_libraries(khdays-kh2-sequence-viewer PRIVATE khdays-kh2-gauge SDL3::
 target_compile_options(khdays-kh2-sequence-viewer PRIVATE
     $<$<COMPILE_LANGUAGE:C>:/W4 /std:c17>
     $<$<COMPILE_LANGUAGE:CXX>:/W4 /std:c++20 /EHsc>)
+endif()
+
+# The 3D on a real graphics card (the CPU Vulkan driver on Linux), as the headless test build runs it; the Windows
+# build above has them too.
+if(KHDAYS_HEADLESS_TEST_BUILD)
+add_executable(khdays-kh2-gpu-test tests/kh2_sequence_gpu_test.cpp ui/heart_points.cpp host/render/kh2_sequence_gpu.c host/render/gpu_hd.c host/render/gpu_raster3d.c host/render/gpu_native3d.c)
+target_link_libraries(khdays-kh2-gpu-test PRIVATE khdays-kh2-gauge khdays-gpu khdays-gfx SDL3::SDL3)
+if(MSVC)
+    target_compile_options(khdays-kh2-gpu-test PRIVATE
+        $<$<COMPILE_LANGUAGE:C>:/W4 /std:c17>
+        $<$<COMPILE_LANGUAGE:CXX>:/W4 /std:c++20 /EHsc>)
+endif()
+add_test(NAME khdays-kh2-gpu COMMAND khdays-kh2-gpu-test)
+set_tests_properties(khdays-kh2-gpu PROPERTIES SKIP_RETURN_CODE 77)
+# the HD pictures on the card: growth, the 3D's pictures coming and going past the most (needs a card)
+add_executable(khdays-gpu-hd-test tests/gpu_hd_test.c host/render/gpu_hd.c gfx/mips.c)
+target_link_libraries(khdays-gpu-hd-test PRIVATE SDL3::SDL3)
+if(MSVC)
+    target_compile_options(khdays-gpu-hd-test PRIVATE /W4 /std:c17)
+endif()
+add_test(NAME khdays-gpu-hd COMMAND khdays-gpu-hd-test)
+set_tests_properties(khdays-gpu-hd PROPERTIES SKIP_RETURN_CODE 77)
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    # the card without a window (the CPU Vulkan driver): SDL's "offscreen" video driver
+    set_tests_properties(khdays-kh2-gpu khdays-gpu-hd PROPERTIES ENVIRONMENT "SDL_VIDEODRIVER=offscreen")
+endif()
 endif()
 
 # The input layer -- the control profile and its settings file, the
@@ -1136,6 +1149,13 @@ if(NOT WIN32)
                     "${CMAKE_CURRENT_SOURCE_DIR}/../tools/ios/test_pace.py"
                     "$<TARGET_FILE:khdays-native>" "${KHDAYS_TEST_ROM}")
                 set_tests_properties(khdays-pace PROPERTIES TIMEOUT 600 SKIP_RETURN_CODE 77 RUN_SERIAL TRUE)
+                # A KH2 model's coat in the field with the owner's private HD pack: the card's rasterizer draws
+                # the clip volume (its inside, the model and the wall), the whole list, no compute pass; the same
+                # field with KHDAYS_3D=compute for the cost. Skips without the private pack.
+                add_test(NAME khdays-clip-native COMMAND "${Python3_EXECUTABLE}"
+                    "${CMAKE_CURRENT_SOURCE_DIR}/../tools/ios/test_clip_native.py"
+                    "$<TARGET_FILE:khdays-native>" "${KHDAYS_TEST_ROM}")
+                set_tests_properties(khdays-clip-native PROPERTIES TIMEOUT 1800 SKIP_RETURN_CODE 77 RUN_SERIAL TRUE)
             endif()
         endif()
         # The Metal shaders' buffers in SDL's order (uniforms first): numbered otherwise they draw nothing.

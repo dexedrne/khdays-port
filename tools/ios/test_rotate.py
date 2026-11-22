@@ -63,7 +63,8 @@ def turn(frame, shape):
     return f"{frame}!safe={','.join(map(str, margins))} {frame + 1}!size={w}x{h}"
 
 
-def play(exe, rom, script, shape, seconds, extra=(), settings=None, pictures=None, videos=None, mod=None):
+def play(exe, rom, script, shape, seconds, extra=(), settings=None, pictures=None, videos=None, mod=None,
+         mods=None):
     """Runs the game until the script is done (and a moment more); returns its log's lines and status."""
     (w, h), margins = shape
     env = dict(os.environ, KHDAYS_ROM=str(rom), SDL_AUDIODRIVER="dummy", SDL_VIDEODRIVER="offscreen",
@@ -82,9 +83,9 @@ def play(exe, rom, script, shape, seconds, extra=(), settings=None, pictures=Non
         if settings is not None:
             (Path(work) / "saves").mkdir()
             (Path(work) / "saves" / "settings.ini").write_text(settings)
-        if mod is not None:
-            (Path(work) / "mods").mkdir()
-            (Path(work) / "mods" / mod.name).symlink_to(mod, target_is_directory=True)
+        for one in ([mod] if mod is not None else []) + list(mods or []):
+            (Path(work) / "mods").mkdir(exist_ok=True)
+            (Path(work) / "mods" / one.name).symlink_to(one, target_is_directory=True)
         if videos is not None:
             # the player's HD videos where the phone looks for them: a link, never a copy
             (Path(work) / "data" / "cutscenes").mkdir(parents=True)
