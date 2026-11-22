@@ -2,6 +2,7 @@
  * the sound bridge, the stream reader, the native driver (with the ARM7 binary given), the replacements
  * and the offline render (docs/BUILD.md, "The port's tests"). Prints "all sound checks passed" and
  * exits 0, or names each failure. */
+#include "../runtime/mods/list.h"
 #include "../sound/channels.h"
 #include "../sound/mix_ds.h"
 #include "../sound/bus.h"
@@ -191,6 +192,7 @@ static void test_channels_golden(void)
  * Built here with stand-ins for what it talks to: the DS clock, the IPC
  * FIFO, the host's output, and a driver of the test's own in place of the
  * native one. */
+#include "../runtime/sound/sound_shots.h"
 #include "../runtime/sound/sound_bridge.h"
 #include "../sound/snd7.h"
 #include "../sound/snd7_native.h"
@@ -241,6 +243,38 @@ int khdays_mods_find(const char *relative, char *path, int size)
     (void)relative;
     (void)path;
     (void)size;
+    return 0;
+}
+int khdays_mods_started_count(void)
+{
+    return 0;
+}
+const char *khdays_mods_started_path(int index)
+{
+    (void)index;
+    return NULL;
+}
+/* no mods' characters */
+int khdays_characters_speaker_sound(const char *game, char *path, int size, char *name, int name_size)
+{
+    (void)game;
+    (void)path;
+    (void)size;
+    (void)name;
+    (void)name_size;
+    return 0;
+}
+int khdays_characters_have_sounds(void)
+{
+    return 0;
+}
+int khdays_characters_sound_file(int index, char *path, int size, char *name, int name_size)
+{
+    (void)index;
+    (void)path;
+    (void)size;
+    (void)name;
+    (void)name_size;
     return 0;
 }
 struct KhdaysRomReader {
@@ -1201,6 +1235,14 @@ static void test_smoothing(void)
     khdays_sound_mix_pc(&hw, NULL, 1.0f, NULL, NULL, smooth);
     CHECK(smooth[0] > 0.0f && smooth[0] < held[0]);
 
+    /* a one-shot sound run to its end is marked so (a mod's longer wave plays on); one the driver stops is not */
+    khdays_sound_hw_step(&hw, 120 * 0x400);
+    CHECK(!hw.channels[5].playing && hw.channels[5].ended);
+    khdays_sound_hw_write(&hw, 5 * 16, 4, 0x80000000u | 127u | 64u << 16 | 2u << 27 | 1u << 29);
+    CHECK(hw.channels[5].playing && !hw.channels[5].ended);
+    khdays_sound_hw_write(&hw, 5 * 16, 4, 127u | 64u << 16 | 2u << 27 | 1u << 29);
+    CHECK(!hw.channels[5].playing && !hw.channels[5].ended);
+
     /* the limiter: too loud turned down to just under full scale, both sides alike, then back up */
     khdays_sound_hw_reset(&quiet_hw, bus_memory);
     khdays_sound_hw_write(&quiet_hw, 0x100, 2, 0x807f);
@@ -1242,8 +1284,67 @@ static void test_smoothing(void)
     }
 }
 
+/* --- A mod's sounds tied to a setting ------------------------------------------------- */
+
+#include "../host/app/hud_settings.h"
+#include "../runtime/sound/sound_mods.h"
+
+/* sounds/switches.txt: a file or a folder of them (slash or not) to a setting's key, the first line naming it; a
+ * comment, a key that is no setting's and a name that only begins the same are none of them. */
+static void test_switches(void)
+{
+    const char *text = "# a comment\r\n"
+                       "seqarc/EV_DARK_APPEAR kh2_corridors\r\n"
+                       "  seqarc/EV_DARK_DISAPPEAR/ kh2_prizes\n"
+                       "seqarc/EV_DARK_APPEAR/se_ev_dark_loop hd_font\n"
+                       "seqarc/COMMON_SYS no_such_setting\n"
+                       "seq/TwilightR_F\tkh2_models";
+    CHECK(khdays_sound_mods_switch(text, "seqarc/EV_DARK_APPEAR/se_ev_dark_loop") == KHDAYS_OPT_CORRIDORS);
+    CHECK(khdays_sound_mods_switch(text, "seqarc/EV_DARK_APPEAR/se_ev_dark_appear") == KHDAYS_OPT_CORRIDORS);
+    CHECK(khdays_sound_mods_switch(text, "seqarc/EV_DARK_DISAPPEAR/se_ev_dark_disappear") == KHDAYS_OPT_PRIZES);
+    CHECK(khdays_sound_mods_switch(text, "seqarc/EV_DARK_APPEARS/se_x") == -1);
+    CHECK(khdays_sound_mods_switch(text, "seqarc/COMMON_SYS/se_sys_click") == -1);
+    CHECK(khdays_sound_mods_switch(text, "seq/TwilightR_F") == KHDAYS_OPT_KH2_MODELS);
+    CHECK(khdays_sound_mods_switch(text, "# a comment") == -1);
+    CHECK(khdays_sound_mods_switch("", "seq/TwilightR_F") == -1);
+}
+
+/* The port's own sounds (sound_shots.h): one heard once ends at its end; one looping is heard past it until ended; a
+ * fade lowers it to nothing over its time and ends it (a KH2 enemy's 6:70 and 6:71) */
+static void test_shots(void)
+{
+    static int16_t samples[100];
+    for (int i = 0; i < 100; ++i) {
+        samples[i] = 16000;
+    }
+    CHECK(khdays_replacement_write_wav(temp_file("khdays_shot.wav"), 1000, 1, samples, 100, 0, 0, 0));
+    const int file = khdays_sound_shot_file(temp_file("khdays_shot.wav"));
+    CHECK(file >= 0);
+    const int once = khdays_sound_shot_play(file, 1.0f, 0.0f), again = khdays_sound_shot_loop(file, 1.0f, 0.0f);
+    CHECK(once != 0 && again != 0 && once != again);
+    for (int i = 0; i < 150; ++i) { /* 150 output samples at the file's rate: past the end of its 100 */
+        float out[2] = {0.0f, 0.0f};
+        khdays_sound_shots_mix(1000, 1.0f, out);
+    }
+    CHECK(!khdays_sound_shot_heard(once) && khdays_sound_shot_heard(again));
+    khdays_sound_shot_fade(again, 0.05f); /* 50 output samples */
+    float first[2] = {0.0f, 0.0f}, later[2] = {0.0f, 0.0f};
+    khdays_sound_shots_mix(1000, 1.0f, first);
+    for (int i = 0; i < 20; ++i) {
+        later[0] = later[1] = 0.0f;
+        khdays_sound_shots_mix(1000, 1.0f, later);
+    }
+    CHECK(later[0] > 0.0f && later[0] < first[0]);
+    for (int i = 0; i < 40; ++i) {
+        float out[2] = {0.0f, 0.0f};
+        khdays_sound_shots_mix(1000, 1.0f, out);
+    }
+    CHECK(!khdays_sound_shot_heard(again) && !khdays_sound_shots_playing());
+}
+
 int main(int argc, char **argv)
 {
+    test_switches();
     test_channels_golden();
     test_bridge();
     test_volumes();
@@ -1251,6 +1352,7 @@ int main(int argc, char **argv)
     test_stream_reader();
     test_native_driver(argc > 1 ? argv[1] : NULL);
     test_loops();
+    test_shots();
     test_round_trip();
     test_render(argc > 1 ? argv[1] : NULL);
     if (failures != 0) {

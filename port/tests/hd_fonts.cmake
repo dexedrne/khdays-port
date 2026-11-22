@@ -5,6 +5,7 @@ set(KHDAYS_FONT_TEST_TARGETS)
 function(khdays_font_test name)
     set(target khdays-font-${name}-test)
     add_executable(${target} ${ARGN})
+    target_link_libraries(${target} PRIVATE khdays-hud-settings)
     if(MSVC)
         target_compile_options(${target} PRIVATE /W4 /WX
                            $<$<COMPILE_LANGUAGE:C>:/std:c17>
@@ -39,7 +40,7 @@ else()
 endif()
 
 set(KHDAYS_FONT_LAYOUT_GEN "${KHDAYS_GEN}/rewritten/libs/nns/g2d/calls")
-add_library(khdays-font-layout-impl OBJECT
+set(KHDAYS_FONT_LAYOUT_SOURCES
     "${KHDAYS_FONT_LAYOUT_GEN}/Text_DrawGlyph.c"
     "${KHDAYS_FONT_LAYOUT_GEN}/Text_DrawLine.c"
     "${KHDAYS_FONT_LAYOUT_GEN}/Text_DrawAlignedLines.c"
@@ -49,12 +50,23 @@ add_library(khdays-font-layout-impl OBJECT
     "${KHDAYS_GEN}/rewritten/src/engine/Obj_ForwardInnerPayload.c"
     "${KHDAYS_GEN}/rewritten/src/engine/Text_DrawWithShadow.c"
     "${KHDAYS_GEN}/rewritten/src/engine/Text_DrawDirectional_2.c")
+add_library(khdays-font-layout-impl OBJECT ${KHDAYS_FONT_LAYOUT_SOURCES})
+add_library(khdays-font-reflow-impl OBJECT ${KHDAYS_FONT_LAYOUT_SOURCES})
+if(MSVC)
+    target_compile_options(khdays-font-reflow-impl PRIVATE /W1 /std:c17 /Zp4)
+else()
+    target_compile_options(khdays-font-reflow-impl PRIVATE -fpack-struct=4)
+endif()
+target_include_directories(khdays-font-reflow-impl BEFORE PRIVATE tests/font_reflow_compat compat "${KHDAYS_GEN}")
+khdays_font_test(reflow tests/font_reflow_test.c $<TARGET_OBJECTS:khdays-font-reflow-impl>)
+
 if(MSVC)
     target_compile_options(khdays-font-layout-impl PRIVATE /W1 /std:c17 /Zp4)
 else()
     target_compile_options(khdays-font-layout-impl PRIVATE -fpack-struct=4)
     target_link_libraries(khdays-font-canvas-test PRIVATE m)
     target_link_libraries(khdays-font-follow-test PRIVATE m)
+    target_link_libraries(khdays-font-reflow-test PRIVATE m)
 endif()
 target_include_directories(khdays-font-layout-impl PRIVATE compat "${KHDAYS_GEN}")
 khdays_font_test(layout tests/font_layout_test.c $<TARGET_OBJECTS:khdays-font-layout-impl>)

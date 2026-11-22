@@ -1,0 +1,150 @@
+// The KH2 enemy kinds of the player's mod (kinds.h).
+#include "kinds.h"
+
+#include <algorithm>
+#include <cctype>
+#include <filesystem>
+#include <fstream>
+#include <sstream>
+
+namespace khdays::kh2_enemies {
+namespace {
+
+std::string upper(std::string s)
+{
+    std::transform(s.begin(), s.end(), s.begin(), [](unsigned char c) { return char(std::toupper(c)); });
+    return s;
+}
+
+std::vector<std::string> split_tabs(const std::string &line)
+{
+    std::vector<std::string> out;
+    std::string cell;
+    std::istringstream in(line);
+    while (std::getline(in, cell, '\t'))
+        out.push_back(cell);
+    return out;
+}
+
+} // namespace
+
+std::vector<Kind> read_kinds(const std::string &text)
+{
+    std::vector<Kind> out;
+    std::istringstream in(text);
+    std::string line;
+    while (std::getline(in, line)) {
+        if (!line.empty() && line.back() == '\r')
+            line.pop_back();
+        if (line.empty() || line[0] == '#')
+            continue;
+        const auto cells = split_tabs(line);
+        if (cells.size() < 4 || cells[0].empty())
+            continue;
+        Kind k;
+        k.name = upper(cells[0]);
+        k.title = cells[1].empty() ? k.name : cells[1];
+        k.covered = cells[2] == "yes";
+        k.calls = std::atoi(cells[3].c_str());
+        k.missing = cells.size() > 4 ? cells[4] : "-";
+        k.plays_player = cells.size() > 5 && cells[5] == "player"; // (a list made before the column: none)
+        if (cells.size() > 6 && !cells[6].empty() && cells[6] != "-")
+            k.journal = std::atoi(cells[6].c_str());
+        if (cells.size() > 7 && cells[7] != "-") {
+            std::istringstream placed(cells[7]);
+            std::string one;
+            while (std::getline(placed, one, ';')) {
+                std::istringstream words(one);
+                Companion c;
+                if (!(words >> c.name >> c.x >> c.y >> c.z >> c.yaw))
+                    continue;
+                if (!(words >> c.argument)) // (none given: 0)
+                    c.argument = 0;
+                c.name = upper(c.name);
+                k.with.push_back(c);
+            }
+        }
+        if (cells.size() > 8 && !cells[8].empty() && cells[8] != "-")
+            k.mission = cells[8];
+        if (cells.size() > 9 && cells[9] != "-") {
+            std::istringstream ways(cells[9]);
+            std::string one;
+            while (std::getline(ways, one, ';')) {
+                std::istringstream words(one);
+                WalkPath w;
+                if (!(words >> w.number))
+                    continue;
+                float v = 0.0F;
+                while (words >> v)
+                    w.points.push_back(v);
+                w.points.resize(w.points.size() / 3 * 3);
+                if (!w.points.empty())
+                    k.paths.push_back(std::move(w));
+            }
+        }
+        if (cells.size() > 10 && !cells[10].empty() && cells[10] != "-")
+            k.home = cells[10];
+        if (cells.size() > 11 && cells[11] != "-") {
+            std::istringstream placed(cells[11]);
+            std::string one;
+            while (std::getline(placed, one, ';')) {
+                std::istringstream words(one);
+                Companion c;
+                if (!(words >> c.name >> c.x >> c.y >> c.z >> c.yaw))
+                    continue;
+                if (!(words >> c.argument)) // (a list made before the argument: none)
+                    c.argument = 0;
+                c.name = upper(c.name);
+                k.room.push_back(std::move(c));
+            }
+        }
+        if (cells.size() > 12 && !cells[12].empty() && cells[12] != "-")
+            k.unit_arg = std::atoi(cells[12].c_str());
+        if (cells.size() > 13 && cells[13] != "-") {
+            const std::size_t colon = cells[13].find(':');
+            if (colon != std::string::npos) {
+                k.weapon = upper(cells[13].substr(0, colon));
+                k.weapon_set = upper(cells[13].substr(colon + 1));
+            }
+        }
+        out.push_back(std::move(k));
+    }
+    return out;
+}
+
+const Kind *find_kind(const std::vector<Kind> &kinds, const std::string &name)
+{
+    const std::string key = upper(name);
+    for (const auto &k : kinds)
+        if (k.name == key)
+            return &k;
+    return nullptr;
+}
+
+std::vector<Kind> load_kinds(const std::string &folder, const std::function<void(const std::string &)> &why)
+{
+    namespace fs = std::filesystem;
+    const fs::path base(std::u8string(folder.begin(), folder.end()));
+    std::ifstream in(base / "kh2_enemies.txt", std::ios::binary);
+    if (!in) {
+        why("kh2 enemies: no list in " + folder);
+        return {};
+    }
+    std::stringstream text;
+    text << in.rdbuf();
+    std::vector<Kind> kept;
+    std::error_code ec;
+    for (auto &k : read_kinds(text.str())) {
+        const fs::path obj = base / "kh2" / "obj";
+        // its .mdlx (its script, its shapes); its .mset when it has motions of its own (the Possessor has none)
+        if (!fs::is_regular_file(obj / (k.name + ".mdlx"), ec)) {
+            why("kh2 enemies: " + k.name + "'s .mdlx is missing; left out");
+            continue;
+        }
+        k.folder = folder;
+        kept.push_back(std::move(k));
+    }
+    return kept;
+}
+
+} // namespace khdays::kh2_enemies

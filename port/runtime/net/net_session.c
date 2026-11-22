@@ -6,6 +6,7 @@
 #include "../core/session_log.h"
 #include "../core/sha1.h"
 #include "../../host/net/net.h"
+#include "../core/bytes.h"
 
 #include <SDL3/SDL.h>
 
@@ -92,8 +93,10 @@ enum { GAME_PORT = 12, GATES = 32 };
  * data port 14), handed to the scripts and never to the game: a kind byte, then
  *   MODS_SEED: the room's seed (u64), the host's to each member as it joins and whenever it changes;
  *   MODS_SHARE: a piece of a message the host's mods share, a byte 1 on its last piece, then its bytes;
- *               a message's pieces come in order, as every port's records do. */
-enum { MODS_PORT = 15, MODS_SEED = 1, MODS_SHARE };
+ *               a message's pieces come in order, as every port's records do;
+ *   MODS_MISSIONS: a piece of a copy's new missions (runtime/missions/room.h), as MODS_SHARE's pieces: the
+ *               host's to each member as it joins, a guest's to the host as it is welcomed. */
+enum { MODS_PORT = 15, MODS_SEED = 1, MODS_SHARE, MODS_MISSIONS };
 #define MODS_PIECE 1024 /* a share's bytes in one record: a datagram's worth */
 /* Online: a host registers its room every 2 s (the server forgets it after
  * 10 s of silence), and a guest asks for the rooms every second while the
@@ -172,6 +175,13 @@ typedef struct Peer {
     int play_filling, play_started, play_trim;
     unsigned int play_calm, play_window, play_least;
     unsigned int play_dry, play_trimmed;
+    /* the new missions this copy has (MODS_MISSIONS): a host's guest's, a guest's host's; known once its last
+     * piece came (an older port never sends them), and the pieces being put together */
+    unsigned char *missions;
+    unsigned int missions_size;
+    int missions_known;
+    unsigned char *missions_part;
+    int missions_part_size, missions_part_room;
     /* Host only: when the last control arrived (in battle ticks), and the
      * longest gap between two controls in this ten-second window and the one
      * before. The store never grows deeper than that gap: deep enough to ride
@@ -285,6 +295,8 @@ static struct {
         unsigned int size;
     } *shares;
     int share_count, shares_room;
+    /* counted up each time a copy's new missions come, or a copy joins or leaves (khdays_net_missions_version) */
+    unsigned int missions_version;
     /* guest: this copy's movement stick (the game's thread sets it), the one sent last and when */
     KhdaysNetStick own_stick, sent_stick;
     u64 stick_sent;
@@ -377,6 +389,7 @@ static u64 since(u64 now, u64 then)
 static void ping_levels(Peer *p, const unsigned char *body, unsigned int size);
 static void send_stick(void);
 static void send_seed(Peer *p);
+static void send_missions(Peer *p);
 static void mods_forget(void);
 
 /* Makes room for `need` items, doubling, the new part zeroed. Out of memory,
@@ -447,16 +460,6 @@ static void put32(unsigned char *p, unsigned int v)
     put16(p + 2, v >> 16);
 }
 
-static unsigned int get16(const unsigned char *p)
-{
-    return (unsigned int)p[0] | (unsigned int)p[1] << 8;
-}
-
-static unsigned int get32(const unsigned char *p)
-{
-    return get16(p) | get16(p + 2) << 16;
-}
-
 static void put64(unsigned char *p, u64 v)
 {
     put32(p, (unsigned int)v);
@@ -465,7 +468,7 @@ static void put64(unsigned char *p, u64 v)
 
 static u64 get64(const unsigned char *p)
 {
-    return (u64)get32(p) | (u64)get32(p + 4) << 32;
+    return (u64)le32(p) | (u64)le32(p + 4) << 32;
 }
 
 /* Sends a datagram, applying the testing knobs: it may be dropped (loss) or
@@ -500,6 +503,9 @@ static SDL_Mutex *mods_lock;
 static SDL_InitState mods_once;
 static unsigned int mods_fingerprint, mods_count, mods_size;
 static unsigned char *mods_list;
+/* this copy's new missions for the rooms (runtime/missions/room.h), set as the game starts */
+static unsigned char *own_missions;
+static unsigned int own_missions_size;
 
 static void mods_ready(void)
 {
@@ -640,7 +646,10 @@ static void free_peer(Peer *p)
         free_records(&p->streams[i].unacked);
         free_records(&p->streams[i].early);
     }
+    free(p->missions);
+    free(p->missions_part);
     memset(p, 0, sizeof(*p));
+    ++net.missions_version;
 }
 
 /* The peer at `index`, making room for it if needed. */
@@ -800,12 +809,34 @@ static void send_ack(Peer *p, unsigned int port)
 
 static void control_came(Peer *p, unsigned int port, const unsigned char *data, unsigned int size);
 
-/* A record arrived. If it is the next in order it goes to the game, followed
- * by any early ones that now follow on. An early record waits; one already
- * received is ignored. */
-/* A mods' record from the host (MODS_PORT): the room's seed kept, a share's piece added. */
-static void mods_record(const unsigned char *data, unsigned int size)
+/* A piece of copy `p`'s new missions (MODS_MISSIONS): added, and the list kept once its last piece came. */
+static void missions_record(Peer *p, const unsigned char *data, unsigned int size)
 {
+    const int bytes = (int)size - 2;
+    p->missions_part =
+        (unsigned char *)grow(p->missions_part, &p->missions_part_room, p->missions_part_size + bytes, 1);
+    memcpy(p->missions_part + p->missions_part_size, data + 2, (size_t)bytes);
+    p->missions_part_size += bytes;
+    if (data[1] == 1) {
+        free(p->missions);
+        p->missions = p->missions_part_size > 0 ? copy_of(p->missions_part, (unsigned int)p->missions_part_size) : NULL;
+        p->missions_size = p->missions != NULL ? (unsigned int)p->missions_part_size : 0;
+        p->missions_known = 1;
+        p->missions_part_size = 0;
+        ++net.missions_version;
+        khdays_log("net: %s %u's new missions came (%u bytes)", net.role == HOST ? "member" : "host", p->aid,
+                   p->missions_size);
+    }
+}
+
+/* A mods' record (MODS_PORT): from the host, the room's seed kept or a share's piece added; from any copy, a piece
+ * of its new missions. */
+static void mods_record(Peer *p, const unsigned char *data, unsigned int size)
+{
+    if (size >= 2 && data[0] == MODS_MISSIONS) {
+        missions_record(p, data, size);
+        return;
+    }
     if (net.role != GUEST || size < 1) {
         return;
     }
@@ -830,13 +861,16 @@ static void mods_record(const unsigned char *data, unsigned int size)
 static void record_in_order(Peer *p, unsigned int port, const unsigned char *data, unsigned int size)
 {
     if (port == MODS_PORT) {
-        mods_record(data, size);
+        mods_record(p, data, size);
         return;
     }
     push(KHDAYS_NET_RECORD, p->aid, data, size)->event.port = port;
     control_came(p, port, data, size);
 }
 
+/* A record arrived. If it is the next in order it goes to the game, followed
+ * by any early ones that now follow on. An early record waits; one already
+ * received is ignored. */
 static void received_record(Peer *p, unsigned int port, unsigned int seq, const unsigned char *data, unsigned int size)
 {
     Stream *s = &p->streams[port];
@@ -1064,7 +1098,7 @@ static void room_seen(const unsigned char *id, const KhdaysNetAddress *address, 
     if (size < 20 || net.role == HOST || memcmp(id, net.id, ID_SIZE) == 0) {
         return;
     }
-    info_size = get32(body + 16);
+    info_size = le32(body + 16);
     if (info_size > size - 20) {
         return;
     }
@@ -1080,9 +1114,9 @@ static void room_seen(const unsigned char *id, const KhdaysNetAddress *address, 
         r->address = *address;
         r->local = local;
     }
-    r->build = get32(body);
+    r->build = le32(body);
     r->open = body[10] != 0;
-    r->ggid = get32(body + 12);
+    r->ggid = le32(body + 12);
     r->seen = now;
     free(r->info);
     r->info = copy_of(body + 20, info_size);
@@ -1091,10 +1125,10 @@ static void room_seen(const unsigned char *id, const KhdaysNetAddress *address, 
     {
         /* its details, when its build sends them */
         const unsigned int at = 20 + info_size;
-        r->details = size - at >= DETAILS_FIXED && get32(body + at) == DETAILS_MAGIC;
+        r->details = size - at >= DETAILS_FIXED && le32(body + at) == DETAILS_MAGIC;
         if (r->details) {
-            const unsigned int ms = get16(body + at + 4);
-            const unsigned int name = get16(body + at + 24);
+            const unsigned int ms = le16(body + at + 4);
+            const unsigned int name = le16(body + at + 24);
             r->host_server_ms = ms == 0xffffu ? -1 : (int)ms;
             r->most = body[at + 6];
             r->locked = (body[at + 7] & 1) != 0;
@@ -1142,9 +1176,9 @@ static void on_server(unsigned int kind, const unsigned char *body, unsigned int
         if (size < 6 || !net.scanning) {
             return;
         }
-        total = get16(body);
-        first = get16(body + 2);
-        count = get16(body + 4);
+        total = le16(body);
+        first = le16(body + 2);
+        count = le16(body + 4);
         if (first == 0 && net.list_waiting) {
             server_round_trip(net.list_sent, now);
             net.list_waiting = 0;
@@ -1155,12 +1189,12 @@ static void on_server(unsigned int kind, const unsigned char *body, unsigned int
             if (size - at < 14) {
                 return;
             }
-            length = get16(body + at + 12);
+            length = le16(body + at + 12);
             if (length > size - at - 14) {
                 return;
             }
-            address.ip = get32(body + at + 6);
-            address.port = (unsigned short)get16(body + at + 10);
+            address.ip = le32(body + at + 6);
+            address.port = (unsigned short)le16(body + at + 10);
             room_seen(body + at, &address, 0, body + at + 14, length, now);
             at += 14 + length;
         }
@@ -1177,9 +1211,9 @@ static void on_server(unsigned int kind, const unsigned char *body, unsigned int
         if (size < CONNECT_BODY) {
             return;
         }
-        token = get32(body);
-        address.ip = get32(body + 10);
-        address.port = (unsigned short)get16(body + 14);
+        token = le32(body);
+        address.ip = le32(body + 10);
+        address.port = (unsigned short)le16(body + 14);
         put32(punch, token);
         if (net.role == HOST) {
             /* A guest is on its way: punch toward it until it arrives. Only
@@ -1306,7 +1340,7 @@ static void refuse_for_mods(const Route *to)
  * without Stop apart (khdays_net_last_refusal_stop_off). */
 static void take_refusal_mods(const unsigned char *body, unsigned int size)
 {
-    const unsigned int count = size >= 3 ? get16(body + 1) : 0;
+    const unsigned int count = size >= 3 ? le16(body + 1) : 0;
     unsigned int at = 3, shown = 0, written = 0, length = 0;
     char *text = (char *)malloc(size * 2 + 1);
     free(net.refusal_mods);
@@ -1353,11 +1387,11 @@ static void on_datagram(const Route *from, const unsigned char *d, long got, u64
     const unsigned char *sender, *body;
     unsigned int kind, size;
     Peer *p;
-    if (got < HEADER || get32(d) != MAGIC || d[5] != 1) {
+    if (got < HEADER || le32(d) != MAGIC || d[5] != 1) {
         return;
     }
     kind = d[4];
-    size = get16(d + 6);
+    size = le16(d + 6);
     if ((long)HEADER + (long)size > got) {
         return;
     }
@@ -1368,7 +1402,7 @@ static void on_datagram(const Route *from, const unsigned char *d, long got, u64
             /* a relayed datagram: handle it as if it came from the other player */
             Route relayed;
             relayed.address = net.server;
-            relayed.relay = get32(body);
+            relayed.relay = le32(body);
             if (relayed.relay != 0) {
                 on_datagram(&relayed, body + 4, (long)size - 4, now);
             }
@@ -1397,7 +1431,7 @@ static void on_datagram(const Route *from, const unsigned char *d, long got, u64
          * which no firewall blocks (its announcement may have come in on any
          * of the machine's interfaces). */
         address.ip = own_address(from->address.ip) ? 0x7f000001u : from->address.ip;
-        address.port = (unsigned short)get16(body + 8);
+        address.port = (unsigned short)le16(body + 8);
         room_seen(sender, &address, 1, body, size, now);
         return;
     }
@@ -1422,8 +1456,8 @@ static void on_datagram(const Route *from, const unsigned char *d, long got, u64
             }
             return;
         }
-        refuse = get32(body) != net.build                     ? KHDAYS_NET_REFUSE_BUILD
-                 : get32(body + 4) != own_mods_fingerprint()  ? KHDAYS_NET_REFUSE_MODS
+        refuse = le32(body) != net.build                     ? KHDAYS_NET_REFUSE_BUILD
+                 : le32(body + 4) != own_mods_fingerprint()  ? KHDAYS_NET_REFUSE_MODS
                  : !net.open                                  ? KHDAYS_NET_REFUSE_CLOSED
                  : (unsigned int)members() >= net.max_members ? KHDAYS_NET_REFUSE_FULL
                  : !password_proven(sender, body, size)       ? KHDAYS_NET_REFUSE_PASSWORD
@@ -1478,6 +1512,7 @@ static void on_datagram(const Route *from, const unsigned char *d, long got, u64
          * through the server */
         new_peer(peer_slot(0), 0, sender, from);
         net.peers[0].state = MEMBER;
+        send_missions(&net.peers[0]);
         push(KHDAYS_NET_JOINED, net.own_aid, NULL, 0);
         khdays_log("net: joined as member %u%s", net.own_aid, from->relay != 0 ? ", through the server" : "");
         return;
@@ -1509,11 +1544,11 @@ static void on_datagram(const Route *from, const unsigned char *d, long got, u64
             if (size - at < RECORD_HEADER) {
                 return;
             }
-            length = get16(body + at);
+            length = le16(body + at);
             if (length > size - at - RECORD_HEADER) {
                 return;
             }
-            received_record(p, port, get32(body + at + 2), body + at + RECORD_HEADER, length);
+            received_record(p, port, le32(body + at + 2), body + at + RECORD_HEADER, length);
             at += RECORD_HEADER + length;
         }
         return;
@@ -1522,7 +1557,7 @@ static void on_datagram(const Route *from, const unsigned char *d, long got, u64
         if (p == NULL || size < 12 || body[0] >= PORTS) {
             return;
         }
-        acknowledged(p, body[0], get32(body + 4), get32(body + 8), now);
+        acknowledged(p, body[0], le32(body + 4), le32(body + 8), now);
         return;
     case PING:
         if (p != NULL && size >= 8) {
@@ -1562,8 +1597,8 @@ static void on_datagram(const Route *from, const unsigned char *d, long got, u64
         return;
     case STICK:
         if (net.role == HOST && p != NULL && p->state == MEMBER && size >= STICK_BODY) {
-            p->stick.x = (short)get16(body);
-            p->stick.y = (short)get16(body + 2);
+            p->stick.x = (short)le16(body);
+            p->stick.y = (short)le16(body + 2);
             p->stick.run_threshold = body[4];
             p->stick.walk_speed = body[5];
             p->stick.on = body[6];
@@ -1871,7 +1906,7 @@ static unsigned int ping_body(u64 now, unsigned char **body, int *room)
 static void ping_levels(Peer *p, const unsigned char *body, unsigned int size)
 {
     if (net.role == HOST && size >= 10) {
-        p->level = (int)get16(body + 8);
+        p->level = (int)le16(body + 8);
         p->stop = size >= 10 + STOP_BYTES ? get_stop(body + 10) : 0;
     } else if (net.role == GUEST && size >= 9) {
         const unsigned int count = body[8];
@@ -1882,7 +1917,7 @@ static void ping_levels(Peer *p, const unsigned char *body, unsigned int size)
         for (unsigned int k = 0; k < count && 9 + 3 * k + 3 <= size; ++k) {
             const unsigned int aid = body[9 + 3 * k];
             net.levels = (int *)grow(net.levels, &net.level_room, (int)aid + 1, sizeof(*net.levels));
-            net.levels[aid] = (int)get16(body + 9 + 3 * k + 1);
+            net.levels[aid] = (int)le16(body + 9 + 3 * k + 1);
         }
         forget_stops();
         if (at < size) {
@@ -2304,6 +2339,7 @@ void khdays_net_accept(unsigned int aid, int accepted)
             if (net.mods_seed_known) {
                 send_seed(p);
             }
+            send_missions(p);
             push(KHDAYS_NET_JOINED, aid, NULL, 0);
             khdays_log("net: member %u in", aid);
         } else {
@@ -2548,6 +2584,74 @@ static void send_seed(Peer *p)
     unsigned char record[9] = {MODS_SEED};
     put64(record + 1, net.mods_seed);
     queue_record(p, MODS_PORT, record, sizeof(record));
+}
+
+/* This copy's new missions to copy `p`, in pieces; an empty list as one empty last piece, so that `p` knows there
+ * are none (the caller holds net.lock). */
+static void send_missions(Peer *p)
+{
+    unsigned char record[2 + MODS_PIECE];
+    unsigned int at = 0;
+    mods_ready();
+    SDL_LockMutex(mods_lock);
+    do {
+        const unsigned int piece = own_missions_size - at < MODS_PIECE ? own_missions_size - at : MODS_PIECE;
+        record[0] = MODS_MISSIONS;
+        record[1] = at + piece == own_missions_size;
+        if (piece > 0) {
+            memcpy(record + 2, own_missions + at, piece);
+        }
+        queue_record(p, MODS_PORT, record, 2 + piece);
+        at += piece;
+    } while (at < own_missions_size);
+    SDL_UnlockMutex(mods_lock);
+}
+
+void khdays_net_set_missions(const unsigned char *list, unsigned int size)
+{
+    unsigned char *copy = size > 0 ? (unsigned char *)malloc(size) : NULL;
+    if (copy != NULL) {
+        memcpy(copy, list, size);
+    }
+    mods_ready();
+    SDL_LockMutex(mods_lock);
+    free(own_missions);
+    own_missions = copy;
+    own_missions_size = copy != NULL ? size : 0;
+    SDL_UnlockMutex(mods_lock);
+}
+
+int khdays_net_room_missions(void (*each)(const unsigned char *list, unsigned int size, int known, void *context),
+                             void *context)
+{
+    int role = 0;
+    if (!net.started) {
+        return 0;
+    }
+    SDL_LockMutex(net.lock);
+    if (net.role != NONE && members() > 0) {
+        role = net.role == HOST ? 1 : 2;
+        for (int i = 0; i < net.peer_room; ++i) {
+            const Peer *p = &net.peers[i];
+            if (p->used && p->state == MEMBER) {
+                each(p->missions, p->missions_size, p->missions_known, context);
+            }
+        }
+    }
+    SDL_UnlockMutex(net.lock);
+    return role;
+}
+
+unsigned int khdays_net_missions_version(void)
+{
+    unsigned int version;
+    if (!net.started) {
+        return 0;
+    }
+    SDL_LockMutex(net.lock);
+    version = net.missions_version + (unsigned int)net.role * 0x10000u;
+    SDL_UnlockMutex(net.lock);
+    return version;
 }
 
 /* The room's seed and the shares waiting, forgotten (the caller holds net.lock). */

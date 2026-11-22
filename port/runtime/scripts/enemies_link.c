@@ -5,9 +5,11 @@
 #include "enemies_link.h"
 
 #include "../battle/stop_magic.h"
+#include "../kh2_enemies/shell.h"
+#include "../plugins/actors.h"
 
 #include "api_v2.h"
-#include "../core/window.h"
+#include "../core/game_memory.h"
 
 #include "khdays_ds_symbols.h"
 
@@ -17,12 +19,13 @@
 #include <string.h>
 
 extern void Ov002_CreateActorFromMarker(int nSourceIndex, int nRowIndex);
-extern int Ov002_GetEffectiveHeight(KhdaysRef row);
+extern int Ov002_GetMarkerEnemyLevel(KhdaysRef row);
 extern int Ov002_GetStateWord(void);
 extern void Ov107_AiState_LoadResistances(KhdaysRef actor, unsigned profile);
 extern int Ov107_MoveNodeAndRelayout(KhdaysRef node, KhdaysRef at);
 extern void Ov107_SetStatusAndEmit(KhdaysRef node, unsigned char status);
 extern int Ov107_GetActorManager(void);
+extern int Ov107_AiState_ApplyHit(KhdaysRef obj, KhdaysRef source, KhdaysRef packet);
 extern void Ov107_Scene_BuildIdTable(void);
 extern void FreeInstanceMemory(KhdaysRef p);
 extern int Session_IsActive(void);
@@ -65,6 +68,16 @@ const char *khdays_enemy_name(int id); /* enemy_names.c */
 #define SPAWNER_SLOT_BYTES 12u
 #define SLOT_ROW 0u
 #define SLOT_ENTRY 3u
+#define SLOT_OWNER_TAG 4u /* its spawner's place among the field's objects << 8 | its group in the spawner's record */
+/* the field's objects (Ov002ObjectContext): its spawners' records (+4: u8 rows, u8 records, +4 the rows, +8 a record
+ * each: s8 groups, .., +4 the groups {s8 row, u8 limit, u8 count, ..}) and its objects (+0x44, 0x18 bytes each, +0x14
+ * the s8 record it was made from) */
+#define OBJECTS_RECORDS 0x4u
+#define RECORDS_FIRST 0x8u
+#define RECORD_GROUPS 0x4u
+#define OBJECTS_SLOTS 0x44u
+#define OBJECT_SLOT_BYTES 0x18u
+#define OBJECT_SLOT_RECORD 0x14u
 #define TABLE_KINDS 0x94u
 #define TABLE_ROW_BYTES 4u
 #define TABLE_ROW_KIND 1u
@@ -85,18 +98,38 @@ const char *khdays_enemy_name(int id); /* enemy_names.c */
 #define AI_RETIRE 0x1e8u
 #define AI_LOAD_STATS 0x1ecu
 #define AI_ACTIVATE 0x1f0u
-#define AI_PLACE 0x1f4u  /* the home and its reach (Ov107_StoreHitInfo) */
+#define AI_PLACE 0x1f4u  /* the home and its reach (Ov107_SetHomeAndReach) */
 #define AI_HP_MAX 0x218u /* s16 */
 #define AI_HP 0x21au     /* s16 */
 #define AI_ATTACKER 0x25cu
-#define AI_ATTACKS 0x290u /* s16 each 6 bytes, 8 of them (Ov107_StoreSlotEvent) */
+#define AI_ATTACKS 0x290u /* s16 each 6 bytes, 8 of them (Ov107_SetAttackPower) */
 #define AI_BUSY 0x2e8u
 #define AI_SPAWNER 0x2d4u
 #define ATTACKS 8
-#define REACH (16 * 4096) /* the mission's spawners' (Ov002_ScriptCreateSlotObject's 9th) */
+#define REACH (16 * 4096) /* the mission's spawners' (Ov002_ScriptCreateSpawner's 9th) */
 #define MANAGER_IDS 0x48u /* gOv107ActorManager: an actor by its id (+2), made by Ov107_Scene_BuildIdTable */
+/* A hit as the players' attacks give it (Ov022_SendSweepHit's packet, Ov107_AiState_ApplyHit): u16 flags (4 a
+ * physical hit, 0x80 no flinch), u16 its kinds (0x4000 a physical hit; the statuses' bits 0x80 burn, 0x8 freeze, 0x800
+ * jolt, 0x4 toss), its place (20.12), s16 its damage, s16 an extra, u16 its author's seat, its part node (none: the
+ * damage taken as it is, Ov107_CalcHitDamage), s8 the statuses' chance (0-100), then what the routine answers. */
+#define HIT_BYTES 0x2cu
+#define HIT_FLAGS 0x0u
+#define HIT_KINDS 0x2u
+#define HIT_PLACE 0x4u
+#define HIT_DAMAGE 0x10u
+#define HIT_AUTHOR 0x14u
+#define HIT_CHANCE 0x1cu
+#define HIT_PHYSICAL 0x4u
+#define HIT_NO_FLINCH 0x80u
+#define KIND_PHYSICAL 0x4000u
+#define PLAYER_SUB 0x4ecu /* a player actor's part its hits come from (Ov022_SendSweepHit's source) */
+#define MANAGER_LIST 0x4u /* gOv107ActorManager: its actors' list (List_First): +4 its first node, +0x10 its end */
+#define LIST_FIRST 0x4u
+#define LIST_END 0x10u
+#define NODE_NEXT 0x4u
+#define NODE_ITEM 0xcu /* the element, whose first word is the actor (Ov107_Scene_BuildIdTable) */
 #define STANDING 0x100u
-#define LEVEL_MAX 0x78 /* Ov002_GetEffectiveHeight */
+#define LEVEL_MAX 0x78 /* Ov002_GetMarkerEnemyLevel */
 /* The enemies' overlays (Ov107_SpawnEntityClass, Ov107_LoadEnemyOverlay): six places of 0x1e00 bytes;
  * each kind has a build of its overlay for some of them (ov107's table, 0xff none), overlay 114 + the
  * build, which takes its size / 0x1e00 + 1 places. A kind's overlay is loaded as its first enemy is
@@ -142,39 +175,25 @@ static int traced(void)
     return tracing;
 }
 
-static unsigned rd32(KhdaysRef at)
-{
-    return khdays_game_ram(at) ? *(const unsigned *)KHDAYS_W(at) : 0;
-}
-
-static unsigned rd16(KhdaysRef at)
-{
-    return khdays_game_ram(at) ? *(const unsigned short *)KHDAYS_W(at) : 0;
-}
-
-static unsigned rd8(KhdaysRef at)
-{
-    return khdays_game_ram(at) ? *(const unsigned char *)KHDAYS_W(at) : 0;
-}
-
-static void wr32(KhdaysRef at, unsigned v)
-{
-    *(unsigned *)KHDAYS_W(at) = v;
-}
-
-static void wr16(KhdaysRef at, unsigned v)
-{
-    *(unsigned short *)KHDAYS_W(at) = (unsigned short)v;
-}
-
-static void wr8(KhdaysRef at, unsigned v)
-{
-    *(unsigned char *)KHDAYS_W(at) = (unsigned char)v;
-}
-
 static unsigned ref_of(const void *p)
 {
     return p != NULL ? (unsigned)KHDAYS_REF(p) : 0;
+}
+
+static unsigned ids_table, ids_count; /* the actors' table by id, and the ids it was made for */
+
+void khdays_enemies_ids_built(const void *table, int count)
+{
+    ids_table = ref_of(table);
+    ids_count = count > 0 ? (unsigned)count : 0u;
+    if (traced()) {
+        fprintf(stderr, "enemies: f%u the actors' table by id made for %u ids\n", khdays_link_frame(), ids_count);
+    }
+}
+
+int khdays_enemies_ids_room(const void *table)
+{
+    return ref_of(table) == ids_table ? (int)ids_count : 0;
 }
 
 static int clamp(long long v, int low, int high)
@@ -185,26 +204,26 @@ static int clamp(long long v, int low, int high)
 /* The field's objects while the field runs with its enemies loaded; 0 otherwise. */
 static unsigned objects(void)
 {
-    if (rd32(KHDAYS_DS_gSceneCtl + SCENE_CURRENT) != FIELD_SCENE || !khdays_overlay_loaded(OV_FIELD) ||
+    if (checked_rd32(KHDAYS_DS_gSceneCtl + SCENE_CURRENT) != FIELD_SCENE || !khdays_overlay_loaded(OV_FIELD) ||
         !khdays_overlay_loaded(OV_BATTLE) || !khdays_overlay_loaded(OV_ENEMIES)) {
         return 0;
     }
-    return rd32(OBJECTS);
+    return checked_rd32(OBJECTS);
 }
 
 static unsigned row_at(unsigned objs, int row)
 {
-    return rd32(rd32(objs + OBJECTS_TABLE) + 4u) + (unsigned)row * ROW;
+    return checked_rd32(checked_rd32(objs + OBJECTS_TABLE) + 4u) + (unsigned)row * ROW;
 }
 
 /* The row of `kind` the area placed, -1 without. */
 static int placed_row(unsigned objs, int kind)
 {
-    const unsigned places = rd32(objs + OBJECTS_PLACES);
-    const unsigned count = rd8(objs + OBJECTS_PLACE_COUNT);
+    const unsigned places = checked_rd32(objs + OBJECTS_PLACES);
+    const unsigned count = checked_rd8(objs + OBJECTS_PLACE_COUNT);
     for (unsigned i = 0; i < count; ++i) {
-        const int row = (signed char)rd8(places + 2u * i);
-        if (row >= 0 && (int)rd8(row_at(objs, row)) == kind) {
+        const int row = (signed char)checked_rd8(places + 2u * i);
+        if (row >= 0 && (int)checked_rd8(row_at(objs, row)) == kind) {
             return row;
         }
     }
@@ -215,16 +234,16 @@ int khdays_enemies_kinds(int *out, int room)
 {
     const unsigned objs = objects();
     int n = 0;
-    if (objs == 0 || rd32(objs + OBJECTS_SOURCES) == 0) {
+    if (objs == 0 || checked_rd32(objs + OBJECTS_SOURCES) == 0) {
         return 0;
     }
-    for (unsigned i = 0, count = rd8(objs + OBJECTS_PLACE_COUNT); i < count; ++i) {
-        const int row = (signed char)rd8(rd32(objs + OBJECTS_PLACES) + 2u * i);
-        const int kind = row >= 0 ? (int)rd8(row_at(objs, row)) : -1;
+    for (unsigned i = 0, count = checked_rd8(objs + OBJECTS_PLACE_COUNT); i < count; ++i) {
+        const int row = (signed char)checked_rd8(checked_rd32(objs + OBJECTS_PLACES) + 2u * i);
+        const int kind = row >= 0 ? (int)checked_rd8(row_at(objs, row)) : -1;
         int seen = kind < 0;
         for (unsigned j = 0; j < i && !seen; ++j) {
-            const int other = (signed char)rd8(rd32(objs + OBJECTS_PLACES) + 2u * j);
-            seen = other >= 0 && (int)rd8(row_at(objs, other)) == kind;
+            const int other = (signed char)checked_rd8(checked_rd32(objs + OBJECTS_PLACES) + 2u * j);
+            seen = other >= 0 && (int)checked_rd8(row_at(objs, other)) == kind;
         }
         if (!seen) {
             if (out != NULL && n < room) {
@@ -249,11 +268,11 @@ int khdays_enemies_kind_count(void)
 /* Whether `kind`'s overlay is loaded, or would still fit. */
 static int overlay_fits(int kind)
 {
-    if (rd8(KIND_PLACE + (unsigned)kind) != 0) {
+    if (checked_rd8(KIND_PLACE + (unsigned)kind) != 0) {
         return 1;
     }
-    for (int place = (int)rd32(NEXT_PLACE); place >= 0 && place < PLACES; ++place) {
-        const unsigned build = rd8(KIND_BUILDS + 6u * (unsigned)kind + (unsigned)place);
+    for (int place = (int)checked_rd32(NEXT_PLACE); place >= 0 && place < PLACES; ++place) {
+        const unsigned build = checked_rd8(KIND_BUILDS + 6u * (unsigned)kind + (unsigned)place);
         if (build != 0xff) {
             const int size = khdays_overlay_size(FIRST_BUILD + (int)build);
             return size >= 0 && place + size / PLACE_SIZE + 1 <= PLACES;
@@ -271,7 +290,7 @@ const char *khdays_enemies_can_make(int kind)
     if (kind < 0 || kind >= KINDS) {
         return "unknown kind";
     }
-    if (rd8(objs + OBJECTS_PLACE_COUNT) == 0) {
+    if (checked_rd8(objs + OBJECTS_PLACE_COUNT) == 0) {
         return "no enemies here";
     }
     return placed_row(objs, kind) >= 0 || overlay_fits(kind) ? NULL : "no room for its kind";
@@ -282,11 +301,11 @@ static int source_index(unsigned objs)
 {
     int first = -1;
     for (int i = 0; i < SOURCES; ++i) {
-        const unsigned source = rd32(objs + OBJECTS_SOURCES + 4u * (unsigned)i);
+        const unsigned source = checked_rd32(objs + OBJECTS_SOURCES + 4u * (unsigned)i);
         if (source == 0) {
             continue;
         }
-        if (rd32(source + SOURCE_FLAGS) & 2u) {
+        if (checked_rd32(source + SOURCE_FLAGS) & 2u) {
             return i;
         }
         if (first < 0) {
@@ -299,9 +318,9 @@ static int source_index(unsigned objs)
 /* Ov107_Spawner_FindFreeActor's own test of an idle actor. */
 static int idle(unsigned actor)
 {
-    const unsigned flags = rd16(actor + AI_FLAGS) & 0xffu;
-    return !(flags & 1u) && (flags & 0x80u) && (rd16(actor + AI_POOLED) & 0x80u) && (int)rd32(actor + AI_BUSY) <= 0 &&
-           rd32(actor + AI_SPAWNER) == 0;
+    const unsigned flags = checked_rd16(actor + AI_FLAGS) & 0xffu;
+    return !(flags & 1u) && (flags & 0x80u) && (checked_rd16(actor + AI_POOLED) & 0x80u) && (int)checked_rd32(actor + AI_BUSY) <= 0 &&
+           checked_rd32(actor + AI_SPAWNER) == 0;
 }
 
 static Pooled *pooled(unsigned actor)
@@ -333,9 +352,9 @@ static Pooled *add_pooled(unsigned actor, int kind)
 
 static void keep_base(Pooled *p)
 {
-    p->base_max = (short)rd16(p->actor + AI_HP_MAX);
+    p->base_max = (short)checked_rd16(p->actor + AI_HP_MAX);
     for (int i = 0; i < ATTACKS; ++i) {
-        p->base_attacks[i] = (short)rd16(p->actor + AI_ATTACKS + 6u * (unsigned)i);
+        p->base_attacks[i] = (short)checked_rd16(p->actor + AI_ATTACKS + 6u * (unsigned)i);
     }
 }
 
@@ -343,9 +362,9 @@ static void keep_base(Pooled *p)
  * resets the boost and the resistances, which the row then sets). */
 static void set_level(unsigned actor, unsigned row, int level)
 {
-    const unsigned boost = rd8(row + ROW_BOOST);
-    const int param = (signed char)rd8(row + ROW_PARAM);
-    const unsigned stats = rd32(actor + AI_LOAD_STATS), activate = rd32(actor + AI_ACTIVATE);
+    const unsigned boost = checked_rd8(row + ROW_BOOST);
+    const int param = (signed char)checked_rd8(row + ROW_PARAM);
+    const unsigned stats = checked_rd32(actor + AI_LOAD_STATS), activate = checked_rd32(actor + AI_ACTIVATE);
     if (stats != 0) {
         ((StatsFn)KHDAYS_FN(stats))(actor, level);
     }
@@ -353,9 +372,9 @@ static void set_level(unsigned actor, unsigned row, int level)
         ((ActivateFn)KHDAYS_FN(activate))(actor, param);
     }
     if (boost != 0) {
-        wr8(actor + AI_BOOST, (unsigned)clamp((long long)boost + rd8(actor + AI_BOOST), 0, 255));
+        wr8(actor + AI_BOOST, (unsigned)clamp((long long)boost + checked_rd8(actor + AI_BOOST), 0, 255));
     }
-    Ov107_AiState_LoadResistances(actor, rd8(row + ROW_PROFILE));
+    Ov107_AiState_LoadResistances(actor, checked_rd8(row + ROW_PROFILE));
 }
 
 static void scale(const Pooled *p, double hp, double strength)
@@ -374,7 +393,7 @@ static void scale(const Pooled *p, double hp, double strength)
 static int set_going(unsigned actor, unsigned source, const float at[3])
 {
     const KhdaysRef place = NNSi_FndAllocFromDefaultExpHeap(12);
-    const unsigned place_fn = rd32(actor + AI_PLACE), event_fn = rd32(actor + AI_EVENT);
+    const unsigned place_fn = checked_rd32(actor + AI_PLACE), event_fn = checked_rd32(actor + AI_EVENT);
     if (place == 0 || event_fn == 0) {
         if (place != 0) {
             NNSi_FndFreeFromDefaultHeap(place);
@@ -384,15 +403,15 @@ static int set_going(unsigned actor, unsigned source, const float at[3])
     for (int i = 0; i < 3; ++i) {
         wr32(place + 4u * (unsigned)i, (unsigned)(int)lroundf(at[i] * 4096.0f));
     }
-    wr16(actor + AI_HP, rd16(actor + AI_HP_MAX));
-    wr8(actor + AI_FLAGS_1C5, rd8(actor + AI_FLAGS_1C5) & ~0x17u);
+    wr16(actor + AI_HP, checked_rd16(actor + AI_HP_MAX));
+    wr8(actor + AI_FLAGS_1C5, checked_rd8(actor + AI_FLAGS_1C5) & ~0x17u);
     wr32(actor + AI_RETIRE, 0);
     wr32(actor + AI_SPAWNER, source);
-    if (entry_of[rd8(actor + AI_KIND)] != 0) {
-        wr8(actor + AI_ENTRY, entry_of[rd8(actor + AI_KIND)] - 1u);
+    if (entry_of[checked_rd8(actor + AI_KIND)] != 0) {
+        wr8(actor + AI_ENTRY, entry_of[checked_rd8(actor + AI_KIND)] - 1u);
     }
     Ov107_SetStatusAndEmit(actor, 0);
-    wr16(actor + AI_FLAGS_1AE, rd16(actor + AI_FLAGS_1AE) & ~0x100u);
+    wr16(actor + AI_FLAGS_1AE, checked_rd16(actor + AI_FLAGS_1AE) & ~0x100u);
     if (place_fn != 0) {
         ((PlaceFn)KHDAYS_FN(place_fn))(actor, place, REACH);
     }
@@ -400,8 +419,8 @@ static int set_going(unsigned actor, unsigned source, const float at[3])
     ((EventFn)KHDAYS_FN(event_fn))(actor, 0);
     NNSi_FndFreeFromDefaultHeap(place);
     /* the source showed its enemies before this one was made, which would stand undrawn (hit, targeted, unseen) */
-    if (rd32(actor + AI_SHOW) != 0) {
-        ((ShowFn)KHDAYS_FN(rd32(actor + AI_SHOW)))(actor, (int)(rd32(source + SOURCE_FLAGS) & 1u));
+    if (checked_rd32(actor + AI_SHOW) != 0) {
+        ((ShowFn)KHDAYS_FN(checked_rd32(actor + AI_SHOW)))(actor, (int)(checked_rd32(source + SOURCE_FLAGS) & 1u));
     }
     return 1;
 }
@@ -411,7 +430,7 @@ static int set_going(unsigned actor, unsigned source, const float at[3])
 static void ids_again(void)
 {
     const unsigned manager = (unsigned)Ov107_GetActorManager();
-    const unsigned old = manager != 0 ? rd32(manager + MANAGER_IDS) : 0;
+    const unsigned old = manager != 0 ? checked_rd32(manager + MANAGER_IDS) : 0;
     if (manager == 0) {
         return;
     }
@@ -424,11 +443,11 @@ static void ids_again(void)
 static void trace_actor(const char *what, unsigned actor)
 {
     fprintf(stderr, "enemies: f%u %s %08x kind 0x%02x level %u HP %d/%d flags %04x entry %d at %d %d %d attacks",
-            khdays_link_frame(), what, actor, rd8(actor + AI_KIND), rd8(actor + AI_LEVEL), (short)rd16(actor + AI_HP),
-            (short)rd16(actor + AI_HP_MAX), rd16(actor + AI_FLAGS), (signed char)rd8(actor + AI_ENTRY),
-            (int)rd32(actor + AI_POSITION), (int)rd32(actor + AI_POSITION + 4), (int)rd32(actor + AI_POSITION + 8));
+            khdays_link_frame(), what, actor, checked_rd8(actor + AI_KIND), checked_rd8(actor + AI_LEVEL), (short)checked_rd16(actor + AI_HP),
+            (short)checked_rd16(actor + AI_HP_MAX), checked_rd16(actor + AI_FLAGS), (signed char)checked_rd8(actor + AI_ENTRY),
+            (int)checked_rd32(actor + AI_POSITION), (int)checked_rd32(actor + AI_POSITION + 4), (int)checked_rd32(actor + AI_POSITION + 8));
     for (int i = 0; i < ATTACKS; ++i) {
-        fprintf(stderr, " %d", (short)rd16(actor + AI_ATTACKS + 6u * (unsigned)i));
+        fprintf(stderr, " %d", (short)checked_rd16(actor + AI_ATTACKS + 6u * (unsigned)i));
     }
     fprintf(stderr, "\n");
 }
@@ -448,7 +467,7 @@ static unsigned make_from(unsigned objs, int source, int row, int kind, const fl
     if (p != NULL) {
         actor = p->actor;
         if (Ov002_GetStateWord() != STATE_FLAT) {
-            set_level(actor, row_ref, clamp((long long)Ov002_GetEffectiveHeight(row_ref) + level, 1, LEVEL_MAX));
+            set_level(actor, row_ref, clamp((long long)Ov002_GetMarkerEnemyLevel(row_ref) + level, 1, LEVEL_MAX));
             keep_base(p);
         }
     } else {
@@ -463,12 +482,12 @@ static unsigned make_from(unsigned objs, int source, int row, int kind, const fl
             return 0;
         }
         if (level != 0 && Ov002_GetStateWord() != STATE_FLAT) {
-            set_level(actor, row_ref, clamp((long long)Ov002_GetEffectiveHeight(row_ref) + level, 1, LEVEL_MAX));
+            set_level(actor, row_ref, clamp((long long)Ov002_GetMarkerEnemyLevel(row_ref) + level, 1, LEVEL_MAX));
         }
         keep_base(p);
     }
     scale(p, hp, strength);
-    if (!set_going(actor, rd32(objs + OBJECTS_SOURCES + 4u * (unsigned)source), at)) {
+    if (!set_going(actor, checked_rd32(objs + OBJECTS_SOURCES + 4u * (unsigned)source), at)) {
         *why = "not enough memory";
         return 0;
     }
@@ -506,10 +525,10 @@ unsigned khdays_enemies_make(int kind, const float at[3], int level, double hp, 
         if (*why != NULL) {
             return 0;
         }
-        row = (signed char)rd8(rd32(objs + OBJECTS_PLACES));
+        row = (signed char)checked_rd8(checked_rd32(objs + OBJECTS_PLACES));
         borrowed = row_at(objs, row);
         for (unsigned i = 0; i < ROW; ++i) {
-            kept_row[i] = (unsigned char)rd8(borrowed + i);
+            kept_row[i] = (unsigned char)checked_rd8(borrowed + i);
             wr8(borrowed + i, i == 0 ? (unsigned)kind : 0);
         }
     }
@@ -523,7 +542,7 @@ unsigned khdays_enemies_make(int kind, const float at[3], int level, double hp, 
 int khdays_enemies_remove(unsigned actor)
 {
     Pooled *p = pooled(actor);
-    const unsigned event_fn = p != NULL ? rd32(actor + AI_EVENT) : 0;
+    const unsigned event_fn = p != NULL ? checked_rd32(actor + AI_EVENT) : 0;
     if (p == NULL || p->leaving || objects() == 0 || event_fn == 0) {
         return 0;
     }
@@ -535,24 +554,142 @@ int khdays_enemies_remove(unsigned actor)
     return 1;
 }
 
+static void read_info(unsigned actor, KhdaysEnemyInfo *out)
+{
+    out->kind = (int)checked_rd8(actor + AI_KIND);
+    out->hp = (short)checked_rd16(actor + AI_HP);
+    out->max_hp = (short)checked_rd16(actor + AI_HP_MAX);
+    out->level = (int)checked_rd8(actor + AI_LEVEL);
+    for (int i = 0; i < 3; ++i) {
+        out->at[i] = (float)(int)checked_rd32(actor + AI_POSITION + 4u * (unsigned)i) / 4096.0f;
+    }
+}
+
 int khdays_enemies_info(unsigned actor, KhdaysEnemyInfo *out)
 {
     if (pooled(actor) == NULL || objects() == 0) {
         return 0;
     }
-    out->kind = (int)rd8(actor + AI_KIND);
-    out->hp = (short)rd16(actor + AI_HP);
-    out->max_hp = (short)rd16(actor + AI_HP_MAX);
-    out->level = (int)rd8(actor + AI_LEVEL);
+    read_info(actor, out);
+    return 1;
+}
+
+/* The actor manager's standing actors with HP, walked as List_First and List_Next do but without their cursor (a walk
+ * of the game's own may be under way): up to `room` into `out`, how many; with `only`, whether it is one of them. */
+static int standing(unsigned *out, int room, unsigned only)
+{
+    const unsigned manager = objects() != 0 ? (unsigned)Ov107_GetActorManager() : 0;
+    const unsigned list = manager + MANAGER_LIST;
+    int n = 0;
+    if (manager == 0) {
+        return 0;
+    }
+    for (unsigned node = checked_rd32(list + LIST_FIRST); node != 0 && node != list + LIST_END; node = checked_rd32(node + NODE_NEXT)) {
+        const unsigned actor = checked_rd32(checked_rd32(node + NODE_ITEM));
+        /* not the manager's actors with no HP: seen beside the waves mission's Shadows, kind 67, taking no hit */
+        if (actor == 0 || !(checked_rd16(actor + AI_FLAGS) & STANDING) || (short)checked_rd16(actor + AI_HP_MAX) <= 0) {
+            continue;
+        }
+        if (only != 0) {
+            if (actor == only) {
+                return 1;
+            }
+            continue;
+        }
+        if (out != NULL && n < room) {
+            out[n] = actor;
+        }
+        ++n;
+    }
+    return n;
+}
+
+int khdays_enemies_hit(unsigned enemy, unsigned attacker, int seat, int damage, const float at[3], unsigned kinds,
+                       int chance, int no_flinch)
+{
+    KhdaysRef hit;
+    int took;
+    if (!khdays_enemies_state(enemy, NULL) || !khdays_game_ram(attacker)) {
+        return 0;
+    }
+    hit = NNSi_FndAllocFromDefaultExpHeap(HIT_BYTES);
+    if (hit == 0) {
+        return 0;
+    }
+    for (unsigned i = 0; i < HIT_BYTES; i += 4) {
+        wr32(hit + i, 0);
+    }
+    wr16(hit + HIT_FLAGS, HIT_PHYSICAL | (no_flinch ? HIT_NO_FLINCH : 0));
+    wr16(hit + HIT_KINDS, KIND_PHYSICAL | kinds);
     for (int i = 0; i < 3; ++i) {
-        out->at[i] = (float)(int)rd32(actor + AI_POSITION + 4u * (unsigned)i) / 4096.0f;
+        wr32(hit + HIT_PLACE + 4u * (unsigned)i,
+             (unsigned)clamp(llround((double)at[i] * 4096.0), -0x7fffffff, 0x7fffffff));
+    }
+    wr16(hit + HIT_DAMAGE, (unsigned)clamp(damage, 0, 0x7fff));
+    wr16(hit + HIT_AUTHOR, (unsigned)seat);
+    wr8(hit + HIT_CHANCE, (unsigned)clamp(chance, 0, 100));
+    took = Ov107_AiState_ApplyHit(enemy, checked_rd32(attacker + PLAYER_SUB), hit);
+    NNSi_FndFreeFromDefaultHeap(hit);
+    return took != 0;
+}
+
+int khdays_enemies_move(unsigned enemy, const float at[3])
+{
+    KhdaysRef place;
+    if (!khdays_enemies_state(enemy, NULL) || (place = NNSi_FndAllocFromDefaultExpHeap(12)) == 0) {
+        return 0;
+    }
+    for (int i = 0; i < 3; ++i) {
+        wr32(place + 4u * (unsigned)i, (unsigned)clamp(llround((double)at[i] * 4096.0), -0x7fffffff, 0x7fffffff));
+    }
+    Ov107_MoveNodeAndRelayout(enemy, place);
+    NNSi_FndFreeFromDefaultHeap(place);
+    return 1;
+}
+
+int khdays_enemies_list(unsigned *out, int room)
+{
+    return standing(out, room, 0);
+}
+
+int khdays_enemies_state(unsigned actor, KhdaysEnemyInfo *out)
+{
+    if (actor == 0 || !standing(NULL, 0, actor)) {
+        return 0;
+    }
+    if (out != NULL) {
+        read_info(actor, out);
     }
     return 1;
+}
+
+int khdays_enemies_slot_row(unsigned spawner, int slot)
+{
+    const unsigned objs = checked_rd32(OBJECTS);
+    unsigned tag, records, place, entry;
+    int record, group;
+    if (spawner == 0 || objs == 0 || slot < 0 || slot >= (int)(short)checked_rd16(spawner + SPAWNER_COUNT)) {
+        return -1;
+    }
+    tag = checked_rd32(spawner + SPAWNER_SLOTS + (unsigned)slot * SPAWNER_SLOT_BYTES + SLOT_OWNER_TAG);
+    place = checked_rd32(objs + OBJECTS_SLOTS) + (tag >> 8) * OBJECT_SLOT_BYTES;
+    record = (signed char)checked_rd8(place + OBJECT_SLOT_RECORD);
+    records = checked_rd32(objs + OBJECTS_RECORDS);
+    group = (int)(tag & 0xffu);
+    if (record < 0 || records == 0 || record >= (int)checked_rd8(records + 1u)) {
+        return -1;
+    }
+    entry = checked_rd32(records + RECORDS_FIRST + 4u * (unsigned)record);
+    if (entry == 0 || group >= (signed char)checked_rd8(entry)) {
+        return -1;
+    }
+    return (signed char)checked_rd8(entry + RECORD_GROUPS + 4u * (unsigned)group);
 }
 
 void khdays_enemies_marker_made(int source, int row, void *actor, int id)
 {
     made = ref_of(actor);
+    khdays_kh2_enemies_made(row, actor);
     if (traced()) {
         fprintf(stderr, "enemies: f%u marker actor %08x from source %d row %d, class 0x%02x\n", khdays_link_frame(),
                 made, source, row, id);
@@ -577,13 +714,13 @@ void khdays_enemies_hold_mission(int on)
 /* Spawner `s`'s slots: how each lets its kind enter. */
 static void learn_entries(unsigned s)
 {
-    const unsigned owner = rd32(s + SPAWNER_OWNER), table = owner != 0 ? rd32(owner + OWNER_TABLE) : 0;
-    const unsigned kinds = table != 0 ? rd32(table + TABLE_KINDS) : 0;
-    for (int i = 0; kinds != 0 && i < (short)rd16(s + SPAWNER_COUNT); ++i) {
+    const unsigned owner = checked_rd32(s + SPAWNER_OWNER), table = owner != 0 ? checked_rd32(owner + OWNER_TABLE) : 0;
+    const unsigned kinds = table != 0 ? checked_rd32(table + TABLE_KINDS) : 0;
+    for (int i = 0; kinds != 0 && i < (short)checked_rd16(s + SPAWNER_COUNT); ++i) {
         const unsigned slot = s + SPAWNER_SLOTS + SPAWNER_SLOT_BYTES * (unsigned)i;
-        const int entry = (signed char)rd8(slot + SLOT_ENTRY);
+        const int entry = (signed char)checked_rd8(slot + SLOT_ENTRY);
         if (entry >= 0) {
-            entry_of[rd8(kinds + TABLE_ROW_BYTES * rd8(slot + SLOT_ROW) + TABLE_ROW_KIND)] = (unsigned char)(entry + 1);
+            entry_of[checked_rd8(kinds + TABLE_ROW_BYTES * checked_rd8(slot + SLOT_ROW) + TABLE_ROW_KIND)] = (unsigned char)(entry + 1);
         }
     }
 }
@@ -594,8 +731,8 @@ int khdays_enemies_spawner_run(void *spawner, int op)
     if (traced() && op != 1) {
         fprintf(stderr, "enemies: f%u spawner %08x op %d%s, entries", khdays_link_frame(), s, op,
                 op == 0 && mission_held ? ", held" : "");
-        for (int i = 0; i < (short)rd16(s + SPAWNER_COUNT); ++i) {
-            fprintf(stderr, " %d", (signed char)rd8(s + SPAWNER_SLOTS + SPAWNER_SLOT_BYTES * (unsigned)i + SLOT_ENTRY));
+        for (int i = 0; i < (short)checked_rd16(s + SPAWNER_COUNT); ++i) {
+            fprintf(stderr, " %d", (signed char)checked_rd8(s + SPAWNER_SLOTS + SPAWNER_SLOT_BYTES * (unsigned)i + SLOT_ENTRY));
         }
         fprintf(stderr, "\n");
     }
@@ -608,6 +745,8 @@ int khdays_enemies_spawner_run(void *spawner, int op)
 void khdays_enemies_retired(void *actor)
 {
     khdays_stop_enemy_gone(actor);
+    khdays_kh2_enemies_gone(actor);
+    khdays_actors_ended(ref_of(actor));
     if (traced()) {
         fprintf(stderr, "enemies: f%u actor %08x retired\n", khdays_link_frame(), ref_of(actor));
     }
@@ -616,12 +755,13 @@ void khdays_enemies_retired(void *actor)
 void khdays_enemies_defeated(void *actor)
 {
     const unsigned a = ref_of(actor);
+    khdays_actors_ended(a);
     if (traced()) {
-        fprintf(stderr, "enemies: f%u defeated by %08x (%s): ", khdays_link_frame(), rd32(a + AI_ATTACKER),
+        fprintf(stderr, "enemies: f%u defeated by %08x (%s): ", khdays_link_frame(), checked_rd32(a + AI_ATTACKER),
                 pooled(a) != NULL ? "a mod's" : "the mission's");
         trace_actor("actor", a);
     }
-    khdays_api_enemies_defeated(a, (int)rd8(a + AI_KIND));
+    khdays_api_enemies_defeated(a, (int)checked_rd8(a + AI_KIND));
 }
 
 static void forget(void)
@@ -637,6 +777,8 @@ static void forget(void)
 void khdays_enemies_area_left(void)
 {
     khdays_stop_area_left();
+    khdays_kh2_enemies_area_left();
+    khdays_actors_area_left();
     forget();
 }
 
@@ -652,14 +794,15 @@ void khdays_enemies_frame(void)
     /* the ones sent away, until settled: op 2 of a spawner, its slot then free (Ov107_Spawner_Run) */
     for (int i = 0; i < pool_count; ++i) {
         Pooled *p = &pool[i];
-        const unsigned event_fn = rd32(p->actor + AI_EVENT);
+        const unsigned event_fn = checked_rd32(p->actor + AI_EVENT);
         if (!p->leaving) {
             continue;
         }
-        if (!(rd16(p->actor + AI_FLAGS) & STANDING) || (event_fn != 0 && ((EventFn)KHDAYS_FN(event_fn))(p->actor, 2))) {
+        if (!(checked_rd16(p->actor + AI_FLAGS) & STANDING) || (event_fn != 0 && ((EventFn)KHDAYS_FN(event_fn))(p->actor, 2))) {
             p->leaving = 0;
             wr32(p->actor + AI_SPAWNER, 0);
             khdays_api_enemies_gone(p->actor);
+            khdays_actors_ended(p->actor);
             if (traced()) {
                 trace_actor("settled away", p->actor);
             }

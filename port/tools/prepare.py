@@ -2,15 +2,23 @@
 """Prepare the pinned khdays-decomp for the native (x64) build: choose the files the DS build links,
 patch the few MSVC cannot take, generate what the DS linker provided, and rewrite the game's C with
 every pointer a 4-byte reference (docs/BUILD.md).
-Usage: python port/tools/prepare.py [--out build/port/gen-x64]
+Usage: python port/tools/prepare.py [--out build/port/gen-x64] [--force]
+A run stops at once when nothing it reads changed since the last one wrote --out (INPUT_TREES).
 """
 
 from __future__ import annotations
 
+import time
+
+STARTED = time.time_ns()  # before this script reads anything (record_run)
+
 import argparse
 import bisect
 import collections
+import json
+import os
 import re
+import stat
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -38,6 +46,37 @@ class Module:
     ranges: dict[str, list[tuple[int, int]]] = field(default_factory=dict)  # file -> sections
     thumb: set[str] = field(default_factory=set)  # Thumb functions
     sizes: dict[str, int] = field(default_factory=dict)  # function -> bytes
+
+
+# The enemies' overlays each at its own place in the game's memory, and ov107's slot tables with room for every
+# class (port/runtime/core/enemy_overlays.h, whose defines are read here; rom.cpp moves the overlay table the same
+# way): their symbols where the game runs them (runtime_address). The analyses of the ROM keep the DS's addresses.
+ENEMY_OVERLAYS_H = ROOT / "port" / "runtime" / "core" / "enemy_overlays.h"
+ENEMY = {
+    n: int(v, 0)
+    for n, v in re.findall(
+        r"#define KHDAYS_ENEMY_(\w+) (0x[0-9a-fA-F]+|\d+)u?\b", ENEMY_OVERLAYS_H.read_text(encoding="utf-8")
+    )
+}
+MOVED_SLOT_TABLES = {
+    "data_ov107_020cbb08": ENEMY["HANDLERS"],
+    "data_ov107_020cbb98": ENEMY["OVERLAY_INFOS"],
+    "data_ov107_020cbca0": ENEMY["SPAWN_RECORDS"],
+}
+
+
+def runtime_address(m: Module, name: str, address: int) -> int:
+    """Where the game runs symbol `name` of module `m`, at `address` on the DS: an enemy overlay's moved with it
+    (its sections' start is the overlay table's RAM address), ov107's slot tables at theirs."""
+    if name in MOVED_SLOT_TABLES:
+        return MOVED_SLOT_TABLES[name]
+    mo = re.fullmatch(r"ov(\d+)", m.name)
+    if not mo or not ENEMY["OVERLAY_FIRST"] <= int(mo[1]) <= ENEMY["OVERLAY_LAST"]:
+        return address
+    offset = address - min(start for start, _ in m.sections.values())
+    if not 0 <= offset < ENEMY["OVERLAY_SPAN"]:
+        raise SystemExit(f"{m.name}: {name} at 0x{address:08x} is past its place's 0x{ENEMY['OVERLAY_SPAN']:x} bytes")
+    return ENEMY["OVERLAYS"] + (int(mo[1]) - ENEMY["OVERLAY_FIRST"]) * ENEMY["OVERLAY_SPAN"] + offset
 
 
 def load_modules() -> list[Module]:
@@ -186,6 +225,23 @@ HOOKS = {
             "    pScene = NNSi_FndGetCurrentRootHeap();\n"
             "    { extern int khdays_retry_pending(void); if (khdays_retry_pending()) { pScene->nMode = 8; } }\n"
             "    pNext = 0;\n",
+        )
+    ],
+    # (and the party as the camp sends the mission, for the Retry to give back: a challenge's level brings the
+    # members' stats down over their records as the mission starts, and the field built again brought them down
+    # twice -- the HP maximum at 1)
+    "ov025@020a9bc4": [
+        (  # Ov025_MissionList_StartMission
+            "    pMenu = Ov025_GetPageB();\n",
+            "    { extern void khdays_retry_mission_launched(void); khdays_retry_mission_launched(); }\n"
+            "    pMenu = Ov025_GetPageB();\n",
+        )
+    ],
+    "ov008@020745c4": [
+        (  # Ov008_StartSelectedMission
+            "    pEntry = Ov008_GetNextMissionEntry_5(Ov008_GetCtxField967c());\n",
+            "    { extern void khdays_retry_mission_launched(void); khdays_retry_mission_launched(); }\n"
+            "    pEntry = Ov008_GetNextMissionEntry_5(Ov008_GetCtxField967c());\n",
         )
     ],
     "ov002@02068720": [
@@ -422,6 +478,93 @@ HOOKS = {
     # so headers must lie below 0x02ff8000. The ones Msg_OpenContainerAndReadHeader reads come from
     # heaps of their own there, and the handle decoders check it (runtime/core/game_heap.c;
     # docs/RUNTIME_MAP.md).
+    # The resource cache past its 128 entries (runtime/core/game_heap.c): every table searched, and a new one when no
+    # entry is free -- the game's ResCache_Acquire read through the null a full cache gave (many enemy kinds, several
+    # players' characters).
+    "main@0201f3d8": [  # ResCache_FindSlot
+        (
+            "    unused = 0;\n    cur[n].entry = gFileLoader[2];\n\n    for (i = 0; i < 0x80; i++, cur[n].entry++) {\n",
+            "    unused = 0;\n"
+            "    { extern void *khdays_res_cache_table(int n);\n"
+            "      extern void *khdays_res_cache_grow(void);\n"
+            "      int table;\n"
+            "      for (table = 0; (cur[n].entry = (ResCacheEntry *)khdays_res_cache_table(table)) != 0; ++table)\n"
+            "    for (i = 0; i < 0x80; i++, cur[n].entry++) {\n",
+        ),
+        (
+            "        if (cur[n].refCount == 0) {\n            unused = cur[n].entry;\n        }\n    }\n    return unused;\n}",
+            "        if (cur[n].refCount == 0) {\n            unused = cur[n].entry;\n        }\n    }\n"
+            "      if (unused == 0) {\n"
+            "          unused = (ResCacheEntry *)khdays_res_cache_grow();\n"
+            "      }\n"
+            "    }\n"
+            "    return unused;\n}",
+        ),
+    ],
+    # The 3D's texture memory past the DS's (runtime/display/texture_banks.h): a file whose textures or palettes
+    # no longer fit the DS's VRAM (many enemy kinds in a mission, several players) is given places in a bank
+    # of its own -- the managers reset for it, the DS's states kept -- and copied there, instead of being left
+    # untextured (the room turned white).
+    "main@02025138": [  # G3dRes_DefaultSetup
+        (
+            "            tex = NNS_G3dGetTex(pResData);\n",
+            "            { extern void khdays_texture_banks_file(void *file); khdays_texture_banks_file(pResData); }\n"
+            "            tex = NNS_G3dGetTex(pResData);\n",
+        ),
+        (
+            "                    return 0;\n"
+            "                }\n"
+            "\n"
+            "                NNS_G3dTexSetTexKey(tex, keyTex, keyTex4x4);\n"
+            "                NNSG2d_SetOamManExDrawOrderType(tex, keyPltt);\n"
+            "                Tex_LoadVram(tex);\n"
+            "                Gfx_UploadBlock(tex);\n",
+            "                    { extern int khdays_texture_banks_open(void);\n"
+            "                      extern void khdays_texture_banks_close(void *file, void *tex, int allocated);\n"
+            "                      if (!khdays_texture_banks_open())\n"
+            "                          return 0;\n"
+            "                      keyTex = szTex > 0 ? NNS_GfdAllocTexVram(szTex, 0, 0) : 0;\n"
+            "                      keyTex4x4 = szTex4x4 > 0 ? NNS_GfdAllocTexVram(szTex4x4, 1, 0) : 0;\n"
+            "                      keyPltt = szPltt > 0\n"
+            "                          ? NNS_GfdAllocPlttVram(szPltt, tex->tex4x4Flag & NNS_G3D_RESPLTT_USEPLTT4, 0) : 0;\n"
+            "                      sucTex = szTex == 0 || keyTex != NNS_GFD_ALLOC_ERROR_TEXKEY;\n"
+            "                      sucTex4x4 = szTex4x4 == 0 || keyTex4x4 != NNS_GFD_ALLOC_ERROR_TEXKEY;\n"
+            "                      sucPltt = szPltt == 0 || keyPltt != NNS_GFD_ALLOC_ERROR_PLTTKEY;\n"
+            "                      if (sucTex && sucTex4x4 && sucPltt) {\n"
+            "                          NNS_G3dTexSetTexKey(tex, keyTex, keyTex4x4);\n"
+            "                          NNSG2d_SetOamManExDrawOrderType(tex, keyPltt);\n"
+            "                      }\n"
+            "                      khdays_texture_banks_close(pResData, tex, sucTex && sucTex4x4 && sucPltt);\n"
+            "                      if (!sucTex || !sucTex4x4 || !sucPltt)\n"
+            "                          return 0; }\n"
+            "                } else {\n"
+            "                NNS_G3dTexSetTexKey(tex, keyTex, keyTex4x4);\n"
+            "                NNSG2d_SetOamManExDrawOrderType(tex, keyPltt);\n"
+            "                Tex_LoadVram(tex);\n"
+            "                Gfx_UploadBlock(tex);\n"
+            "                }\n",
+        ),
+    ],
+    # (the textures the game sets apart from a model's draw, the field's prize pictures: their PLTT_BASE
+    # carries the file's bank, g3d.h KHDAYS_G3D_PLTT_BANK_TAG)
+    "main@02028670": [  # Tex0_GetTexPlttParams
+        (
+            "    out[1] = (u16)(plttOfs + plttBase);\n",
+            "    out[1] = (u16)(plttOfs + plttBase);\n"
+            "    { extern u32 khdays_texture_banks_tag_pltt(const void *file, u32 pltt);\n"
+            "      out[1] = khdays_texture_banks_tag_pltt(file, out[1]); }\n",
+        )
+    ],
+    "main@0203c304": [  # InstancedModel_Draw
+        (
+            "            NNS_G3dDraw1Mat1Shp(this->modelHolder->model, 0, 0, 1);\n",
+            "            { extern void khdays_texture_banks_draw_begin(const void *model);\n"
+            "              extern void khdays_texture_banks_draw_end(void);\n"
+            "              khdays_texture_banks_draw_begin(this->modelHolder->model);\n"
+            "              NNS_G3dDraw1Mat1Shp(this->modelHolder->model, 0, 0, 1);\n"
+            "              khdays_texture_banks_draw_end(); }\n",
+        )
+    ],
     "main@02024ee8": [  # Msg_OpenContainerAndReadHeader
         (
             "    buf = (u32 *)NNS_FndAllocFromDefaultExpHeapEx((u16)(size + 0x10), 4);\n",
@@ -438,10 +581,10 @@ HOOKS = {
     ],
     "main@02023604": [  # HeapState_Recreate
         (
-            "    NNS_FndInitAllocatorForExpHeap(&s->allocator, s->heap, 4);\n}",
-            "    NNS_FndInitAllocatorForExpHeap(&s->allocator, s->heap, 4);\n"
+            "    NNS_FndInitAllocatorForExpHeap(heap->allocator, heap->handle, 4);\n}",
+            "    NNS_FndInitAllocatorForExpHeap(heap->allocator, heap->handle, 4);\n"
             "    { extern void khdays_game_heap_recreated(void *heap);  /* runtime/core/game_heap.c */\n"
-            "      khdays_game_heap_recreated(s->heap); }\n}",
+            "      khdays_game_heap_recreated(heap->handle); }\n}",
         ),
     ],
     "main@020250bc": [  # Archive_OpenSubfileByHandle
@@ -454,10 +597,10 @@ HOOKS = {
     ],
     "main@02025074": [  # Archive_SubfileIsCompressed
         (
-            "    unsigned short lo = param_1 & (mask >> 15);\n",
-            "    unsigned short lo = param_1 & (mask >> 15);\n"
+            "    unsigned short lo = handle & (mask >> 15);\n",
+            "    unsigned short lo = handle & (mask >> 15);\n"
             "    { extern void khdays_handle_check(unsigned int handle, unsigned int base);  /* runtime/core/game_heap.c */\n"
-            "      khdays_handle_check(param_1, base); }\n",
+            "      khdays_handle_check(handle, base); }\n",
         ),
     ],
     # The game's main heap (0xc8000 bytes) and sub heap (the rest of the arena), made by the port
@@ -533,14 +676,111 @@ HOOKS = {
             "    khdays_io_store(0x0400044cu, 4, state->pSbc[1]);\n",
         ),
     ],
+    # Replace only the heart panel's own node draws; its bookkeeping and other widgets still run.
+    "main@0202bc90": [  # Render_DrawViewLists
+        (
+            "            ShadowVolume_Draw((char *)p + 0x168);\n",
+            "            { extern void khdays_character_shadow(const void *, const void *); khdays_character_shadow((char *)p + 0x168, p + 4); }\n",
+        ),
+    ],
+    "main@0202c624": [  # Entity_Tick
+        (
+            "        ShadowVolume_Draw(entity + 0x168);\n",
+            "        { extern void khdays_character_shadow(const void *, const void *); khdays_character_shadow(entity + 0x168, entity + 0x10); }\n",
+        ),
+    ],
+    "ov022@0209c870": [  # Ov022_DropGroundMark
+        (
+            "        ShadowVolume_Draw(&pActor->mark.vecPos);\n",
+            "        { extern void khdays_character_shadow(const void *, const void *); khdays_character_shadow(&pActor->mark.vecPos, (char *)pActor->pNode + 4); }\n",
+        ),
+    ],
+    "main@0202aa9c": [  # Scene_DrawNode
+        (
+            "    NNS_G3dDraw(node->object);\n",
+            "    { extern void khdays_character_caster_begin(const void *); extern void khdays_character_caster_end(void);\n"
+            "      khdays_character_caster_begin(node); NNS_G3dDraw(node->object); khdays_character_caster_end(); }\n",
+        ),
+        (
+            "void Scene_DrawNode(SceneNode *node)\n{\n    SceneNode *child;\n",
+            "void Scene_DrawNode(SceneNode *node)\n{\n    SceneNode *child;\n"
+            "    { extern int khdays_heart_node(const void *node);\n"
+            "      if (khdays_heart_node(node)) return; }\n",
+        ),
+    ],
+    "main@0203bc78": [  # Obj_RenderModel: the enemy framework's model and attachment draw
+        (
+            "    NNS_G3dDraw(&self->renderCtx->objFlags);\n",
+            "    { extern void khdays_character_object_begin(const void *); extern void khdays_character_object_end(void);\n"
+            "      khdays_character_object_begin(self); NNS_G3dDraw(&self->renderCtx->objFlags); khdays_character_object_end(); }\n",
+        ),
+    ],
+    "ov107@020c6624": [  # enemy construction: keep ownership outside the game's objects
+        (
+            "    self->field_1a8->flags_5c |= 2;\n",
+            "    self->field_1a8->flags_5c |= 2;\n"
+            "    { extern void khdays_character_bind_enemy(const void *); khdays_character_bind_enemy(self); }\n",
+        ),
+    ],
+    "ov107@020c68ec": [  # release ownership before the flat shadow object is freed
+        (
+            "    DestroyInstance(self->field_1a8);\n",
+            "    { extern void khdays_character_forget_enemy(const void *); khdays_character_forget_enemy(self->field_1a8); }\n"
+            "    DestroyInstance(self->field_1a8);\n",
+        ),
+    ],
+    "ov002@02051cbc": [  # independently drawn player parts use the same scene-node layout
+        (
+            "    NNS_G3dDraw((unsigned int *)(pActor + 0x24));\n",
+            "    { extern void khdays_character_caster_begin(const void *); extern void khdays_character_caster_end(void);\n"
+            "      khdays_character_caster_begin(pActor + 4); NNS_G3dDraw((unsigned int *)(pActor + 0x24)); khdays_character_caster_end(); }\n",
+        ),
+    ],
+    "ov022@0209c9fc": [  # the two equipped weapon slots, associated with the actor's body
+        (
+            "            Ov002_SubmitActorDraw(iVar4);\n",
+            "            { extern void khdays_character_caster_begin(const void *); extern void khdays_character_caster_end(void);\n"
+            "              /* not while a KH2 script has turned the player into a form (his model hidden) */\n"
+            "              extern int khdays_kh2_enemies_turned(void *actor);\n"
+            "              if (!khdays_kh2_enemies_turned((void *)param_1)) {\n"
+            "              khdays_character_caster_begin((char *)*(int *)(param_1 + 0x20) + 4);\n"
+            "              Ov002_SubmitActorDraw(iVar4); khdays_character_caster_end(); } }\n",
+        ),
+    ],
+    "ov002@0205f980": [  # Ov002_Hud_RewindWidget: repeated pickups restart the pulse
+        (
+            "    Ov002_RewindWidget",
+            "    { extern void khdays_heart_event(int kind, int row); khdays_heart_event(0, 0); }\n"
+            "    Ov002_RewindWidget",
+        ),
+    ],
+    "ov002@0205fc5c": [  # Ov002_SceneSpawnPanelRowCount: only after the row is actually allocated
+        (
+            "    s->aRowBusy[nRow] = 1;\n",
+            "    s->aRowBusy[nRow] = 1;\n"
+            "    { extern void khdays_heart_event(int kind, int row); khdays_heart_event(1, nRow); }\n",
+        ),
+    ],
+    "ov002@02060358": [  # Ov002_SceneStartPanelBlink
+        (
+            "    s = *(Ov002BlinkScene **)&data_ov002_0207f628;\n",
+            "    s = *(Ov002BlinkScene **)&data_ov002_0207f628;\n"
+            "    { extern void khdays_heart_event(int kind, int row); khdays_heart_event(2, 0); }\n",
+        ),
+    ],
     # The field's HUD panel draws its 3D pieces (the hearts counter, the countdown) with a camera of
     # its own: the port marks those polygons as the HUD's, so widescreen keeps them to the sides
     # (runtime/display/display.c khdays_hud_3d). Nothing the game computes changes.
     "ov002@020616a0": [  # Ov002_SceneStepPanel
         (
+            "    Ov002_SceneStepPanelBlink();\n",
+            "    Ov002_SceneStepPanelBlink();\n    { extern void khdays_heart_end(void); khdays_heart_end(); }\n",
+        ),
+        (
             "    Camera_CommitMatricesEx(s->aCamera, 0x3b33, -0x3b33, -0x4d9a, 0x4d9a);\n",
             "    Camera_CommitMatricesEx(s->aCamera, 0x3b33, -0x3b33, -0x4d9a, 0x4d9a);\n"
-            "    { extern void khdays_hud_3d(int on); khdays_hud_3d(1); }\n",
+            "    { extern void khdays_hud_3d(int on); khdays_hud_3d(1); }\n"
+            "    { extern void khdays_heart_begin(const void *context); khdays_heart_begin(s); }\n",
         ),
         (
             "    Ov002_DrawMarkerQueue(pCam);\n",
@@ -594,13 +834,14 @@ HOOKS = {
         )
     ],
     # The camp menus on one screen (runtime/menus/camp.c): the status panel's numbers as the panel draws
-    # them, each field with its values.
+    # them, each field with its values and the change the Panels page previews with a panel held; the change
+    # left off the DS's upper screen while the port draws the page (its status card shows it).
     "ov008@0206d46c": [
         (  # Ov008_DrawStatusField
             "    nCtx = Ov008_GetCtxBlock4a80();\n",
-            "    { extern void khdays_camp_field(void *panel, int field, unsigned int delta, int style, void *values,\n"
-            "                                    int animate);\n"
-            "      khdays_camp_field(pPanel, nField, nDelta, nStyle, pValues, bAnimate); }\n"
+            "    { extern unsigned int khdays_camp_field(void *panel, int field, unsigned int delta, int style,\n"
+            "                                            void *values, int animate);\n"
+            "      nDelta = khdays_camp_field(pPanel, nField, nDelta, nStyle, pValues, bAnimate); }\n"
             "    nCtx = Ov008_GetCtxBlock4a80();\n",
         )
     ],
@@ -608,9 +849,9 @@ HOOKS = {
     "ov025@020a2b00": [
         (  # Ov025_DrawStatusField
             "    nCtx = Ov025_GetBlock4a80();\n",
-            "    { extern void khdays_camp_field(void *panel, int field, unsigned int delta, int style, void *values,\n"
-            "                                    int animate);\n"
-            "      khdays_camp_field(pPanel, nField, nDelta, nStyle, pValues, bAnimate); }\n"
+            "    { extern unsigned int khdays_camp_field(void *panel, int field, unsigned int delta, int style,\n"
+            "                                            void *values, int animate);\n"
+            "      nDelta = khdays_camp_field(pPanel, nField, nDelta, nStyle, pValues, bAnimate); }\n"
             "    nCtx = Ov025_GetBlock4a80();\n",
         )
     ],
@@ -656,9 +897,9 @@ HOOKS = {
     # in one language (runtime/core/language.c).
     "main@0202099c": [
         (  # Scene_AdvanceToPending
-            "            HeapState_Recreate(data_0204c02c);\n",
+            "            HeapState_Recreate(gSubHeap);\n",
             "            { extern void khdays_language_scene_ending(void); khdays_language_scene_ending(); }\n"
-            "            HeapState_Recreate(data_0204c02c);\n",
+            "            HeapState_Recreate(gSubHeap);\n",
         )
     ],
     # The game reads its buttons once per game frame, here (KEYINPUT and the
@@ -912,7 +1153,8 @@ HOOKS = {
         )
     ],
     # The camera of each 3D list (gfx/g3d.h khdays_g3d_frame_camera):
-    # what NitroSystem's flush sends, as it sends it.
+    # what NitroSystem's flush sends, as it sends it; and the base transform it
+    # sends (khdays_g3d_flush_base: a model's place without the camera).
     # NitroSystem's NNS_G3dGlbFlush, which the decomp calls
     # Gfx_SubmitCachedCommandBlock: the whole NNSG3dGlb block at once, the
     # projection at +0x08 and the camera at +0x4c.
@@ -922,13 +1164,40 @@ HOOKS = {
             "    unsigned int *p = (unsigned int *)&NNS_G3dGlb;\n"
             "    { extern void khdays_g3d_frame_camera(const int *projection, const int *camera);\n"
             "      khdays_g3d_frame_camera((const int *)((const char *)&NNS_G3dGlb + 0x08),\n"
-            "                              (const int *)((const char *)&NNS_G3dGlb + 0x4c)); }\n",
+            "                              (const int *)((const char *)&NNS_G3dGlb + 0x4c)); }\n"
+            "    { extern void khdays_g3d_flush_base(const int *base, int in_projection);\n"
+            "      khdays_g3d_flush_base((const int *)((const char *)&NNS_G3dGlb + 0x94), 0); }\n",
+        )
+    ],
+    # What the game attaches to a model's node (Obj_RenderModel's objList, Scene_DrawNode's children) reads the
+    # node's matrix back after the draw: for a model the mods replace, the node where the model's joint carries it
+    # (runtime/mods/models.cpp khdays_models_result_matrix).
+    "main@02016320": [
+        (  # NNS_G3dGetResultMtx
+            "        NNS_G3dGeRestoreMtx((int)stackID);\n",
+            "        NNS_G3dGeRestoreMtx((int)stackID);\n"
+            "        { extern int khdays_models_result_matrix(const void *render_obj, unsigned node,"
+            " int *position, int *direction);\n"
+            "          if (khdays_models_result_matrix(pRenderObj, nodeID, (int *)pos, (int *)nrm)) return 1; }\n",
         )
     ],
     "main@020157c4": [
         (  # NNS_G3dGlbFlushP
             "void NNS_G3dGlbFlushP(void)\n{\n",
             "void NNS_G3dGlbFlushP(void)\n{\n"
+            "    { extern void khdays_g3d_frame_camera(const int *projection, const int *camera);\n"
+            "      khdays_g3d_frame_camera((const int *)&NNS_G3dGlb.projMtx, (const int *)&NNS_G3dGlb.cameraMtx); }\n"
+            "    { extern void khdays_g3d_flush_base(const int *base, int in_projection);\n"
+            "      khdays_g3d_flush_base((const int *)&NNS_G3dGlb.prmBaseRot, 1); }\n",
+        )
+    ],
+    # Gfx_ApplyBaseTransform (Obj_RenderModel's draws: the enemies, the boss Saix) sends NNS_G3dGlb's projection and
+    # camera itself, without a flush: the camera it sends is the frame's too, or the character shadows rebuilt what
+    # followed with whatever camera was flushed last (the boss Saix's shadow kept its circle, its floor "steep").
+    "main@0201574c": [
+        (
+            "void Gfx_ApplyBaseTransform(void)\n{\n",
+            "void Gfx_ApplyBaseTransform(void)\n{\n"
             "    { extern void khdays_g3d_frame_camera(const int *projection, const int *camera);\n"
             "      khdays_g3d_frame_camera((const int *)&NNS_G3dGlb.projMtx, (const int *)&NNS_G3dGlb.cameraMtx); }\n",
         )
@@ -1082,7 +1351,8 @@ HOOKS = {
             "        Ov022_UpdateCommandInput(pActor);\n",
             "        { extern void khdays_mp_predict_pause(int paused); khdays_mp_predict_pause(1);\n"
             "          Ov022_UpdateCommandInput(pActor);\n"
-            "          khdays_mp_predict_pause(0); }\n",
+            "          khdays_mp_predict_pause(0); }\n"
+            "        { extern void khdays_controls_command_early(void *actor); khdays_controls_command_early(pActor); }\n",
         )
     ],
     "ov022@02087ac0": [
@@ -1157,7 +1427,56 @@ HOOKS = {
             "          return 1;\n"
             "      } }\n"
             "    switch (Session_GetLinkMode()) {\n",
-        )
+        ),
+        # The field's directions, alone (runtime/input/controls_hooks.c, khdays_controls_send_early): the
+        # control packet built as the characters are about to read the table gives only its directions
+        # (the held buttons, the halfword at +2's bits 3-14: Right, Left, Up, Down at bits 7-10) to the
+        # local player's row as it stands -- the other buttons, the command chosen and the target stay
+        # those of the game's own packet, built after the characters' update and queued (an A the
+        # command menu took for Talk is left out of it there) -- through gate 3's handler
+        # (Ov022_PublishRequestToSlot: the row at *data_ov022_020b2ea4 + 0x28 + slot * 0xc), as
+        # CmdPacket_Dispatch hands a packet on. Queued, they reached the table only at the next frame's
+        # List_TryInvokeEntry.
+        (
+            '#include "game/engine.h"\n',
+            '#include "game/engine.h"\n'
+            "typedef struct {\n"
+            "    char pad00[0xc];\n"
+            "    void (*handlers[20])(void *buf, int size); /* 0x0c */\n"
+            "    void *buf;                                  /* 0x5c */\n"
+            "} KhdaysGates;\n"
+            "extern KhdaysGates *data_0204c22c;\n"
+            "extern char *data_ov022_020b2ea4;\n"
+            "extern int khdays_controls_deliver_now(void);\n",
+        ),
+        (
+            "    switch (Session_GetLinkMode()) {\n",
+            "    if (param_1 == 3 && khdays_controls_deliver_now() == 2 && data_0204c22c != 0 &&\n"
+            "        data_0204c22c->handlers[3] != 0 && data_ov022_020b2ea4 != 0 && param_3 == 0xc) {\n"
+            "        /* a command given at once (khdays_controls_command_early): the whole packet, the pressed\n"
+            "         * buttons made again from the frame before's held (func_ov022_0208a1fc's) */\n"
+            "        extern void khdays_controls_command_given(const unsigned short *packet, unsigned pressed,\n"
+            "                                                 unsigned held);\n"
+            "        unsigned short *khdays_keys;\n"
+            "        MI_CpuCopy8(param_2, data_0204c22c->buf, 0xc);\n"
+            "        data_0204c22c->handlers[3](data_0204c22c->buf, 0xc);\n"
+            "        khdays_keys = (unsigned short *)(data_ov022_020b2ea4 + 0x14 + (param_2[1] & 7u) * 6 + 0x84);\n"
+            "        khdays_keys[1] = (unsigned short)(khdays_keys[1] | (khdays_keys[0] & ~khdays_keys[2]));\n"
+            "        khdays_keys[2] = khdays_keys[0];\n"
+            "        khdays_controls_command_given(param_2, khdays_keys[1], khdays_keys[0]);\n"
+            "        return 1;\n"
+            "    }\n"
+            "    if (param_1 == 3 && khdays_controls_deliver_now() == 1 && data_0204c22c != 0 &&\n"
+            "        data_0204c22c->handlers[3] != 0 && data_ov022_020b2ea4 != 0 && param_3 == 0xc) {\n"
+            "        unsigned short merged[6];\n"
+            "        MI_CpuCopy8(data_ov022_020b2ea4 + 0x28 + (param_2[1] & 7u) * 0xc, merged, 0xc);\n"
+            "        merged[1] = (unsigned short)((merged[1] & ~0x780u) | (param_2[1] & 0x780u));\n"
+            "        MI_CpuCopy8(merged, data_0204c22c->buf, 0xc);\n"
+            "        data_0204c22c->handlers[3](data_0204c22c->buf, 0xc);\n"
+            "        return 1;\n"
+            "    }\n"
+            "    switch (Session_GetLinkMode()) {\n",
+        ),
     ],
     # The field camera: where the game applies its turn and tilt (the D-pad's look view, a drag on
     # the touch screen, L/R), the analog camera adds its own and marks the frame as a camera frame
@@ -1167,10 +1486,10 @@ HOOKS = {
             "  if ((piVar7[0xe] & 0x200U) == 0) {\n    if ((piVar7[0xe] & 2U) != 0) {\n",
             "  if ((piVar7[0xe] & 0x200U) == 0) {\n    if ((piVar7[0xe] & 2U) != 0) {\n"
             "      { extern int khdays_controls_camera_turn(int rate, int inverted, int bits, int flags, int flags2,"
-            " int yaw, int target, int pitch);\n"
+            " int mode, int yaw, int target, int pitch);\n"
             "        int turn = (uVar23 & 0x400) != 0 ? 0 : khdays_controls_camera_turn(piVar7[0x2a],"
-            " (piVar7[0xf] & 0x10U) != 0, uVar20, piVar7[0xe], piVar7[0xf], piVar7[0x16], piVar7[0x20],"
-            " piVar7[0x21]);\n"
+            " (piVar7[0xf] & 0x10U) != 0, uVar20, piVar7[0xe], piVar7[0xf], piVar7[0x10], piVar7[0x16],"
+            " piVar7[0x20], piVar7[0x21]);\n"
             "        if (turn != 0) {\n"
             "          piVar7[0x20] = (piVar7[0x20] + turn) & 0xffff;\n"
             "          if ((piVar7[0xe] & 0x10000U) != 0) func_ov022_02088280(idx, piVar7[0x20]);\n"
@@ -1180,9 +1499,10 @@ HOOKS = {
         (
             "        piVar7[0x21] = piVar7[0x21] - (piVar7[0x2b] + iVar12);\n      }\n",
             "        piVar7[0x21] = piVar7[0x21] - (piVar7[0x2b] + iVar12);\n      }\n"
-            "      { extern int khdays_controls_camera_pitch(int rate, int inverted);\n"
+            "      { extern int khdays_controls_camera_pitch(int rate, int inverted, int flags, int flags2,"
+            " int mode);\n"
             "        int tilt = (uVar23 & 0x400) != 0 ? 0 : khdays_controls_camera_pitch(piVar7[0x2b] + iVar12,"
-            " (piVar7[0xf] & 8U) != 0);\n"
+            " (piVar7[0xf] & 8U) != 0, piVar7[0xe], piVar7[0xf], piVar7[0x10]);\n"
             "        if (tilt > 0 && FX_Mul(fxRatio, 0x3400) > piVar7[0x21]) piVar7[0x21] += tilt;\n"
             "        if (tilt < 0 && FX_Mul(fxRatio, -0x2000) < piVar7[0x21]) piVar7[0x21] += tilt;\n"
             "        if (tilt != 0) uVar20 |= 0x10; }\n",
@@ -1192,6 +1512,68 @@ HOOKS = {
             "    puVar13 = Ov002_ResolveRequestUnlessKind2a(&request.x);\n"
             "    { extern void khdays_trace_camera_request(int found, int x, int y, int kind, int state);\n"
             "      khdays_trace_camera_request(puVar13 != 0, request.x, request.y, request.kind, request.state); }\n",
+        ),
+        # Chase Camera set to Free (the port's third value of the Config's Chase Camera, after Auto and
+        # Manual: runtime/menus/camp.h khdays_camp_chase_free): the game's Manual, except that walking no
+        # longer pulls the camera's tilt back to the preset's (its distance still is); the events' cameras
+        # and the lock-on keep the game's own. On Auto and Manual the game's as it is.
+        (
+            "        piVar7[0x21] = iVar11;\n        iVar11 = Ov002_GetCameraDistance(piVar7[0x11]);",
+            "        { extern int khdays_camp_chase_free(void);\n"
+            "          if (GameState_GetField(CONFIG_CHASE_CAM, 1) == 0 || !khdays_camp_chase_free())\n"
+            "              piVar7[0x21] = iVar11; }\n"
+            "        iVar11 = Ov002_GetCameraDistance(piVar7[0x11]);",
+        ),
+        # The KH2 camera (runtime/camera/kh2_camera_hooks.c): this frame is its own, unless a script's or the
+        # look view's; the reset (flag 8) is KH2's then, not Ov002_TickLockedCamera's.
+        (
+            "    if (((piVar7[0xe] & 8U) != 0) && ((piVar7[0xe] & 0x20008000U) == 0)) {\n",
+            "    { extern void khdays_kh2_camera_follow(int camera, int input_off, int bits);\n"
+            "      khdays_kh2_camera_follow((int)state, (uVar23 & 0x400) != 0, uVar20); }\n"
+            "    if (((piVar7[0xe] & 8U) != 0) && ((piVar7[0xe] & 0x20008000U) == 0)) {\n",
+        ),
+        # A hold (flag 0x200) skips the block above; the KH2 camera stays through it.
+        (
+            "  iVar11 = Ov002_UpdateCameraDistance(piVar7[0x11]);\n  piVar19 = piVar7 + 0x1f;\n",
+            "  { extern void khdays_kh2_camera_held(int camera); khdays_kh2_camera_held((int)state); }\n"
+            "  iVar11 = Ov002_UpdateCameraDistance(piVar7[0x11]);\n  piVar19 = piVar7 + 0x1f;\n",
+        ),
+    ],
+    # Locked on: the KH2 camera keeps its look-at between the player and this target, and the stick works.
+    "ov002@0204f0a8": [  # Ov002_TickCamera
+        (
+            "        if (pObj != 0) {\n            bHeld = 0;\n",
+            "        if (pObj != 0) {\n"
+            "            { extern void khdays_kh2_camera_lock(int target, int camera);\n"
+            "              khdays_kh2_camera_lock((int)pObj, (int)pCam); }\n"
+            "            bHeld = 0;\n",
+        ),
+        (
+            "    } else {\n        pObj = func_ov022_020865b4();\n        if (pObj != 0) {\n",
+            "    } else {\n        pObj = func_ov022_020865b4();\n        if (pObj != 0) {\n"
+            "            { extern void khdays_kh2_camera_lock(int target, int camera);\n"
+            "              khdays_kh2_camera_lock((int)pObj, (int)pCam); }\n",
+        ),
+    ],
+    # What commits the camera. While a mission sets up the camera's tick is gated, and this is the KH2 camera's only frame.
+    "ov002@0204cac0": [  # Ov002_ReaimActor
+        (
+            "    Camera_CommitMatrices(actor);\n",
+            "    { extern void khdays_kh2_camera_commit(int camera);\n"
+            "      khdays_kh2_camera_commit((int)actor); }\n"
+            "    Camera_CommitMatrices(actor);\n",
+        ),
+    ],
+    # Every camera's frame ends here. The KH2 camera's frames take its eye and look-at, through its own collision
+    # (runtime/camera/kh2_camera_hooks.c), before the shake goes on top of them. The vectors it is handed are this
+    # function's, free at this point: the game's casts take them in the game's memory.
+    "ov002@0204ff18": [  # Ov002_TickCameraTransition
+        (
+            "    if (pCam->nHoldTicks == 3) {\n",
+            "    { extern void khdays_kh2_camera_frame(int camera, int player, int behind_yaw, int origin, int eye);\n"
+            "      khdays_kh2_camera_frame((int)pCam, (int)pTarget, func_ov022_02088254(nPlayer), (int)&vDelta,"
+            " (int)&vEye); }\n"
+            "    if (pCam->nHoldTicks == 3) {\n",
         ),
     ],
     # Lock-on: whether a target is locked, the lock-on scheme (Config option 0), and whether the
@@ -1228,6 +1610,12 @@ HOOKS = {
             "    { extern void khdays_controls_selection_live(int live);\n"
             "      if (runtimeMode == 0) khdays_controls_selection_live(!suppressInput); }\n",
         ),
+        (  # the lock-on's own button lets go with one R (runtime/input/controls_hooks.c)
+            "        suppressInput = pressed & 0x100;\n",
+            "        { extern int khdays_controls_selection_repeat(int repeat, int pressed);\n"
+            "          context->repeatAny = khdays_controls_selection_repeat(context->repeatAny, pressed); }\n"
+            "        suppressInput = pressed & 0x100;\n",
+        ),
         (
             "Ov022_SetSelectionEnabled(0);",
             '(khdays_trace_call_arg("SetSelectionEnabled", 0), Ov022_SetSelectionEnabled(0));',
@@ -1253,6 +1641,26 @@ HOOKS = {
             "    Ov022_UpdateSelectionMarker();\n    Ov002_ReaimActor(object, 0);\n",
         ),
     ],
+    # The field's buttons, alone: a control packet built as the host's characters are about to read the
+    # table, its buttons put in the local player's row (MsgQueue_SendGate's hook above); the game's own
+    # packet is still built by the network send after them and queued, with the command chosen and the
+    # target (the game's order: they moved by the buttons of the game frame before). The conditions are
+    # the network send's own (its object there, not paused), the ordinary battle (not Sora's memory's,
+    # data_0204be04) and no saved masks put in after it (mode word 0x2a); the rest in
+    # runtime/input/controls_hooks.c (khdays_controls_send_early).
+    "ov022@0208739c": [  # Ov022_RefreshSlotRows
+        (
+            "    actor = func_ov022_02083f0c();\n    func_ov022_0208a1fc();\n",
+            "    actor = func_ov022_02083f0c();\n"
+            "    { extern void khdays_controls_send_early(int ready);\n"
+            "      extern char *data_ov022_020b2ea4;\n"
+            "      extern unsigned char data_0204be04;\n"
+            "      khdays_controls_send_early(data_ov022_020b2ea4 != 0 &&"
+            " (*(unsigned int *)data_ov022_020b2ea4 & 1u) == 0 && data_0204be04 == 0 &&"
+            " LoadGlobalU16At0() != 0x2a); }\n"
+            "    func_ov022_0208a1fc();\n",
+        )
+    ],
     # The command menu: that the player has field control this frame (past
     # the suppression tests, with or without a HUD panel open) and the
     # game's Config option 6, for the command menu on the D-pad; and what
@@ -1271,6 +1679,26 @@ HOOKS = {
             "      khdays_controls_command_input(GameState_GetField(0x37c6, 1), Ov002_Hud_IsPanelOpen(),"
             " pActor->nMenuState, gPadHeld, gPadPressed, pMenu[0], pMenu[1], Ov022_GetRepeatKeys()); }\n"
             "    if (pActor->nMenuState == 2 || pActor->nMenuState == 3) {\n",
+        ),
+        (  # the command menu on the D-pad (runtime/input/sequencers.h): a step through the game's own
+            # cursor routines, as X with a direction moves it but with no button held, so Roxas goes on
+            "            if (GameState_GetField(CONFIG_COMMAND_LIST, 1) != 0) {\n",
+            "            { extern int khdays_controls_command_step(void);\n"
+            "              const int nStep = khdays_controls_command_step();\n"
+            "              const int nHeld = nStep != 0 ? func_ov022_02083f0c() : -1;\n"
+            "              if (nStep != 0 && Ov002_Hud_IsPanelOpen() == 0 && bCommandChosen == 0\n"
+            "                  && (gPadHeld & 0x400) == 0 && (nHeld == -1 || Ov002_IsObjectFlag2000Set(nHeld) == 0)) {\n"
+            "                  pMenu[0] = 0;\n"
+            "                  if (nStep == 1) Ov002_PanelCursorPrev();\n"
+            "                  else if (nStep == 2) Ov002_PanelCursorNext();\n"
+            "                  else if (nStep == 3) Ov002_PanelCursorStepLeft();\n"
+            "                  else Ov002_PanelCursorStepRight();\n"
+            "              } }\n"
+            "            if (GameState_GetField(CONFIG_COMMAND_LIST, 1) != 0) {\n",
+        ),
+        (  # Retained INFORMATION leaves command navigation, shortcuts and command kinds intact.
+            "Ov002_Hud_IsPanelOpen",
+            "khdays_ui_command_panel_open",
         ),
         (
             "Ov002_SelectShortcut(nCmd);",
@@ -1304,6 +1732,28 @@ HOOKS = {
     # The speed an idle actor moves toward and the animation speed it moves
     # with: analog movement's walk slows both; traced with the heading's
     # reference (the bias the game adds to it).
+    # The KH2 camera's first person strafes: every steer asks here how far it may turn, and gets the stick's angle at
+    # once (runtime/camera/kh2_camera_hooks.c), the facing being set back to the camera's each frame.
+    "ov022@020ad4e8": [  # Ov022_ClampAngleTowardTarget
+        (
+            "    if ((int)arg1 < 0) return 0xffffffff;\n",
+            "    if ((int)arg1 < 0) return 0xffffffff;\n"
+            "    extern int khdays_controls_turn_eased(int actor);\n"
+            "    { extern int khdays_kh2_camera_strafing(int actor);\n"
+            "      if (khdays_kh2_camera_strafing(arg0)) return arg1; }\n",
+        ),
+        # how far it may turn a frame: faster for the local player (KHDAYS_TURN_SPEED, controls_hooks.c)
+        (
+            "    lim = *(int *)(arg0 + 0x4b0);\n",
+            "    { extern int khdays_controls_turn_limit(int actor, int limit, int apart);\n"
+            "      lim = khdays_controls_turn_limit(arg0, *(int *)(arg0 + 0x4b0), ad); }\n",
+        ),
+        # ... nor snapped round past 157 degrees: a turn about eases too
+        (
+            "    if ((*(unsigned int *)(arg0 + 0x24) & 4) != 0 &&\n",
+            "    if ((*(unsigned int *)(arg0 + 0x24) & 4) != 0 && !khdays_controls_turn_eased(arg0) &&\n",
+        ),
+    ],
     "ov022@020a3ccc": [  # Ov022_SteerIdleByAim
         (
             "            nRate = pActor->nWalkSpeed;\n",
@@ -1323,14 +1773,14 @@ HOOKS = {
             "                  Ov022_SetAnimSpeed(pActor, (short)khdays_controls_move_anim((int)pActor, nRate)); }\n",
         ),
     ],
-    # The states an actor enters (jump, guard, ...), traced for the local
-    # player's actor: what each button makes Roxas do.
+    # The states an actor enters (jump, guard, ...), for its KH2 model and the KH2 camera, and traced for
+    # the local player's actor: what each button makes Roxas do (runtime/input/controls_hooks.c).
     "ov022@02098834": [
         (  # Ov022_EnterActorState
             "int Ov022_EnterActorState(struct Actor *pActor, int nState, u32 nPrevTimer)\n{\n",
             "int Ov022_EnterActorState(struct Actor *pActor, int nState, u32 nPrevTimer)\n{\n"
-            "    { extern void khdays_trace_actor_state(int actor, int state);"
-            " khdays_trace_actor_state((int)pActor, nState); }\n",
+            "    { extern void khdays_controls_actor_entered_state(int actor, int state);"
+            " khdays_controls_actor_entered_state((int)pActor, nState); }\n",
         )
     ],
     # The frame-rate mode field play runs at, traced.
@@ -1344,7 +1794,9 @@ HOOKS = {
     # The engine's three loads: which game file is
     # read into which buffer -- by path or by packed id, raw or decompressed --
     # for the port's names of the graphics the game uploads
-    # (runtime/core/origin.c). Nothing the game does changes.
+    # (runtime/core/origin.c). Nothing the game does changes, but for the
+    # mods' new missions: Archive_LoadFile hands their rows in Mission Mode's
+    # list and the missions' table after the game's (runtime/missions/).
     "main@0201ebdc": [
         (  # Loader_RequestFile
             "    OS_SendMessage(data_0204bc1c, self, 1);\n    return (void *)self[10];\n",
@@ -1373,6 +1825,8 @@ HOOKS = {
             "      khdays_origin_loaded(file.top, file.bottom, buf, buf != 0 ? size : 0, compressed != 0); }\n"
             "    { extern void khdays_stop_file_loaded(unsigned top, void *buffer, unsigned size);\n"
             "      if (buf != 0) khdays_stop_file_loaded(file.top, buf, size); }\n"
+            "    { extern void *khdays_missions_file_loaded(unsigned top, void *buffer, unsigned size, void *heap);\n"
+            "      if (buf != 0) buf = khdays_missions_file_loaded(file.top, buf, size, (void *)gFileLoader[5]); }\n"
             "    gFileLoader[5] = 0;\n    FS_CloseFile(&file);\n    return buf;\n",
         )
     ],
@@ -1402,19 +1856,84 @@ HOOKS = {
     "itcm@01ffb8fc": [
         (  # NNSi_G3dDrawInternal
             "    do {\n        u32 command;\n",
-            "    { extern void khdays_models_draw_begin(const void *model);\n"
-            "      khdays_models_draw_begin(renderObj->pResMdl); }\n"
+            # the render object's joint animation first (its anmJnt, +0x10): a mod character's own skeleton
+            # plays its clip for it
+            "    { extern void khdays_models_draw_animation(unsigned animation);\n"
+            "      khdays_models_draw_animation(*(unsigned *)((unsigned char *)renderObj + 0x10)); }\n"
+            "    { extern void khdays_models_draw_begin(const void *model, const void *render_obj);\n"
+            "      khdays_models_draw_begin(renderObj->pResMdl, renderObj); }\n"
+            # the textures from the model's texture bank when its file's are past the DS's VRAM
+            # (runtime/display/texture_banks.h)
+            "    { extern void khdays_texture_banks_draw_begin(const void *model);\n"
+            "      khdays_texture_banks_draw_begin(renderObj->pResMdl); }\n"
             "    do {\n        u32 command;\n",
         ),
         (
             "    renderObj->flags &= ~1;\n",
             "    { extern void khdays_models_draw_end(void); khdays_models_draw_end(); }\n"
+            "    { extern void khdays_texture_banks_draw_end(void); khdays_texture_banks_draw_end(); }\n"
             "    renderObj->flags &= ~1;\n",
+        ),
+    ],
+    # A mover put on its floor this frame (Mover_Step calls it every frame for one with
+    # gravity, standing or falling): its owner at +0, vertical speed at +0x38 (0x80000000
+    # on the floor) and floor collision index at +0x46, for a KH2 model's IKAdjust at its
+    # draw (runtime/mods/models.cpp, docs/KH2_MODELS.md).
+    "main@0202cf64": [
+        (  # Mover_ResolveFloor
+            "    if (mover->active < 0) {\n        return 0;\n    }\n",
+            "    if (mover->active < 0) {\n        return 0;\n    }\n"
+            "    { extern void khdays_models_actor_ground(void *mover); khdays_models_actor_ground(mover); }\n",
+        )
+    ],
+    # A joint's matrix saved for what the game attaches to it (an actor's weapons at
+    # ro_w_tg_L/_R): a KH2 model's motions.txt can put it on a KH2 bone instead
+    # (runtime/mods/models.cpp, written over at the body's draw end).
+    "itcm@01fffe68": [
+        (  # Obj_CaptureSelectedJointMtx
+            "            NNS_G3dGetCurrentMtx(&cache->matrices528[index], 0);\n",
+            "            NNS_G3dGetCurrentMtx(&cache->matrices528[index], 0);\n"
+            "            { extern void khdays_models_joint_saved(void *matrix, unsigned node);\n"
+            "              khdays_models_joint_saved(&cache->matrices528[index], selected); }\n",
+        )
+    ],
+    # The camp menus' model (ov025, its twin ov008) saves its hand joints' matrices for the keyblade from its own
+    # node callback, not Obj_CaptureSelectedJointMtx: the same note, so a KH2 model's `weapon` line holds there too.
+    "ov025@0208c868": [
+        (  # Ov025_RefreshMatchingMatrices
+            "            NNS_G3dGetCurrentMtx((void *)(ctx + 0x150), (void *)0);\n",
+            "            NNS_G3dGetCurrentMtx((void *)(ctx + 0x150), (void *)0);\n"
+            "            { extern void khdays_models_joint_saved_at(unsigned matrix, unsigned node);\n"
+            "              khdays_models_joint_saved_at((unsigned)(ctx + 0x150), key); }\n",
+        ),
+        (
+            "    NNS_G3dGetCurrentMtx((void *)(ctx + 0x180), (void *)0);\n",
+            "    NNS_G3dGetCurrentMtx((void *)(ctx + 0x180), (void *)0);\n"
+            "    { extern void khdays_models_joint_saved_at(unsigned matrix, unsigned node);\n"
+            "      khdays_models_joint_saved_at((unsigned)(ctx + 0x180), key); }\n",
+        ),
+    ],
+    "ov008@0205a0bc": [
+        (  # Ov008_RefreshMatchingMatrices
+            "            NNS_G3dGetCurrentMtx((void *)(ctx + 0x150), (void *)0);\n",
+            "            NNS_G3dGetCurrentMtx((void *)(ctx + 0x150), (void *)0);\n"
+            "            { extern void khdays_models_joint_saved_at(unsigned matrix, unsigned node);\n"
+            "              khdays_models_joint_saved_at((unsigned)(ctx + 0x150), key); }\n",
+        ),
+        (
+            "    NNS_G3dGetCurrentMtx((void *)(ctx + 0x180), (void *)0);\n",
+            "    NNS_G3dGetCurrentMtx((void *)(ctx + 0x180), (void *)0);\n"
+            "    { extern void khdays_models_joint_saved_at(unsigned matrix, unsigned node);\n"
+            "      khdays_models_joint_saved_at((unsigned)(ctx + 0x180), key); }\n",
         ),
     ],
     "itcm@01ffc164": [
         (  # NNSi_G3dFuncSbc_NODEDESC
             "    if (state->callbackTimings[6] == 3) {\n        state->sbcCallbacks[6](state);\n    }\n",
+            # a mod's character's weapon node first put on its own skeleton's weapon bone, where the node's
+            # callback reads it (the game's weapon follows it)
+            "    { extern void khdays_models_node_placed(unsigned node, int sent);\n"
+            "      khdays_models_node_placed(nodeId, !(state->flags & 0x100)); }\n"
             "    if (state->callbackTimings[6] == 3) {\n        state->sbcCallbacks[6](state);\n    }\n"
             "    { extern void khdays_models_node(unsigned node, int sent);\n"
             "      khdays_models_node(nodeId, !(state->flags & 0x100)); }\n",
@@ -1424,9 +1943,12 @@ HOOKS = {
         (  # NNSi_G3dFuncSbcSHP
             "        NNS_G3dGeSendDL((u8 *)data + data->payloadOffset08, data->payloadSize0c);\n",
             "        { extern int khdays_models_shape(const void *list, unsigned int size);\n"
+            "          extern int khdays_character_sprite_begin(const void *); extern void khdays_character_sprite_end(void);\n"
+            "          int khdays_sprite = khdays_character_sprite_begin(state);\n"
             "          if (!khdays_models_shape((u8 *)data + data->payloadOffset08, data->payloadSize0c)) {\n"
             "              NNS_G3dGeSendDL((u8 *)data + data->payloadOffset08, data->payloadSize0c);\n"
-            "          } }\n",
+            "          }\n"
+            "          if (khdays_sprite) khdays_character_sprite_end(); }\n",
         )
     ],
     # Gameplay mods' scripts (runtime/scripts/scripts.h): the frame point, once the game's logic of the
@@ -1437,7 +1959,21 @@ HOOKS = {
             "        SoundMgr_Update();\n"
             "        { extern void khdays_scripts_frame(void); khdays_scripts_frame(); }\n\n"
             "        /* frame-rate pacing",
-        )
+        ),
+        (  # the press pace (runtime/input/input.c, KHDAYS_PRESS_PACE): a new press ends the pace's wait,
+            # and a quiet frame waits a VBlank more to give it back
+            "            frameTarget += (gObjSystem == 1) ? 2 : 1;\n"
+            "            while (VBlank_GetCount() < frameTarget) {\n"
+            "                OS_WaitVBlankIntr();\n",
+            "            frameTarget += (gObjSystem == 1) ? 2 : 1;\n"
+            "            { extern unsigned khdays_press_pace_target(unsigned target);\n"
+            "              frameTarget = khdays_press_pace_target(frameTarget); }\n"
+            "            while (VBlank_GetCount() < frameTarget) {\n"
+            "                extern int khdays_press_pace_wait(unsigned (*count)(void), unsigned target);\n"
+            "                const int khdays_paced = khdays_press_pace_wait(VBlank_GetCount, frameTarget);\n"
+            "                if (khdays_paced == 2) break;\n"
+            "                if (khdays_paced == 0) OS_WaitVBlankIntr();\n",
+        ),
     ],
     "ov002@02068090": [
         (  # Ov002_BeginMissionRun: the session request went through, a run starts (the first after the
@@ -1468,8 +2004,8 @@ HOOKS = {
             "    if (nValue != pSelf->nHp) {\n",
         ),
         (
-            "    Ov002_GetPanelWord0220(pSelf->nId, pSelf->nHp);\n}\n",
-            "    Ov002_GetPanelWord0220(pSelf->nId, pSelf->nHp);\n"
+            "    Ov002_SetSeatHpGauge(pSelf->nId, pSelf->nHp);\n}\n",
+            "    Ov002_SetSeatHpGauge(pSelf->nId, pSelf->nHp);\n"
             "    { extern void khdays_scripts_hp(void *entity, int before); khdays_scripts_hp(pEnt, khdays_before); }\n"
             "}\n",
         ),
@@ -1508,6 +2044,126 @@ HOOKS = {
             "      if (khdays_link_music_request(3, 0, arg)) return; }\n",
         )
     ],
+    # The game's reliable messages past its 32 slots (runtime/net/msg_overflow.h): a message the slots have no room
+    # for waits, in order and numbered as the game would number it, and takes a slot as one frees -- the game lost it
+    # (MsgQueue_Post's 0xffff), and a mod's wave can make any number of enemies at once.
+    "main@02031384": [
+        (  # MsgQueue_Post: behind the waiting ones, or waiting when the slots are taken
+            "    if (idx == 0x20) {\n",
+            "    { extern int khdays_msgqueue_waiting(void);\n"
+            "      extern void khdays_msgqueue_drain(void *ctx);\n"
+            "      extern unsigned short khdays_msgqueue_wait(void *ctx, int kind, const void *cmd, unsigned short size);\n"
+            "      if (khdays_msgqueue_waiting()) {\n"
+            "          khdays_msgqueue_drain(ctx);\n"
+            "          freeMask = ctx->freeMask;\n"
+            "          idx = Clz(freeMask);\n"
+            "      }\n"
+            "      if (khdays_msgqueue_waiting() || idx == 0x20) {\n"
+            "          return khdays_msgqueue_wait(ctx, nKind, pCmd, nSize);\n"
+            "      } }\n"
+            "    if (idx == 0x20) {\n",
+        )
+    ],
+    # (and a frame's messages past the DS's 0x1e0 bytes, the size of its wireless frame: the buffer grows -- the game
+    # dropped them, and with many enemies standing the last ones' poses never reached a guest, frame after frame: a
+    # second wave's bosses stood in their T pose where they came out)
+    "main@02030fdc": [
+        (  # MsgQueue_Enqueue: the frame's buffer as large as the messages need
+            "    if (need >= cap) return 0;\n    if (buf->state == 1) return 0;\n",
+            "    { extern int khdays_msgframe_room(const void *buffer, int room);\n"
+            "      extern void khdays_msgframe_grown(const void *old, const void *buffer, int room);\n"
+            "      extern struct GameHeap *gMainHeap;\n"
+            "      if (cap == 0x1e0) {\n"
+            "          cap = khdays_msgframe_room(buf->pBuffer, cap);\n"
+            "      }\n"
+            "      if (need >= cap && cap >= 0x1e0 && buf->state != 1) {\n"
+            "          int room = cap;\n"
+            "          unsigned char *more;\n"
+            "          while (room <= need && room < 0x8000) {\n"
+            "              room *= 2;\n"
+            "          }\n"
+            "          if (room <= need) {\n"
+            "              room = 0xffe0; /* (its sizes are 16 bits) */\n"
+            "          }\n"
+            "          more = need < room ? (unsigned char *)ExpHeap_AllocOrDefault((unsigned)room, 0x20, gMainHeap) : 0;\n"
+            "          if (more != 0) {\n"
+            "              MI_CpuCopy8(buf->pBuffer, more, (unsigned int)off);\n"
+            "              ExpHeap_Free(buf->pBuffer, gMainHeap);\n"
+            "              khdays_msgframe_grown(buf->pBuffer, more, room);\n"
+            "              buf->pBuffer = more;\n"
+            "              cap = room;\n"
+            "          }\n"
+            "      } }\n"
+            "    if (need >= cap) return 0;\n    if (buf->state == 1) return 0;\n",
+        )
+    ],
+    # (the frames received: each player's slot held the DS's frames, 0x3c0 or 0x3d8 bytes from a fixed area, and
+    # ChannelBuf_Append copied past it -- a grown frame wrote over what follows; the slot grows instead)
+    "itcm@01fffa60": [
+        (  # ChannelBuf_Append: the slot as large as what it holds
+            "    dst = *(char **)slot;\n",
+            "    { extern int khdays_msgslot_grown(const void *old, const void *buffer, unsigned int room, unsigned int need);\n"
+            "      extern void *ExpHeap_AllocOrDefault(unsigned int size, int alignment, struct GameHeap *heap);\n"
+            "      extern int ExpHeap_Free(void *block, struct GameHeap *heap);\n"
+            "      extern struct GameHeap *gMainHeap;\n"
+            "      extern void MI_CpuCopy8(const void *src, void *dst, unsigned int size);\n"
+            "      const unsigned int used = *(unsigned short *)(slot + 4), need = used + size;\n"
+            "      if (need > *(unsigned short *)(slot + 6)) {\n"
+            "          unsigned int room = *(unsigned short *)(slot + 6);\n"
+            "          char *more;\n"
+            "          while (room < need && room < 0x8000) {\n"
+            "              room = room * 2;\n"
+            "          }\n"
+            "          if (room < need) {\n"
+            "              room = 0xfffc; /* (its sizes are 16 bits) */\n"
+            "          }\n"
+            "          more = need <= room ? (char *)ExpHeap_AllocOrDefault(room, 0x20, gMainHeap) : 0;\n"
+            "          if (more == 0) {\n"
+            "              return; /* no room: dropped */\n"
+            "          }\n"
+            "          MI_CpuCopy8(*(char **)slot, more, used);\n"
+            "          if (khdays_msgslot_grown(*(char **)slot, more, room, need)) {\n"
+            "              ExpHeap_Free(*(char **)slot, gMainHeap);\n"
+            "          }\n"
+            "          *(char **)slot = more;\n"
+            "          *(unsigned short *)(slot + 6) = (unsigned short)room;\n"
+            "      } }\n"
+            "    dst = *(char **)slot;\n",
+        )
+    ],
+    "main@020308a0": [
+        (  # Session_LayoutPacketSlots: each message's copy as large as a message's 10-bit size
+            "    ctx->scratch = AllocFromExpHeapWrapper(0x3c0, gMainHeap);\n",
+            "    ctx->scratch = AllocFromExpHeapWrapper(0x400, gMainHeap);\n",
+        )
+    ],
+    "main@02031130": [
+        (  # MsgQueue_ResendForPeer: each frame, the waiting ones into the slots freed
+            "    if (*(unsigned int *)((char *)base + 0xc) == 0xffffffff) return;\n",
+            "    { extern void khdays_msgqueue_drain(void *ctx); khdays_msgqueue_drain((char *)base + 0xc); }\n"
+            "    if (*(unsigned int *)((char *)base + 0xc) == 0xffffffff) return;\n",
+        )
+    ],
+    "main@02031440": [
+        (  # MsgQueue_Contains: a waiting message is not had by everyone yet
+            "    idx = Clz(used);\n    while (idx < 0x20) {\n",
+            "    { extern int khdays_msgqueue_holds(unsigned int handle); if (khdays_msgqueue_holds(id)) return 1; }\n"
+            "    idx = Clz(used);\n    while (idx < 0x20) {\n",
+        )
+    ],
+    "main@02030e7c": [
+        (  # MsgQueue_Init_2: a new queue, nothing waiting
+            "    gMsgQueue = ctx[n];\n",
+            "    gMsgQueue = ctx[n];\n"
+            "    { extern void khdays_msgqueue_reset(void); khdays_msgqueue_reset(); }\n",
+        )
+    ],
+    "main@02030f58": [
+        (  # Session_Shutdown: the queue gone, nothing waiting
+            "end:\n    gMsgQueue = 0;\n",
+            "end:\n    { extern void khdays_msgqueue_reset(void); khdays_msgqueue_reset(); }\n    gMsgQueue = 0;\n",
+        )
+    ],
     "main@020336e8": [
         (  # SoundMgr_QueueRequest: requests 4 and 5 (SoundMgr_SwitchBgm, SoundMgr_SwitchBgmResume)
             "    unsigned char *ptr;\n",
@@ -1532,7 +2188,24 @@ HOOKS = {
             "    unsigned char state = data_ov107_020cbb20[id];\n",
             "    unsigned char state = data_ov107_020cbb20[id];\n"
             "    { extern void khdays_enemies_class(int id); khdays_enemies_class(id); }\n",
-        )
+        ),
+        (  # a class whose six columns are full takes its own slot past them, with its first column's overlay: each
+            # enemy overlay has its own place here (runtime/core/enemy_overlays.h), so any classes are out together
+            "        if (!found) {\n            goto terminate;\n        }\n",
+            "        if (!found) {\n"
+            "            int column = 0;\n"
+            "            while (column < 6 && Ov107_EnemyTableHasEntry(id, column) == 0) {\n"
+            "                column++;\n"
+            "            }\n"
+            "            if (column == 6) {\n"
+            "                goto terminate;\n"
+            "            }\n"
+            "            data_ov107_020cbb20[id] = (unsigned char)(6 + id + 1);\n"
+            "            Ov107_LoadEnemyOverlay(id, column, &data_ov107_020cbb98[6 + id]);\n"
+            "            Ov107_LoadSpawnRecord(id, &data_ov107_020cbca0[6 + id]);\n"
+            "            goto dispatch;\n"
+            "        }\n",
+        ),
     ],
     "ov107@020c1870": [
         (  # Ov107_Spawner_Run: op 0 (an idle enemy set going) skipped while a mod holds the mission's own
@@ -1562,6 +2235,30 @@ HOOKS = {
             "    Ov002Res *r = data_ov002_0207fa14;\n"
             "    { extern void khdays_enemies_area_left(void); khdays_enemies_area_left(); }\n",
         )
+    ],
+    # The actors' table by id (runtime/scripts/enemies_link.h khdays_enemies_ids_room): made with the ids there
+    # were then, it was read for any id under the count now, past its end for an actor made after it -- a mission's
+    # later wave, a mod's enemy. A guest finds the host's messages' actors through it: a later actor's went to
+    # whatever lay past the table.
+    "ov107@020c9bd4": [
+        (  # Ov107_Scene_BuildIdTable: the ids it is made for
+            "    *(void **)(ctx + 0x48) = CallocInstance(*(int *)(ctx + 0x24) * 4);\n",
+            "    *(void **)(ctx + 0x48) = CallocInstance(*(int *)(ctx + 0x24) * 4);\n"
+            "    { extern void khdays_enemies_ids_built(const void *table, int count);\n"
+            "      khdays_enemies_ids_built(*(void **)(ctx + 0x48), *(int *)(ctx + 0x24)); }\n",
+        )
+    ],
+    "ov107@020c9b68": [
+        (  # Ov107_FindMessageHandler: the table for the ids it holds, the actors' list for the others
+            "    if (mgr->table != 0 && id < (u16)mgr->count) {\n",
+            "    if (mgr->table != 0 && id < (u16)mgr->count &&\n"
+            "        id < (unsigned int)khdays_enemies_ids_room(mgr->table)) {\n",
+        ),
+        (
+            "struct HandlerMgr *mgr = gOv107ActorManager;\n",
+            "struct HandlerMgr *mgr = gOv107ActorManager;\n"
+            "    extern int khdays_enemies_ids_room(const void *table);\n",
+        ),
     ],
 }
 
@@ -1681,9 +2378,62 @@ HOOKS["ov008@0207c248"] = _ov008_list  # Ov008_UpdateMissionMenuOptionScreen
 HOOKS["ov006@020508e0"] = _ov006_members  # Ov006_UpdateMissionMenuSelectionScreen
 HOOKS["ov008@0207c7c8"] = _ov008_members  # Ov008_UpdateMissionMenuSelectionScreen
 
+# The field's prize pictures drawn as a mod's effect (ui/prize_effects.h): each of mo/prize.pak.z's
+# pictures named as the game loads it, each billboard of one with an effect drawn by the port instead, and the
+# prizes taken traced (KHDAYS_TRACE_PRIZES).
+HOOKS["ov002@02078ef8"] = [
+    (  # Ov002_LoadShopTable (the prize pack's pictures into the field stage's texture words)
+        "            Tex0_GetTexPlttParams((&data_ov002_0207fa28)[1] + 0x60 + off,\n"
+        "                          Archive_GetMember(list, 7, i), 0);\n",
+        "            { int member = Archive_GetMember(list, 7, i);\n"
+        "              Tex0_GetTexPlttParams((&data_ov002_0207fa28)[1] + 0x60 + off, member, 0);\n"
+        "              { extern void khdays_prize_picture(int index, unsigned btx0, unsigned words);\n"
+        "                khdays_prize_picture(i, (unsigned)member,\n"
+        "                                     (unsigned)((&data_ov002_0207fa28)[1] + 0x60 + off)); } }\n",
+    )
+]
+HOOKS["main@020287e8"] = [
+    (  # Billboard_DrawList: a node's picture drawn as its effect leaves the node's own quad out
+        "        fx16 hw = (fx16)(node->width / 2);\n",
+        "        fx16 hw = (fx16)(node->width / 2);\n"
+        "        { extern int khdays_prize_node(const void *node); if (khdays_prize_node(node)) continue; }\n",
+    )
+]
+HOOKS["ov002@02078bac"] = [
+    (  # Ov002_CollectNearbySpots: a prize taken
+        "            Activate(pOwner, pRow->nSpotId, pRow->nKind, pRow->nTier);\n",
+        "            { extern void khdays_prize_collected(int kind, int tier, unsigned row);\n"
+        "              khdays_prize_collected(pRow->nKind, pRow->nTier, (unsigned)pRow); }\n"
+        "            Activate(pOwner, pRow->nSpotId, pRow->nKind, pRow->nTier);\n",
+    ),
+    (  # Ov002_CollectNearbySpots: a KH2 enemy's prize drain (1:187, YS::STATUS::IsPrizeDrain: KH2's prizes all taken
+        # where they lie, Zexion's) takes every one however far, Days's way (homing to the player)
+        "        if (VEC_Distance(&pRow->vPos, &vAttractPosition) > nRadius) continue;\n",
+        "        { extern int khdays_kh2_enemies_prize_drain(void);\n"
+        "          if (!khdays_kh2_enemies_prize_drain() && VEC_Distance(&pRow->vPos, &vAttractPosition) > nRadius)\n"
+        "              continue; }\n",
+    ),
+]
+
 # The Stop magic (runtime/battle/stop_magic.c): Days's unfinished sixth magic made whole on what the game
 # left. Its three panels are written over three blank records as the panels' table loads, the camp lets
 # them in, and the battle's list of magic names gets the names the game left empty.
+HOOKS["ov107@020c1744"] = [
+    (  # Ov107_Spawner_FindFreeActor: an actor made for a row with the same KH2 enemy as the slot's (shell.h)
+        "            {\n                u8 *arra0 = *(u8 **)(t5 + 0xa0);\n                arra0[key] = arra0[key] + 1;\n",
+        "            { extern int khdays_kh2_enemies_fits(unsigned int spawner, int slot, unsigned int actor);\n"
+        "              if (!khdays_kh2_enemies_fits((unsigned int)self, index, (unsigned int)n)) goto loopend; }\n"
+        "            {\n                u8 *arra0 = *(u8 **)(t5 + 0xa0);\n                arra0[key] = arra0[key] + 1;\n",
+    )
+]
+HOOKS["main@02033d0c"] = [
+    (  # Slot_Spawn: a positioned sound started -- a stand-in's own at a KH2 enemy's place not heard
+        "    if (param_1 == 0)\n        param_1 = *(unsigned int *)(base + 0x9c);\n",
+        "    if (param_1 == 0)\n        param_1 = *(unsigned int *)(base + 0x9c);\n"
+        "    { extern int khdays_kh2_enemies_quiet(unsigned int archive, unsigned int entry, const void *place);\n"
+        "      if (khdays_kh2_enemies_quiet(param_1, param_2, param_3)) return 0; }\n",
+    )
+]
 HOOKS["main@02034150"] = [
     (  # MsgDb_LoadDb: a database loaded whole
         "            ResSlot_Release_2(id);\n            return 0;\n        }\n    }\n    return 1;\n}\n",
@@ -1750,8 +2500,8 @@ HOOKS["ov022@0208a830"] = [
 
 
 def _magic_track_reads(signature: str, field: str, as_type: str = "") -> list[tuple[str, str]]:
-    """A handler of the magics reading the pool's level animation entry (its `pCtx->nTrack`, `->pOwner` or
-    `->pTrack`, of type `as_type`): the port's."""
+    """A handler of the magics reading the pool's level animation entry (its `pCtx->pLevelAnim`, of type
+    `as_type`): the port's."""
     read = "khdays_magic_track((unsigned)pCtx)"
     return [
         (signature, "extern int khdays_magic_track(unsigned int pool);\n" + signature),
@@ -1760,17 +2510,17 @@ def _magic_track_reads(signature: str, field: str, as_type: str = "") -> list[tu
 
 
 for _key, _signature, _field, _type in (
-    ("ov022@0208e404", "void Ov022_ArmSlotAtActor(struct ReactionCtx *pCtx)\n", "nTrack", ""),
-    ("ov022@0208f888", "void Ov022_EnterBlockReaction(struct ReactionCtx *pCtx)\n", "nTrack", ""),
-    ("ov022@0208de14", "void Ov022_EnterReactionAtActor(struct ReactionCtx *pCtx)\n", "nTrack", ""),
-    ("ov022@0208c9b4", "void Ov022_EnterReactionAtOffset(struct ReactionCtx *pCtx)\n", "nTrack", ""),
-    ("ov022@0208fe40", "int Ov022_StepReaction(struct ReactionCtx *pCtx, int nDelta)\n", "nTrack", ""),
-    ("ov022@0208eee8", "void Ov022_EnterChainReaction(struct ReactionCtx *pCtx)\n", "pOwner", "void *"),
-    ("ov022@0208f2d4", "void Ov022_EnterGroundReaction(struct ReactionCtx *pCtx)\n", "pOwner", "void *"),
-    ("ov022@0208b848", "void Ov022_LaunchSlotPart(struct ReactionCtx *pCtx)\n", "pOwner", "void *"),
-    ("ov022@0208be38", "void Ov022_LaunchSlotPartArc(struct ReactionCtx *pCtx)\n", "pOwner", "void *"),
-    ("ov022@0208d764", "void Ov022_LaunchSlotPartFlat(struct ReactionCtx *pCtx)\n", "pOwner", "void *"),
-    ("ov022@0208cfbc", "void Ov022_LaunchSlotPartTracked(struct ReactionCtx *pCtx)\n", "pOwner", "void *"),
+    ("ov022@0208e404", "void Ov022_ArmSlotAtActor(struct ReactionCtx *pCtx)\n", "pLevelAnim", "u8 *"),
+    ("ov022@0208f888", "void Ov022_EnterBlockReaction(struct ReactionCtx *pCtx)\n", "pLevelAnim", "u8 *"),
+    ("ov022@0208de14", "void Ov022_EnterReactionAtActor(struct ReactionCtx *pCtx)\n", "pLevelAnim", "u8 *"),
+    ("ov022@0208c9b4", "void Ov022_EnterReactionAtOffset(struct ReactionCtx *pCtx)\n", "pLevelAnim", "u8 *"),
+    ("ov022@0208fe40", "int Ov022_StepReaction(struct ReactionCtx *pCtx, int nDelta)\n", "pLevelAnim", "u8 *"),
+    ("ov022@0208eee8", "void Ov022_EnterChainReaction(struct ReactionCtx *pCtx)\n", "pLevelAnim", "void *"),
+    ("ov022@0208f2d4", "void Ov022_EnterGroundReaction(struct ReactionCtx *pCtx)\n", "pLevelAnim", "void *"),
+    ("ov022@0208b848", "void Ov022_LaunchSlotPart(struct ReactionCtx *pCtx)\n", "pLevelAnim", "void *"),
+    ("ov022@0208be38", "void Ov022_LaunchSlotPartArc(struct ReactionCtx *pCtx)\n", "pLevelAnim", "void *"),
+    ("ov022@0208d764", "void Ov022_LaunchSlotPartFlat(struct ReactionCtx *pCtx)\n", "pLevelAnim", "void *"),
+    ("ov022@0208cfbc", "void Ov022_LaunchSlotPartTracked(struct ReactionCtx *pCtx)\n", "pLevelAnim", "void *"),
 ):
     HOOKS[_key] = _magic_track_reads(_signature, _field, _type)
 # The panels' pictures loaded (the camp's two menus, the results): the clock Stop's panels show, in the magics' purple.
@@ -1798,7 +2548,7 @@ HOOKS["ov005@02052a7c"] = [  # Ov005_AllocateResultTextures
 ]
 # The cast's message (kind 0xc, its slot in five bits) carries the cell, Stop's level with it: a copy that receives
 # it takes Stop's place and that level, as the caster's does (Ov022_SetRecordValue).
-HOOKS["ov022@0208a2b4"] = _magic_track_reads("void Ov022_OnEndMessage(struct EndMessage *pMsg)\n", "pTrack", "u8 *") + [
+HOOKS["ov022@0208a2b4"] = _magic_track_reads("void Ov022_OnEndMessage(struct EndMessage *pMsg)\n", "pLevelAnim", "u8 *") + [
     (  # Ov022_OnEndMessage, a cast begun on another copy: its slot
         "        pCtx->nSlot = pMsg->nSlot;\n",
         "        { extern int khdays_stop_record(unsigned int pool, int value);\n"
@@ -1816,22 +2566,30 @@ HOOKS["ov022@0208a464"] = [
 ]
 # A player another's Stop holds (friendly fire on) stands still: on the host its input, state and motion (the
 # guests' copies follow the host's), on every copy its animation.
-HOOKS["ov022@020a0008"] = [
+HOOKS["ov022@020a0008"] += [
     (  # Ov022_ActorUpdate
         "    void *pNext;\n\n    VEC_COPY(&pActor->vecPrevPos, &pActor->vecPos);\n",
         "    void *pNext;\n"
-        "    int khdays_held;\n\n"
+        "    int khdays_held;\n"
+        "    int khdays_kh2_held;\n\n"
         "    { extern int khdays_stop_player_holding(void *actor); khdays_held = khdays_stop_player_holding(pActor); }\n"
+        "    { extern int khdays_kh2_enemies_holding(void *actor); khdays_kh2_held = khdays_kh2_enemies_holding(pActor); }\n"
+        "    khdays_held |= khdays_kh2_held;\n"
         "    VEC_COPY(&pActor->vecPrevPos, &pActor->vecPos);\n",
     ),
     (
         "    Ov022_StepScaledAnimTracks(pActor);\n",
         "    if (!khdays_held) {\n        Ov022_StepScaledAnimTracks(pActor);\n    }\n",
     ),
+    (  # in a KH2 enemy's hands the player takes no Days command (KH2's takes only the reaction command offered,
+        # runtime/kh2_enemies): the pad's top button is the command's, not the deck's cursor or a shortcut
+        "    if (data_0204be04 == 0\n        && pActor->nOwner == Session_GetLocalPlayerIndex()\n",
+        "    if (!khdays_kh2_held && data_0204be04 == 0\n        && pActor->nOwner == Session_GetLocalPlayerIndex()\n",
+    ),
     (
         "    if (Session_GetLocalPlayerIndex() == 0) {\n        pActor->nAnimHandle = Anim_GetFrame(&pActor->pNode->anim, 0);\n",
         "    if (Session_GetLocalPlayerIndex() == 0 && khdays_held) {\n"
-        "        /* held by Stop */\n"
+        "        /* held by Stop, or in a KH2 enemy's hands (runtime/kh2_enemies) */\n"
         "    } else if (Session_GetLocalPlayerIndex() == 0) {\n"
         "        pActor->nAnimHandle = Anim_GetFrame(&pActor->pNode->anim, 0);\n",
     ),
@@ -1926,25 +2684,209 @@ HOOKS["ov022@020a2978"] += [
         "    if (GameState_IsFlagSet(0x20e0) != 0) {\n",
     )
 ]
+# KH2's reaction commands for Days's own (ui/reaction_command.h, the setting on and the bar's pieces there): the thing
+# aimed at's command (Talk, Examine ...) goes to the bar over the deck, which keeps Attack; the reaction button (the
+# DS X, the pad's top one) takes it as a primary command with argument 1, chosen without A as a shortcut is (the
+# packet's bit the host's Ov022_TranslateCommandToAction takes a command by), the deck's own press with the bar showing
+# one has argument 2 (the arguments go to the host in the control packet).
+HOOKS["ov022@020a2978"] += [
+    (  # Ov022_UpdateCommandInput: the command of the thing aimed at
+        "            Ov002_PanelSelectSource(Ov022_GetSubKindIfState2(pActor) & 0xf, nArg);\n",
+        "            { extern int khdays_reaction_talk_offer(int kind, int usable);\n"
+        "              if (khdays_reaction_talk_offer(Ov022_GetSubKindIfState2(pActor) & 0xf, nArg))\n"
+        "                  Ov002_PanelSelectSource(0, func_ov022_0209fc78(pActor, -1) != 0);\n"
+        "              else\n"
+        "                  Ov002_PanelSelectSource(Ov022_GetSubKindIfState2(pActor) & 0xf, nArg); }\n",
+    ),
+    (  # the reaction button's press of it: no deck cursor, menu or shortcut from that X
+        "            bNoRepeat = 1;\n",
+        "            { extern int khdays_reaction_talk_pressed(int pressed, int panel_open);\n"
+        "              if (khdays_reaction_talk_pressed(gPadPressed, khdays_ui_command_panel_open()))\n"
+        "                  bCommandChosen = 1; }\n"
+        "            bNoRepeat = 1;\n",
+    ),
+    (
+        "        pActor->bMenuFlag = (u8)bMenuActive;\n",
+        "        pActor->bMenuFlag = (u8)bMenuActive;\n"
+        "        { extern int khdays_reaction_talk_commit(signed char *kind, unsigned short *arg);\n"
+        "          if (khdays_reaction_talk_commit(&pActor->nCommandKind, &pActor->nCmdArg))\n"
+        "              pActor->bMenuFlag = 1; }\n",
+    ),
+]
+# The command menu a KH2 enemy's script gives a free player on the deck (runtime/kh2_enemies, 1:237: Zexion's Lexicon's
+# pages once his illusion let the player go): A chooses its row's command, which the runtime sends to the enemy, and
+# is no Days command -- no deck slot used (no attack, no list), the command made none (kind 7) as the reaction button's
+# own press of a KH2 command is.
+HOOKS["ov022@020a2978"] += [
+    (  # Ov022_UpdateCommandInput: A on the deck
+        "            if ((gPadPressed & 1) != 0) {\n"
+        "                bCommandChosen = 1;\n"
+        '                (khdays_trace_call("Hud_ActivatePanelSlot"), Ov002_Hud_ActivatePanelSlot());\n',
+        "            if ((gPadPressed & 1) != 0 && khdays_kh2_enemies_menu_takes_a(gPadPressed)) {\n"
+        "                bCommandChosen = 1;\n"
+        "            } else if ((gPadPressed & 1) != 0) {\n"
+        "                bCommandChosen = 1;\n"
+        '                (khdays_trace_call("Hud_ActivatePanelSlot"), Ov002_Hud_ActivatePanelSlot());\n',
+    ),
+    (
+        "          if (khdays_reaction_talk_commit(&pActor->nCommandKind, &pActor->nCmdArg))\n"
+        "              pActor->bMenuFlag = 1; }\n",
+        "          if (khdays_reaction_talk_commit(&pActor->nCommandKind, &pActor->nCmdArg))\n"
+        "              pActor->bMenuFlag = 1; }\n"
+        "        khdays_kh2_enemies_menu_commit(&pActor->nCommandKind, &pActor->nCmdArg);\n",
+    ),
+    (
+        "void Ov022_UpdateCommandInput(",
+        "extern int khdays_kh2_enemies_menu_takes_a(int pressed);\n"
+        "extern int khdays_kh2_enemies_menu_commit(signed char *kind, unsigned short *arg);\n"
+        "void Ov022_UpdateCommandInput(",
+    ),
+]
+HOOKS["ov022@020a31b4"] = [
+    (  # Ov022_TranslateCommandToAction: a KH2 enemy's script took the players' control away (1:42, YS::OBJ::ControlOff
+        # of type 0: Zexion as he dies): locked as Days's own lock locks them -- no buttons, no command, no way. A
+        # player a KH2 script turned into a form (1:242: Luxord's card and die) is locked so too, his pad this frame
+        # read first: his form's (runtime/kh2_enemies, capture_tick)
+        "    if (bLocked != 0) {\n        pActor->nButtons = 0;\n",
+        "    { extern int khdays_kh2_enemies_control_off(void);\n"
+        "      extern int khdays_kh2_enemies_captured(void *actor);\n"
+        "      if (khdays_kh2_enemies_control_off() || khdays_kh2_enemies_captured(pActor)) {\n"
+        "          bLocked = 1;\n      } }\n"
+        "    if (bLocked != 0) {\n        pActor->nButtons = 0;\n",
+    ),
+    (  # Ov022_TranslateCommandToAction: a primary command from the reaction button only talks, examines ...; the
+        # deck's while the bar has one only attacks
+        "            if (Ov022_IsSlotReady(&pActor->stateBlk) != 0) {\n"
+        "                pActor->nPendingAction = 6;\n"
+        "            }\n"
+        "            break;\n",
+        "            if (Ov022_IsSlotReady(&pActor->stateBlk) != 0) {\n"
+        "                pActor->nPendingAction = 6;\n"
+        "            }\n"
+        "            if (pActor->nCommandArg == 1 && pActor->nPendingAction != 2) {\n"
+        "                pActor->nPendingAction = 0;\n"
+        "            }\n"
+        "            if (pActor->nCommandArg == 2 && pActor->nPendingAction == 2) {\n"
+        "                pActor->nPendingAction =\n"
+        "                    func_ov022_0209fc78(pActor, -1) != 0 && Ov002_IsMissionClearFinished(0) == 0 ? 1 : 0;\n"
+        "            }\n"
+        "            break;\n",
+    ),
+]
+HOOKS["ov002@0205b39c"] = [
+    (  # Ov002_DrawPanelRowText: where Days cannot attack (a town) the deck's first row says Attack, not Talk, while
+        # the bar takes Days's commands
+        "                    if (Ov002_GetPanelField0058() != 0) {\n                        nSelect = 7;\n",
+        "                    if (Ov002_GetPanelField0058() != 0 && !khdays_reaction_talk_active()) {\n"
+        "                        nSelect = 7;\n",
+    ),
+    (
+        "extern int *Ov002_FindNamedEntry(int nName);\n",
+        "extern int *Ov002_FindNamedEntry(int nName);\nextern int khdays_reaction_talk_active(void);\n"
+        "extern int khdays_kh2_enemies_deck_label(int line, unsigned short *out, int room);\n",
+    ),
+    (  # ... and while a KH2 enemy's script gives the player's command menu (runtime/kh2_enemies: 1:237, Roxas's duel)
+        # its main rows say that menu's commands ("?", "The End")
+        "    int aBind[3];\n",
+        "    int aBind[3];\n    int khdays_deck_text[16]; /* a KH2 command menu's row, UTF-16, 0-ended */\n",
+    ),
+    (
+        "                pText = Ov002_GetVarRecordByIndex(aRecords, nSelect);\n",
+        "                pText = Ov002_GetVarRecordByIndex(aRecords, nSelect);\n"
+        "                if (khdays_kh2_enemies_deck_label(i, (unsigned short *)khdays_deck_text, 31) > 0) {\n"
+        "                    pText = khdays_deck_text;\n"
+        "                }\n",
+    ),
+]
+# The command deck as a KH2 enemy's script gives the player's command menu (runtime/kh2_enemies: 1:237): the main row
+# its cursor is on, its cursor stepped as X and the D-pad step it (Days's own sound), the deck back to its main rows,
+# its rows' text drawn again -- the runtime moves the deck while an enemy holds the player, when Days's input is off
+HOOKS["ov002@0205d658"] = [
+    (  # Ov002_PanelAdvanceCursor's file
+        "    Ov002_PanelApplyCursorMove(s->bKind, *(volatile int *)&nNextKind);\n    return nResult;\n}\n",
+        "    Ov002_PanelApplyCursorMove(s->bKind, *(volatile int *)&nNextKind);\n    return nResult;\n}\n\n"
+        "extern void Ov002_PanelCursorNext(void);\n"
+        "extern void Ov002_PanelCursorPrev(void);\n"
+        "extern void Ov002_BuildTileRow(void);\n\n"
+        "/* the main row the deck's cursor is on, -1 off them (a list open), -2 no deck; how many main rows (0 off them)\n"
+        " * -- no pointers: the runtime calls these with its own */\n"
+        "int khdays_deck_main_row(void)\n{\n"
+        "    Ov002PanelSession *s = data_ov002_0207f620;\n"
+        "    int nRow;\n\n"
+        "    if (s == 0) {\n        return -2;\n    }\n"
+        "    if (Ov002_ClassifyCode(&nRow, s->bMode) != 0) {\n        return -1;\n    }\n"
+        "    return s->bKind;\n}\n\n"
+        "int khdays_deck_main_rows(void)\n{\n"
+        "    Ov002PanelSession *s = data_ov002_0207f620;\n"
+        "    int nRow;\n\n"
+        "    if (s == 0 || Ov002_ClassifyCode(&nRow, s->bMode) != 0) {\n        return 0;\n    }\n"
+        "    return s->bSlotCount;\n}\n\n"
+        "void khdays_deck_step(int bBack)\n{\n"
+        "    if (data_ov002_0207f620 == 0) {\n        return;\n    }\n"
+        "    if (bBack != 0) {\n        Ov002_PanelCursorPrev();\n    } else {\n        Ov002_PanelCursorNext();\n    }\n}\n\n"
+        "void khdays_deck_to_main(void)\n{\n"
+        "    Ov002_HandlePanelInput(0, -1);\n}\n\n"
+        "void khdays_deck_relabel(void)\n{\n"
+        "    if (data_ov002_0207f620 != 0) {\n        Ov002_BuildTileRow();\n    }\n}\n",
+    ),
+]
 HOOKS["ov022@0209045c"] = [
     (  # Ov022_StepReactionState: the level animation's entry from the port
         "void Ov022_StepReactionState(struct ReactionCtx *pCtx, int nDelta)\n",
         "extern int khdays_magic_track(unsigned int pool);\n"
         "void Ov022_StepReactionState(struct ReactionCtx *pCtx, int nDelta)\n",
     ),
-    ("pCtx->pOwner", "((void *)khdays_magic_track((unsigned)pCtx))"),
+    ("pCtx->pLevelAnim", "((u8 *)khdays_magic_track((unsigned)pCtx))"),
     (  # the cast slot's step, Stop's Cure's
         "data_ov022_020b2a5c[pCtx->nSlot]",
         "data_ov022_020b2a5c[pCtx->nSlot == 15 ? 12 : pCtx->nSlot]",
     ),
 ]
+HOOKS["ov107@020c518c"] = [
+    (  # Ov107_AiState_HitShapeOverlap: no contact (no push, no touch) with a KH2 enemy its script keeps from touching
+        # objects (YS::OBJ's FLAG_NOHIT_OBJ, 1:70: the Mole Driller under the ground; runtime/kh2_enemies/shell.h)
+        "    if (self->field_54 == 0 && other->field_54 == 0) {\n        return 0;\n    }\n",
+        "    if (self->field_54 == 0 && other->field_54 == 0) {\n        return 0;\n    }\n"
+        "    {\n"
+        "        extern int khdays_kh2_enemies_no_contact(void *actor);\n"
+        "        if (khdays_kh2_enemies_no_contact(self) || khdays_kh2_enemies_no_contact(other))\n"
+        "            return 0;\n"
+        "    }\n",
+    ),
+]
 HOOKS["ov107@020c5cfc"] = [
-    (  # Ov107_AiState_ApplyHit: an enemy's hit, its damage worked out
+    (  # Ov107_AiState_ApplyHit: no hit on a KH2 enemy its script keeps from being hit (YS::OBJ's FLAG_NOHIT_ATTACK,
+        # 1:70: the Mole Driller under the ground), as an enemy whose + 0x1ac bit 0 is set
+        "    if (obj->field_1ac & 1) return 0;\n",
+        "    if (obj->field_1ac & 1) return 0;\n"
+        "    { extern int khdays_kh2_enemies_untouched(void *enemy); if (khdays_kh2_enemies_untouched(obj)) return 0; }\n"
+        # nor from a player KH2 lets make no attack now (turned into a form, or his control taken: 1:242, 1:42)
+        "    { extern int khdays_kh2_enemies_disarmed(void *enemy, void *source);\n"
+        "      if (khdays_kh2_enemies_disarmed(obj, source)) return 0; }\n"
+        # a player's blow a KH2 enemy's attack reflects (KH2's check_reflect): answered with no damage, as an enemy's
+        # barrier answers it below (+ 0x1c4's 0x10); his block packet marks the attack he blocked guarded
+        "    { extern int khdays_kh2_enemies_reflected(void *enemy, void *source, int flags);\n"
+        "      if (khdays_kh2_enemies_reflected(obj, source, (int)packet->flagsLo)) {\n"
+        "          packet->flags24Lo = 1;\n"
+        "          packet->field_28 = 0;\n"
+        "          return 1;\n"
+        "      } }\n",
+    ),
+    (  # Ov107_AiState_ApplyHit: an enemy's hit, its damage worked out (a KH2 enemy's: its kinds, the packet's high
+        # flags -- Days's element bits -- go with it)
         "    amount = Ov107_CalcHitDamage(obj, packet);\n",
         "    { extern void khdays_stop_measure(int on); khdays_stop_measure(1); }\n"
         "    amount = Ov107_CalcHitDamage(obj, packet);\n"
         "    { extern void khdays_stop_measure(int on); khdays_stop_measure(0); }\n"
-        "    { extern int khdays_stop_store(void *enemy, int amount); amount = khdays_stop_store(obj, amount); }\n",
+        "    { extern int khdays_stop_store(void *enemy, int amount); amount = khdays_stop_store(obj, amount); }\n"
+        "    { extern int khdays_kh2_enemies_damage(void *enemy, int amount, int kinds);\n"
+        "      amount = khdays_kh2_enemies_damage(obj, amount, (int)packet->flagsHi); }\n",
+    ),
+    (  # a KH2 enemy's shell (runtime/kh2_enemies/shell.h): KH2's reaction or its end, once its class took the hit
+        "        if (obj->field_1d0(obj, source, packet) != 0) {\n",
+        "        if (obj->field_1d0(obj, source, packet) != 0) {\n"
+        "            { extern void khdays_kh2_enemies_hit(void *enemy, int hp_before);\n"
+        "              khdays_kh2_enemies_hit(obj, previousAmount); }\n",
     ),
 ]
 HOOKS["ov107@020c6980"] = [
@@ -1955,7 +2897,31 @@ HOOKS["ov107@020c6980"] = [
     ),
     (
         "        if (((self->field_1c4 & 2) != 0 || (self->field_1c4 & 8) != 0) &&\n",
-        "        if (((self->field_1c4 & 2) != 0 || (self->field_1c4 & 8) != 0 || khdays_stop_holding(self)) &&\n",
+        "        if (((self->field_1c4 & 2) != 0 || (self->field_1c4 & 8) != 0 || khdays_stop_holding(self) ||\n"
+        "             khdays_kh2_enemies_held(self)) &&\n",
+    ),
+    (  # a KH2 enemy's shell (runtime/kh2_enemies/shell.h): its KH2 actor ticked first, its place moved before the
+        # room's collision resolves it (below); never one of the updates skipped by distance (KH2's run every tick).
+        # No enemy's are (khdays_enemy_far_updates, runtime/battle/enemy_updates.h): the DS's saving of its time
+        # moved the far ones by jumps, which the PC's smoothed pictures showed as stutters
+        "int khdays_stop_held(void *enemy);\n",
+        "int khdays_stop_held(void *enemy);\n"
+        "void khdays_kh2_enemies_tick(void *enemy, int delta);\nint khdays_kh2_enemies_held(void *enemy);\n"
+        "int khdays_enemy_far_updates(void);\n",
+    ),
+    (
+        "    struct ThreadState *thread;\n\n",
+        "    struct ThreadState *thread;\n\n    khdays_kh2_enemies_tick(self, delta);\n",
+    ),
+    (
+        "        if (self->field_004 != 0 && (self->field_1c4 & 0xf) == 0 &&\n",
+        "        if (khdays_enemy_far_updates() && self->field_004 != 0 && !khdays_kh2_enemies_held(self) &&\n"
+        "            (self->field_1c4 & 0xf) == 0 &&\n",
+    ),
+    (
+        "    } else if (self->field_004 != 0 && (self->field_1c4 & 0xf) == 0 &&\n",
+        "    } else if (khdays_enemy_far_updates() && self->field_004 != 0 && !khdays_kh2_enemies_held(self) &&\n"
+        "               (self->field_1c4 & 0xf) == 0 &&\n",
     ),
     (
         "            } else if ((self->field_1c4 & 2) == 0) {\n",
@@ -1978,6 +2944,22 @@ HOOKS["ov107@020c6980"] = [
         "    }\n"
         "    if (self->field_1c8 != 1 && self->currentAction == 1) {\n",
     ),
+    (  # a KH2 enemy's player's blow (runtime/kh2_enemies: the last of Cerberus's reaction command) as one hit, as
+        # Stop's kept damage lands
+        "    if (self->field_1c8 != 1 && self->currentAction == 1) {\n",
+        "    {\n"
+        "        extern int khdays_kh2_enemies_blow(void *enemy, int *amount);\n"
+        "        int khdays_blow;\n"
+        "        if (khdays_kh2_enemies_blow(self, &khdays_blow)) {\n"
+        "            struct HitPacket khdays_hit = {0};\n"
+        "            khdays_hit.flags00 = 0x88;\n"
+        "            khdays_hit.flags02 = 0x80;\n"
+        "            khdays_hit.amount = khdays_blow;\n"
+        "            Ov107_AiState_ApplyHit(self, self->field_25c, &khdays_hit);\n"
+        "        }\n"
+        "    }\n"
+        "    if (self->field_1c8 != 1 && self->currentAction == 1) {\n",
+    ),
 ]
 HOOKS["ov107@020c89e8"] = [
     (  # Ov107_CalcHitDamage: none on a held enemy (its own hit handler asks too), the damage being kept
@@ -1985,11 +2967,1061 @@ HOOKS["ov107@020c89e8"] = [
         "static int khdays_calc_hit_damage(Actor *self, struct HitEvent *hit);\n"
         "int Ov107_CalcHitDamage(Actor *self, struct HitEvent *hit)\n{\n"
         "    extern int khdays_stop_damage(void *enemy, int amount);\n"
-        "    return khdays_stop_damage(self, khdays_calc_hit_damage(self, hit));\n"
+        # a KH2 enemy's: the damage its hit was kept to (its least health, its withstanding: runtime/kh2_enemies)
+        "    extern int khdays_kh2_enemies_dealt(void *enemy, int amount);\n"
+        "    return khdays_stop_damage(self, khdays_kh2_enemies_dealt(self, khdays_calc_hit_damage(self, hit)));\n"
         "}\n"
         "static int khdays_calc_hit_damage(Actor *self, struct HitEvent *hit)\n{\n",
     )
 ]
+
+# The mods' new missions (runtime/missions/): their progress lies where the game keeps a mission's, by its
+# number, past the flag array's 0x4000 bits; a field or flag there of a new mission is the port's, any other
+# the game's own call as before.
+HOOKS["main@020235d0"] = [
+    (  # GameState_GetField
+        "    return BitArray_GetField(gGameState + 0x10, arg0, arg1);\n",
+        "    if ((unsigned int)arg0 >= 0x4000u) {\n"
+        "        extern long long khdays_missions_field_get(unsigned int field, unsigned int bits);\n"
+        "        long long khdays_value = khdays_missions_field_get((unsigned int)arg0, (unsigned int)arg1);\n"
+        "        if (khdays_value >= 0) return (int)khdays_value;\n"
+        "    }\n"
+        "    return BitArray_GetField(gGameState + 0x10, arg0, arg1);\n",
+    )
+]
+HOOKS["main@020235e8"] = [
+    (  # GameState_SetField
+        "    BitArray_SetField(gGameState + 0x10, arg0, arg1, arg2);\n",
+        "    { extern int khdays_missions_field_set(unsigned int field, unsigned int bits, unsigned int value);\n"
+        "      if (arg0 >= 0x4000u && khdays_missions_field_set(arg0, arg1, arg2)) return; }\n"
+        "    BitArray_SetField(gGameState + 0x10, arg0, arg1, arg2);\n",
+    )
+]
+HOOKS["main@02023588"] = [
+    (  # GameState_IsFlagSet
+        "    if (BitArray_TestBit(gGameState + 0x10, arg) != 0) {\n",
+        "    if (arg >= 0x4000u) {\n"
+        "        extern int khdays_missions_flag_get(unsigned int flag);\n"
+        "        int khdays_value = khdays_missions_flag_get(arg);\n"
+        "        if (khdays_value >= 0) return khdays_value;\n"
+        "    }\n"
+        "    if (BitArray_TestBit(gGameState + 0x10, arg) != 0) {\n",
+    )
+]
+HOOKS["main@020235a8"] = [
+    (  # GameState_SetFlag
+        "    return BitArray_SetBit(*(int *)&gGameState + 0x10, arg0);\n",
+        "    { extern int khdays_missions_flag_set(unsigned int flag, int on);\n"
+        "      if ((unsigned int)arg0 >= 0x4000u && khdays_missions_flag_set((unsigned int)arg0, 1)) return 0; }\n"
+        "    return BitArray_SetBit(*(int *)&gGameState + 0x10, arg0);\n",
+    )
+]
+HOOKS["main@020235bc"] = [
+    (  # GameState_ClearFlag
+        "    BitArray_ClearBit(gGameState + 0x10, flag);\n",
+        "    { extern int khdays_missions_flag_set(unsigned int flag, int on);\n"
+        "      if ((unsigned int)flag >= 0x4000u && khdays_missions_flag_set((unsigned int)flag, 0)) return; }\n"
+        "    BitArray_ClearBit(gGameState + 0x10, flag);\n",
+    )
+]
+# ... the best result the results keep, gGameState's missionResultRecords[200]: a new mission's in the
+# port's store
+HOOKS["ov005@020550e4"] += [
+    (  # Ov005_CommitMissionResults
+        "    if(config->updateMissionRecord)gGameState->missionResultRecords[config->missionIndex]="
+        "config->missionResultValue;\n",
+        "    if(config->updateMissionRecord){ extern void khdays_missions_set_best(int number, int value);\n"
+        "        if(config->missionIndex<200)gGameState->missionResultRecords[config->missionIndex]="
+        "config->missionResultValue;\n"
+        "        else khdays_missions_set_best(config->missionIndex,config->missionResultValue); }\n",
+    )
+]
+HOOKS["ov005@02057c48"] = [
+    (  # Ov005_InitializeResultConfiguration
+        "void Ov005_InitializeResultConfiguration(void) {\n",
+        "extern int khdays_missions_best(int number);\nvoid Ov005_InitializeResultConfiguration(void) {\n",
+    ),
+    (
+        "gGameState->missionResultRecords[config->missionIndex]",
+        "(config->missionIndex<200?gGameState->missionResultRecords[config->missionIndex]:"
+        "(u32)khdays_missions_best(config->missionIndex))",
+    ),
+]
+for _key in ("ov008@02074c40", "ov025@020aa298"):  # Ov008_MissionMenu_DrawInfo, Ov025_MissionMenu_DrawInfo
+    HOOKS[_key] = [
+        (
+            "            nRecord = gGameState->missionResultRecords[nMissionId];\n",
+            "            { extern int khdays_missions_best(int number);\n"
+            "              nRecord = nMissionId < 200 ? gGameState->missionResultRecords[nMissionId]\n"
+            "                                         : khdays_missions_best(nMissionId); }\n",
+        )
+    ]
+# ... their rows in Mission Mode's list: shown by the port's own test (their numbers past the game's 900)
+HOOKS["ov008@02056048"] = [
+    (  # Ov008_IsMissionModeRowListed
+        "    unsigned int bit;\n    unsigned int m;\n",
+        "    unsigned int bit;\n    unsigned int m;\n"
+        "    { extern int khdays_missions_eligible(const void *record, unsigned int flags);\n"
+        "      int khdays_shown = khdays_missions_eligible((const void *)param_1, param_2);\n"
+        "      if (khdays_shown >= 0) return khdays_shown; }\n",
+    )
+]
+# ... in a room, the host's choice taken by each copy: on a guest, a new mission's number and file made its own for
+# the same mission (each copy numbers the mods' missions in its own mods' order: runtime/missions/room.h)
+HOOKS["ov008@0204e6f8"] = [
+    (  # Ov008_CommitSynchronizedSnapshotState
+        "            data_0204c248 = context->sharedSnapshot.tallyRules;\n",
+        "            data_0204c248 = context->sharedSnapshot.tallyRules;\n"
+        "            { extern void khdays_missions_from_host(void); khdays_missions_from_host(); }\n",
+    )
+]
+# ... a later wave's spawners, made after their region was enabled: running as the first wave's (the port's
+# missions only)
+HOOKS["ov002@02073a10"] = [
+    (  # Ov002_CreateSpawner
+        "        pCtx->pSlots[nIndex].nActiveEvent=-1;\n",
+        "        pCtx->pSlots[nIndex].nActiveEvent=-1;\n"
+        "        { extern void khdays_missions_spawner_made(void *node);\n"
+        "          khdays_missions_spawner_made(pCtx->pSlots[nIndex].pObject); }\n",
+    )
+]
+# ... their chests and emblems, which Mission Mode's own missions leave out: put out in a new one's
+HOOKS["ov002@0206e1a4"] = [
+    (  # Ov002_ScriptSpawnTimedSet
+        "    if (data_0204c240 & 2)\n        return;\n",
+        "    { extern int khdays_missions_spots_shown(void);\n"
+        "      if ((data_0204c240 & 2) && !khdays_missions_spots_shown())\n        return; }\n",
+    )
+]
+HOOKS["ov002@0206e524"] = [
+    (  # Ov002_SpawnStateSpots
+        "    if ((data_0204c240 & 2) == 0 && Session_GetLocalPlayerIndex() == 0) {\n",
+        "    extern int khdays_missions_spots_shown(void);\n"
+        "    if (((data_0204c240 & 2) == 0 || khdays_missions_spots_shown()) && Session_GetLocalPlayerIndex() == 0) {\n",
+    )
+]
+# ... their chests opened noted (the marks the end raises the flags of) and their chests' module asked, as the story's
+HOOKS["ov002@0206dc70"] = [
+    (  # Ov002_NoteSeatAnswer
+        "        if ((data_0204c240 & 2) != 0) {\n            return;\n        }\n",
+        "        extern int khdays_missions_spots_shown(void);\n"
+        "        if ((data_0204c240 & 2) != 0 && !khdays_missions_spots_shown()) {\n            return;\n        }\n",
+    )
+]
+HOOKS["ov002@0206dc10"] = [
+    (  # Ov002_ModuleHasKey
+        "    if ((data_0204c240 & 2) != 0) {\n        return 0;\n    }\n",
+        "    extern int khdays_missions_spots_shown(void);\n"
+        "    if ((data_0204c240 & 2) != 0 && !khdays_missions_spots_shown()) {\n        return 0;\n    }\n",
+    )
+]
+# ... and their opened chests' flags raised at the end, as the story's
+HOOKS["ov002@0206a304"] = [
+    (  # Ov002_RaiseSeatFlagsForKey
+        "    if ((data_0204c240 & 2) == 0) {\n",
+        "    extern int khdays_missions_spots_shown(void);\n"
+        "    if ((data_0204c240 & 2) == 0 || khdays_missions_spots_shown()) {\n",
+    )
+]
+# ... their files ("mi/mi/<file>"), which the ROM's file table does not name: opened where the ROM holds them
+HOOKS["main@0200acb0"] = [
+    (  # FS_OpenFile
+        "int FS_OpenFile(void *file, const char *path) {\n    struct FileID id;\n",
+        "int FS_OpenFile(void *file, const char *path) {\n    struct FileID id;\n"
+        "    {\n"
+        "        extern int khdays_rom_added_file(const char *path, unsigned int *bounds);\n"
+        "        extern int FS_OpenFileDirect(void *file, void *arc, unsigned int top, unsigned int bottom,\n"
+        "                                     unsigned int index);\n"
+        "        extern char fsi_arc_rom[];\n"
+        "        unsigned int khdays_bounds[3];\n"
+        "        if (khdays_rom_added_file(path, khdays_bounds))\n"
+        "            return FS_OpenFileDirect(file, fsi_arc_rom, khdays_bounds[0], khdays_bounds[1],\n"
+        "                                     khdays_bounds[2]);\n"
+        "    }\n",
+    )
+]
+
+
+# Characters of mods (port/runtime/characters, docs/RUNTIME_MAP.md "Characters of mods"): a new character is a
+# number past the game's (0x16 on) in the select's places only; the seats (data_020429c8) and the members
+# (gPartyMembers) get its base's number, so that nothing of the game but the select ever sees the new one, and the
+# port keeps which seat is a new character (khdays_characters_seat). Where the game opens a character's data for a
+# seat's actor, the character's own folder ba/ch/<code>/, which the port serves (its files, else copies of its
+# base's).
+CHARACTER_DECLARATIONS = (
+    "extern int khdays_characters_known(int number);\n"
+    "extern int khdays_characters_of(int slot, int kind);\n"
+    "extern int khdays_characters_base(int number);\n"
+    "extern const char *Port_CharacterCode(int number);\n"
+)
+# the own folders' codes, by number ("c16", a form's "c100" ...): made in the game's memory, for its paths, into the
+# next of a few buffers (each caller uses its code at once); any number, no table to outgrow (a game-side function:
+# prepare.py makes a new global's definition extern, as a split unit's static)
+CHARACTER_CODES = (
+    "static char sPortCharacterCodes[16][12];\n"
+    "static int sPortCharacterCodeNext;\n"
+    "const char *Port_CharacterCode(int number)\n{\n"
+    "    char *code = sPortCharacterCodes[sPortCharacterCodeNext++ & 15];\n"
+    "    int k = 0, shift = 28, digit;\n"
+    "    code[k++] = 'c';\n"
+    "    while (shift > 4 && ((number >> shift) & 15) == 0) shift -= 4; /* two digits at least */\n"
+    "    for (; shift >= 0; shift -= 4) {\n"
+    "        digit = (number >> shift) & 15;\n"
+    "        code[k++] = (char)(digit < 10 ? '0' + digit : 'a' + digit - 10);\n"
+    "    }\n"
+    "    code[k] = 0;\n"
+    "    return code;\n}\n"
+)
+
+
+def character_folder(number: str) -> str:
+    """The data folder of character `number`: its own for a new one."""
+    return f"(khdays_characters_known({number}) ? Port_CharacterCode({number}) : data_02042a70[{number}])"
+
+
+def actor_folder(slot: str, kind: str) -> str:
+    """The data folder of seat `slot`'s character, which plays as `kind`: its own for a new one."""
+    n = f"khdays_characters_of({slot}, {kind})"
+    return f"({n} != ({kind}) ? Port_CharacterCode({n}) : data_02042a70[{kind}])"
+
+
+HOOKS["main@02035730"] = [
+    (  # LevelTable_ReadEntry: the levels of a new character from its own folder
+        "extern char *data_02042a70[];\n",
+        "extern char *data_02042a70[];\n" + CHARACTER_DECLARATIONS + CHARACTER_CODES,
+    ),
+    ("gBaChPath, data_02042a70[kind]);", f"gBaChPath, {character_folder('kind')});"),
+]
+HOOKS["main@02035328"] = [
+    (  # PartyMember_Reset: a seat's new character's levels
+        "void PartyMember_Reset(int slot, int kind, int level)\n",
+        "extern int khdays_characters_of(int slot, int kind);\nvoid PartyMember_Reset(int slot, int kind, int level)\n",
+    ),
+    (
+        "    LevelTable_ReadEntry(kind, level, &e);\n",
+        "    LevelTable_ReadEntry(khdays_characters_of(slot, kind), level, &e);\n",
+    ),
+]
+HOOKS["ov022@0209c5ec"] = [
+    (  # Ov022_BuildActorSlot: its weapons' texts
+        "extern char *data_02042a70[];\n",
+        "extern char *data_02042a70[];\n" + CHARACTER_DECLARATIONS,
+    ),
+    ("data_02042a70[pActor->nKind]", actor_folder("pActor->nId", "pActor->nKind")),
+]
+# ... Xion's weapon models: her overlays open Roxas's ba/ch/ro/w_.p2 by its name (her own w_.p2 holds only the swings'
+# traces); a new character's seat on her code opens its own folder's copy, ba/ch/<code>/ro/w_.p2 (characters.c), so
+# that its [weapons] give its keyblades
+for ov, address in (("044", "020b355c"), ("063", "020b5d5c"), ("082", "020b843c"), ("099", "020baafc")):
+    HOOKS[f"ov{ov}@{address}"] = [
+        (  # Ov0NN_ReloadSceneResources
+            f"extern int gOv{ov}RoxasWPath;\n",
+            f"extern int gOv{ov}RoxasWPath;\n"
+            "extern int khdays_characters_of(int slot, int kind);\n"
+            "extern const char *Port_CharacterCode(int number);\n"
+            "extern int OS_SPrintf(char *dst, const char *fmt, ...);\n"
+            f"static char sPortXionWeapons{ov}[0x20];\n",
+        ),
+        (
+            f"    *(int *)(self + 0x2bd0) = Msg_OpenContainerAndReadHeader(&gOv{ov}RoxasWPath, 6);\n",
+            "    {\n"
+            f"        void *khdays_path = &gOv{ov}RoxasWPath;\n"
+            "        int n = khdays_characters_of(*(unsigned char *)(self + 9), 14); /* 14: Xion's number */\n"
+            "        if (n != 14) {\n"
+            f'            OS_SPrintf(sPortXionWeapons{ov}, "ba/ch/%s/ro/w_.p2", Port_CharacterCode(n));\n'
+            f"            khdays_path = sPortXionWeapons{ov};\n"
+            "        }\n"
+            "        *(int *)(self + 0x2bd0) = Msg_OpenContainerAndReadHeader(khdays_path, 6);\n"
+            "    }\n",
+        ),
+    ]
+HOOKS["ov022@020b0720"] = [
+    (  # Ov022_BuildActionTable: its weapon, combos and links
+        "extern char *data_02042a70[];\n",
+        "extern char *data_02042a70[];\n" + CHARACTER_DECLARATIONS,
+    ),
+    (
+        "    Ov002_LoadCharacterWeapon(&pTable->blkMove, nKind, nArg);\n",
+        "    Ov002_LoadCharacterWeapon(&pTable->blkMove, khdays_characters_of(pActor->nId, nKind), nArg);\n",
+    ),
+    ("data_02042a70[nKind]", actor_folder("pActor->nId", "nKind")),
+]
+HOOKS["ov022@020b02d8"] = [
+    (  # Ov022_LoadActionRows: its actions' files
+        "extern char *data_02042a70[];\n",
+        "extern char *data_02042a70[];\n" + CHARACTER_DECLARATIONS,
+    ),
+    ("data_02042a70[nKind]", actor_folder("pTable->nSlotBase", "nKind")),  # the actor's slot (BuildActionTable)
+]
+HOOKS["ov022@0209cda8"] = [
+    (  # Ov022_LoadActorEffects
+        "extern const char *data_02042a70[];\n",
+        "extern const char *data_02042a70[];\n" + CHARACTER_DECLARATIONS,
+    ),
+    ("data_02042a70[pActor->nModelId]", actor_folder("pActor->nId", "pActor->nModelId")),
+]
+HOOKS["ov022@020b1730"] = [
+    (  # Ov022_StartAnimRequest: its animations
+        "extern const char *const data_02042a70[];\n",
+        "extern const char *const data_02042a70[];\n" + CHARACTER_DECLARATIONS,
+    ),
+    ("data_02042a70[pOwner->nModel]", actor_folder("pOwner->nId", "pOwner->nModel")),
+]
+HOOKS["ov022@02096e94"] = [
+    (  # Ov022_ApplyMissionLevelStats: its own levels
+        "extern void LevelTable_ReadEntry(int nCharacterId, int nLevel, struct StatRow *pRow);\n",
+        "extern void LevelTable_ReadEntry(int nCharacterId, int nLevel, struct StatRow *pRow);\n"
+        "extern int khdays_characters_of(int slot, int kind);\n",
+    ),
+    (
+        "LevelTable_ReadEntry(pActor->nCharacterId, ",
+        "LevelTable_ReadEntry(khdays_characters_of(pActor->nId, pActor->nCharacterId), ",
+    ),
+]
+HOOKS["ov023@02085b00"] = [
+    (  # Ov023_CmdSetupPartyActors: a seat's weapons' texts
+        "extern const char *data_02042a70[];                                 /* member names by kind */\n",
+        "extern const char *data_02042a70[];                                 /* member names by kind */\n"
+        + CHARACTER_DECLARATIONS,
+    ),
+    ("data_02042a70[nKind]", actor_folder("i", "nKind")),
+]
+for ov, address in (("002", "020522c8"), ("008", "0208b890")):
+    HOOKS[f"ov{ov}@{address}"] = [
+        (  # Ov00N_LoadCharacterWeapon: its weapon's move block, read as its base's
+            "extern char *data_02042a70[];\n",
+            "extern char *data_02042a70[];\n" + CHARACTER_DECLARATIONS,
+        ),
+        ("data_02042a70[slot]", character_folder("slot")),
+        (
+            f"Ov{ov}_PackTableRow(dst, file, slot, arg);",
+            f"Ov{ov}_PackTableRow(dst, file, khdays_characters_base(slot), arg);",
+        ),
+    ]
+for ov, address in (("006", "0204d610"), ("008", "0207928c")):
+    HOOKS[f"ov{ov}@{address}"] = [
+        (  # Ov00N_SelectPlaceToCharacter: a new character's place is its base's character
+            f"int Ov{ov}_SelectPlaceToCharacter(int nPlace) {{\n    int nCharacter = 0;\n",
+            "extern int khdays_characters_known(int number);\n"
+            "extern int khdays_characters_base(int number);\n"
+            f"int Ov{ov}_SelectPlaceToCharacter(int nPlace) {{\n    int nCharacter = 0;\n"
+            "    if (khdays_characters_known(nPlace & 0xff)) {\n        return khdays_characters_base(nPlace & 0xff);\n    }\n",
+        )
+    ]
+# ... the seats written from the select's places: the port keeps which is a new character's
+_SEAT = "extern void khdays_characters_seat(int seat, int place);\n"
+HOOKS["ov006@0204e8b0"] = [
+    (  # Ov006_UpdateMissionEntrySynchronization
+        "MissionCallback Ov006_UpdateMissionEntrySynchronization(void) {\n",
+        _SEAT + "MissionCallback Ov006_UpdateMissionEntrySynchronization(void) {\n",
+    ),
+    (
+        "CopyToSlotTable8(&slot, entryIndex);",
+        "CopyToSlotTable8(&slot, entryIndex);\n khdays_characters_seat(entryIndex, -1);",
+    ),
+    (
+        "CopyToSlotTable8(&slot, outputIndex);",
+        "CopyToSlotTable8(&slot, outputIndex);\n khdays_characters_seat(outputIndex, entries[entryIndex].characterId);",
+    ),
+]
+HOOKS["ov008@0207a758"] = [
+    (  # Ov008_MissionLobbyPoll (its Ov008_ForwardJoinedSlots)
+        "static inline void Ov008_ForwardJoinedSlots(MissionContext *pCtx)\n",
+        _SEAT + "static inline void Ov008_ForwardJoinedSlots(MissionContext *pCtx)\n",
+    ),
+    ("CopyToSlotTable8(&info, i);", "CopyToSlotTable8(&info, i);\n khdays_characters_seat(i, -1);"),
+    (
+        "CopyToSlotTable8(&info, nSlot);",
+        "CopyToSlotTable8(&info, nSlot);\n khdays_characters_seat(nSlot, pPacket[i].characterId);",
+    ),
+]
+# ... the camp's places, made from the seats: a new character's seat's place on its own number
+HOOKS["ov008@0207a424"] = [
+    (  # Ov008_MissionLobbyStartTransfer (its Ov008_BuildGroupMessage)
+        "static inline void Ov008_BuildGroupMessage(MissionContext *pCtx)\n",
+        "extern int khdays_characters_place(int seat, int entry);\n"
+        "static inline void Ov008_BuildGroupMessage(MissionContext *pCtx)\n",
+    ),
+    (
+        "pPacket[i].characterId = Ov008_CharacterToSelectPlace(pInfo->nMemberKind);",
+        "pPacket[i].characterId = khdays_characters_place(i, Ov008_CharacterToSelectPlace(pInfo->nMemberKind));",
+    ),
+]
+# ... Mission Mode's camp: the chosen character's model and weapon texts from its own folder -- the local player's
+# seat's (in a room the host's seat 0 is another player's: their base shown as the local player's character)
+_LOCAL_SEAT = "extern unsigned int Session_GetLocalPlayerIndex(void);\n"
+HOOKS["ov008@0205a3dc"] = [
+    (  # Ov008_Menu_InitSceneObject
+        "extern char gOv008BaChDefHPackPathFmt[];\n",
+        "extern char gOv008BaChDefHPackPathFmt[];\n" + CHARACTER_DECLARATIONS + _LOCAL_SEAT,
+    ),
+    (
+        "    pszFolder = *(int *)(pszFolder + nCharacter * 0x34);\n",
+        "    {\n"
+        "        const int own = khdays_characters_of(Session_GetLocalPlayerIndex(), nCharacter);\n"
+        "        pszFolder = own != nCharacter ? (int)Port_CharacterCode(own) : *(int *)(pszFolder + nCharacter * 0x34);\n"
+        "    }\n",
+    ),
+]
+HOOKS["ov008@0205a138"] = [
+    (  # Ov008_Menu_LoadSceneText
+        "extern Ov008CampCharacterRecord gOv008CampCharacterRecords[];\n",
+        "extern Ov008CampCharacterRecord gOv008CampCharacterRecords[];\n" + CHARACTER_DECLARATIONS + _LOCAL_SEAT,
+    ),
+    (
+        "    v = gOv008CampCharacterRecords[nCharacter].pszFolder;\n",
+        "    {\n"
+        "        const int own = khdays_characters_of(Session_GetLocalPlayerIndex(), nCharacter);\n"
+        "        v = own != nCharacter ? (int)Port_CharacterCode(own) : gOv008CampCharacterRecords[nCharacter].pszFolder;\n"
+        "    }\n",
+    ),
+    (  # Xion's weapon models, Roxas's (her overlays' join above): a new character's own folder's copy, named in
+        # the first file's buffer, free again
+        "        *(void **)(obj + 0x1b4) = Msg_OpenContainerAndReadHeader(gOv008RoxasWPath, 0xe);\n",
+        "        if (v != gOv008CampCharacterRecords[nCharacter].pszFolder) {\n"
+        '            OS_SPrintf(buf, "ba/ch/%s/ro/w_.p2", v);\n'
+        "            *(void **)(obj + 0x1b4) = Msg_OpenContainerAndReadHeader(buf, 0xe);\n"
+        "        } else {\n"
+        "            *(void **)(obj + 0x1b4) = Msg_OpenContainerAndReadHeader(gOv008RoxasWPath, 0xe);\n"
+        "        }\n",
+    ),
+]
+# ... the camp makes the local seat's character word (Ov008_GetSeatCharacter: the game's own choice first, its
+# dual-wield Roxas, 0x13, for a Roxas whose deck sets flag 0x2010): a mod's character's seat gets the base of the
+# form its rules choose (runtime/characters/forms.c; docs/RUNTIME_MAP.md section 32)
+HOOKS["ov008@0204d6a8"] = [
+    (  # Ov008_RefreshSeatCharacter
+        "extern int  Ov008_GetSeatCharacter(int slot);\n",
+        "extern int  Ov008_GetSeatCharacter(int slot);\nextern int khdays_characters_seat_form(int seat, int word);\n",
+    ),
+    (
+        "        int nCharacter = Ov008_GetSeatCharacter(slot);\n",
+        "        int nCharacter = khdays_characters_seat_form(slot, Ov008_GetSeatCharacter(slot));\n",
+    ),
+]
+# ... the game's own select screens (scene 7's, the camp's): what they draw of a place on a new character -- the
+# model's pose, the gauges, the names, the slots -- and whether it may be chosen are its base's place's
+_MENU_ENTRY = "extern int khdays_characters_menu_entry(int id);\n"
+
+
+def _menu(expression: str) -> str:
+    return f"khdays_characters_menu_entry({expression})"
+
+
+HOOKS["ov006@02050fc8"] += [  # Ov006_UpdateMissionMemberMenuScreen
+    (
+        "void *Ov006_UpdateMissionMemberMenuScreen(void)\n{\n",
+        _MENU_ENTRY + "void *Ov006_UpdateMissionMemberMenuScreen(void)\n{\n",
+    ),
+    (
+        "Ov006_ResolveMissionSelection(rows[cursorEntry].memberId)",
+        "Ov006_ResolveMissionSelection(" + _menu("rows[cursorEntry].memberId") + ")",
+    ),
+    (
+        "Ov006_MissionSetModelPose(rows[cursorEntry].memberId)",
+        "Ov006_MissionSetModelPose(" + _menu("rows[cursorEntry].memberId") + ")",
+    ),
+    ("paramSel = rows[cursorEntry].memberId;", "paramSel = " + _menu("rows[cursorEntry].memberId") + ";"),
+    (
+        "Ov006_SetMissionRowSlotValue(visibleSlot, (u16)rowPtr->memberId,",
+        "Ov006_SetMissionRowSlotValue(visibleSlot, (u16)" + _menu("rowPtr->memberId") + ",",
+    ),
+    (
+        "rows[Ov006_MissionGetCursorEntry()].memberId + 0xb",
+        _menu("rows[Ov006_MissionGetCursorEntry()].memberId") + " + 0xb",
+    ),
+    (
+        "rows[Ov006_MissionGetCursorEntry()].memberId + 0x1f",
+        _menu("rows[Ov006_MissionGetCursorEntry()].memberId") + " + 0x1f",
+    ),
+    (
+        "Ov006_ResolveMissionSelection(rows[i].memberId)",
+        "Ov006_ResolveMissionSelection(" + _menu("rows[i].memberId") + ")",
+    ),
+    ("rows[i].memberId + 0xb", _menu("rows[i].memberId") + " + 0xb"),
+]
+# ... and the names it writes for a place on a mod's character (the chosen one's and its weapon on the upper screen,
+# each place's on its plate) are the character's own, not its base's (runtime/menus/charselect.h)
+_SELECT_NAME = "extern void *khdays_charselect_name(int member, int weapon, void *game, void *out, int units);\n"
+HOOKS["ov006@02050fc8"] += [  # Ov006_UpdateMissionMemberMenuScreen
+    (
+        "void *Ov006_UpdateMissionMemberMenuScreen(void)\n{\n",
+        _SELECT_NAME + "void *Ov006_UpdateMissionMemberMenuScreen(void)\n{\n    u16 khdays_name[64];\n",
+    ),
+    (
+        "Ov006_MissionDrawTextRunFwd(record, 0x26, 0x1c, (u8)1, 1, 2, 1);",
+        "Ov006_MissionDrawTextRunFwd(khdays_charselect_name(rows[Ov006_MissionGetCursorEntry()].memberId, 0, record,"
+        " khdays_name, 64), 0x26, 0x1c, (u8)1, 1, 2, 1);",
+    ),
+    (
+        "Ov006_MissionDrawTextRunFwd(record, 0x80, 0x1c, (u8)1, 1, 2, 1);",
+        "Ov006_MissionDrawTextRunFwd(khdays_charselect_name(rows[Ov006_MissionGetCursorEntry()].memberId, 1, record,"
+        " khdays_name, 64), 0x80, 0x1c, (u8)1, 1, 2, 1);",
+    ),
+    (
+        "Ov006_MissionDrawTextRunFwd(record, x, y, (u8)1, 1, 2, 1);",
+        "Ov006_MissionDrawTextRunFwd(khdays_charselect_name(rows[i].memberId, 0, record, khdays_name, 64), x, y,"
+        " (u8)1, 1, 2, 1);",
+    ),
+]
+HOOKS["ov008@0207ce84"] += [  # Ov008_LobbyStep
+    ("Ov008LobbyStep Ov008_LobbyStep(void)\n{\n", _MENU_ENTRY + "Ov008LobbyStep Ov008_LobbyStep(void)\n{\n"),
+    (
+        "Ov008_ResolveMissionSelection(aRow[nLocal].icon)",
+        "Ov008_ResolveMissionSelection(" + _menu("aRow[nLocal].icon") + ")",
+    ),
+    ("Ov008_MissionSetModelPose(aRow[nLocal].icon)", "Ov008_MissionSetModelPose(" + _menu("aRow[nLocal].icon") + ")"),
+    (
+        "Ov008_MissionApplyParameterRow(nCursor != 0 ? aRow[nLocal].icon : ICON_NONE)",
+        "Ov008_MissionApplyParameterRow(nCursor != 0 ? " + _menu("aRow[nLocal].icon") + " : ICON_NONE)",
+    ),
+    (
+        "Ov008_SetMissionRowSlotValue(nSlot, (u16)aRow[i].icon,",
+        "Ov008_SetMissionRowSlotValue(nSlot, (u16)" + _menu("aRow[i].icon") + ",",
+    ),
+    (
+        "aRow[Ov008_GetLocalPlayerIndex()].icon + TEXT_ICON_BASE",
+        _menu("aRow[Ov008_GetLocalPlayerIndex()].icon") + " + TEXT_ICON_BASE",
+    ),
+    (
+        "aRow[Ov008_GetLocalPlayerIndex()].icon + TEXT_NAME_BASE",
+        _menu("aRow[Ov008_GetLocalPlayerIndex()].icon") + " + TEXT_NAME_BASE",
+    ),
+    ("Ov008_ResolveMissionSelection(aRow[i].icon)", "Ov008_ResolveMissionSelection(" + _menu("aRow[i].icon") + ")"),
+    ("aRow[i].icon + TEXT_ICON_BASE", _menu("aRow[i].icon") + " + TEXT_ICON_BASE"),
+]
+# ... the camp's names as Ov006's above (after the joins before, which its weapon's line is written by)
+_ov008_weapon = (
+    "Ov008_GetVarRecordByIndex(data_ov008_02090fa0->records, "
+    + _menu("aRow[Ov008_GetLocalPlayerIndex()].icon")
+    + " + TEXT_NAME_BASE)"
+)
+HOOKS["ov008@0207ce84"] += [  # Ov008_LobbyStep
+    (
+        "Ov008LobbyStep Ov008_LobbyStep(void)\n{\n",
+        _SELECT_NAME + "Ov008LobbyStep Ov008_LobbyStep(void)\n{\n    u16 khdays_name[64];\n",
+    ),
+    (
+        "Ov008_ForwardSevenArgs(pText, 0x26, 0x1c, 1, 1, 2, 1);",
+        "Ov008_ForwardSevenArgs(nCursor != 0 ? khdays_charselect_name(aRow[Ov008_GetLocalPlayerIndex()].icon, 0, pText,"
+        " khdays_name, 64) : pText, 0x26, 0x1c, 1, 1, 2, 1);",
+    ),
+    (
+        "Ov008_ForwardSevenArgs(" + _ov008_weapon + ", 0x80, 0x1c, 1, 1, 2, 1);",
+        "Ov008_ForwardSevenArgs(khdays_charselect_name(aRow[Ov008_GetLocalPlayerIndex()].icon, 1, "
+        + _ov008_weapon
+        + ", khdays_name, 64), 0x80, 0x1c, 1, 1, 2, 1);",
+    ),
+    (
+        "Ov008_ForwardSevenArgs(pText, nX, nY, 1, 1, 2, 1);",
+        "Ov008_ForwardSevenArgs(khdays_charselect_name(aRow[i].icon, 0, pText, khdays_name, 64), nX, nY, 1, 1, 2, 1);",
+    ),
+]
+# ... and the name on the camp's status panel (its field 1: status_&.s's record for the local seat's character), a
+# mod's character's own
+HOOKS["ov008@0206d46c"] += [  # Ov008_DrawStatusField
+    (
+        "void Ov008_DrawStatusField(",
+        _SELECT_NAME + _LOCAL_SEAT + "extern int khdays_characters_of(int slot, int kind);\n"
+        "static u16 sPortStatusName[64];\n"
+        "void Ov008_DrawStatusField(",
+    ),
+    (
+        "        pText = Ov008_GetVarRecordByIndex(pPanel->textLoader, Ov008_GetLocalPlayerStatA());\n",
+        "        pText = Ov008_GetVarRecordByIndex(pPanel->textLoader, Ov008_GetLocalPlayerStatA());\n"
+        "        pText = khdays_charselect_name(khdays_characters_of(Session_GetLocalPlayerIndex(), -1), 0, pText,\n"
+        "                                       sPortStatusName, 64);\n",
+    ),
+]
+# ... and another place's mark on the game's own grid (the portrait its value names, lit): none while that grid is
+# shown for a place on a mod's character (the select's pages mark it on its own page, runtime/menus/charselect.h)
+_MARKER = "extern int khdays_charselect_marker(int member, int portrait);\n"
+HOOKS["ov006@02050fc8"] += [  # Ov006_UpdateMissionMemberMenuScreen
+    (
+        "void *Ov006_UpdateMissionMemberMenuScreen(void)\n{\n",
+        _MARKER + "void *Ov006_UpdateMissionMemberMenuScreen(void)\n{\n",
+    ),
+    (
+        "(u16)" + _menu("rowPtr->memberId") + ",",
+        "(u16)khdays_charselect_marker(rowPtr->memberId, " + _menu("rowPtr->memberId") + "),",
+    ),
+]
+HOOKS["ov008@0207ce84"] += [  # Ov008_LobbyStep
+    ("Ov008LobbyStep Ov008_LobbyStep(void)\n{\n", _MARKER + "Ov008LobbyStep Ov008_LobbyStep(void)\n{\n"),
+    (
+        "(u16)" + _menu("aRow[i].icon") + ",",
+        "(u16)khdays_charselect_marker(aRow[i].icon, " + _menu("aRow[i].icon") + "),",
+    ),
+]
+# ... the mark's two cells for that value (KHDAYS_SELECT_NO_MARK) put past the screen's right edge, where nothing of
+# them shows (the game's own off-grid place, x and y below 0, is the screen's top left)
+for ov, address in (("006", "02054fb8"), ("008", "02080d28")):
+    HOOKS[f"ov{ov}@{address}"] = [
+        (  # Ov00N_MissionPlaceCellPair
+            "    if (selector == -1 || selector >= 19) {\n",
+            "    if (selector == 0x7fff) { /* KHDAYS_SELECT_NO_MARK */\n"
+            "        config.x = 256 + 64;\n"
+            "        config.y = 0;\n"
+            "    } else if (selector == -1 || selector >= 19) {\n",
+        )
+    ]
+# ... and their input: a place on a new character is looked for on the DS's grid at its base's place, and keeps
+# its own number unless a direction moves it on (A and B would take the grid's, and the screen asks for the
+# place every frame: Ov006_MissionArmCursorRequest)
+for ov, address, cursor, grid in (
+    ("006", "02051b34", "    cursorEntry = Ov006_MissionGetCursorEntry();\n", "data_ov006_02056410"),
+    ("008", "0207d888", "    cursorEntry = Ov008_GetLocalPlayerIndex();\n", "data_ov008_02090c00"),
+):
+    HOOKS[f"ov{ov}@{address}"] = [  # Ov00N_UpdateMissionMemberSelectionInput
+        (
+            cursor,
+            cursor + "    extern int khdays_characters_known(int number);\n"
+            "    extern int khdays_characters_menu_entry(int id);\n"
+            "    int khdays_kept;\n",
+        ),
+        (
+            "    if (members[selectionIndex].icon < 0) {\n",
+            "    khdays_kept = khdays_characters_known(members[selectionIndex].icon & 0xff) ? members[selectionIndex].icon\n"
+            "                                                                                : -1;\n"
+            "    if (khdays_kept >= 0) {\n"
+            "        members[selectionIndex].icon = (s8)khdays_characters_menu_entry(khdays_kept);\n"
+            "    }\n"
+            "    if (members[selectionIndex].icon < 0) {\n",
+        ),
+        (
+            f"    members[selectionIndex].icon =\n        (s8){grid}[gridRow][gridColumn];\n",
+            f"    members[selectionIndex].icon =\n        (s8){grid}[gridRow][gridColumn];\n"
+            "    if (khdays_kept >= 0 && (action == 4 || action == 5)) {\n"
+            "        members[selectionIndex].icon = (s8)khdays_kept;\n"
+            "    }\n",
+        ),
+        (
+            f"Ov{ov}_ResolveMissionSelection((s8)members[selectionIndex].icon)",
+            f"Ov{ov}_ResolveMissionSelection(khdays_characters_menu_entry((s8)members[selectionIndex].icon))",
+        ),
+        (  # no input: the place as it was (its caller asks for it every frame)
+            "    if (action == -1) {\n        return 0;\n    }\n",
+            "    if (action == -1) {\n"
+            "        if (khdays_kept >= 0) {\n"
+            "            members[selectionIndex].icon = (s8)khdays_kept;\n"
+            "        }\n"
+            "        return 0;\n"
+            "    }\n",
+        ),
+    ]
+HOOKS["main@0202b914"] = [
+    (  # TailForwardTrackEntry: a seat's model packs from its new character's own folder (a path under its base's;
+        # never a packed handle, bit 31)
+        "void TailForwardTrackEntry(int param_1, void *pArg2, int param_3, int param_4) {\n"
+        "    int param_2 = (int)pArg2;\n",
+        "extern int khdays_characters_of(int slot, int kind);\n"
+        "extern int khdays_characters_base(int number);\n"
+        "extern const char *const data_02042a70[];\n"
+        "extern const char *Port_CharacterCode(int number);\n"
+        "static char sPortCharacterPath[0x80];\n"
+        "void TailForwardTrackEntry(int param_1, void *pArg2, int param_3, int param_4) {\n"
+        "    int param_2 = (int)pArg2;\n"
+        "    if (param_2 > 0 && param_1 >= 0 && param_1 < 4) {\n"
+        "        int n = khdays_characters_of(param_1, -1);\n"
+        "        if (n >= 0) {\n"
+        "            const char *path = (const char *)pArg2;\n"
+        "            const char *base = data_02042a70[khdays_characters_base(n)];\n"
+        "            const char *code = Port_CharacterCode(n);\n"
+        "            int b = 0, i, k = 0;\n"
+        "            if (path[0] == 'b' && path[1] == 'a' && path[2] == '/' && path[3] == 'c' && path[4] == 'h' &&\n"
+        "                path[5] == '/') {\n"
+        "                while (base[b] != 0 && path[6 + b] == base[b]) b++;\n"
+        "                if (base[b] == 0 && path[6 + b] == '/') {\n"
+        "                    const char *rest = path + 6 + b;\n"
+        "                    for (k = 0; k < 6; k++) sPortCharacterPath[k] = path[k];\n"
+        "                    for (i = 0; code[i] != 0; i++) sPortCharacterPath[k++] = code[i];\n"
+        "                    for (i = 0; rest[i] != 0 && k < (int)sizeof(sPortCharacterPath) - 1; i++)\n"
+        "                        sPortCharacterPath[k++] = rest[i];\n"
+        "                    sPortCharacterPath[k] = 0;\n"
+        "                    param_2 = (int)sPortCharacterPath;\n"
+        "                }\n"
+        "            }\n"
+        "        }\n"
+        "    }\n",
+    )
+]
+# ... a room's mission review (scene 3, ov003: the players on their thrones, each entry of the field's report a seat
+# that is in): a new character's seat's model from its own folder (its [actions] give clips to the thrones'
+# <base>_result00-06), without its base's robe piece when it has a model of its own (<base>_ita, posed for the base's
+# body), and its card's face its own picture, copied where the base's would be (ui/character_portraits.h)
+HOOKS["ov002@02069724"] = [
+    (  # Ov002_BuildWrapUpReport
+        "void Ov002_BuildWrapUpReport(u16 *pReport)\n",
+        "extern void khdays_characters_review_seat(int entry, int seat);\nvoid Ov002_BuildWrapUpReport(u16 *pReport)\n",
+    ),
+    (
+        "                *((u8 *)pReport + nCount + 6) = (u8)*(int *)(pSlot + 4);\n",
+        "                *((u8 *)pReport + nCount + 6) = (u8)*(int *)(pSlot + 4);\n"
+        "                khdays_characters_review_seat(nCount, i);\n",
+    ),
+]
+# ... the field's enemy labels (one for each enemy class the mission has, drawn as the field begins, the targeted
+# enemy's shown): a class whose every row stands in for one KINGDOM HEARTS II enemy is labelled with its KH2 name in
+# the game's language (runtime/kh2_enemies/shell.h khdays_kh2_enemies_label), written where the game's would be read
+HOOKS["ov002@02055984"] = [
+    (  # Ov002_BuildPanelLabels
+        "void Ov002_BuildPanelLabels(void)\n{\n",
+        "extern int khdays_kh2_enemies_label(int enemy_class, unsigned short *out, int room);\n"
+        "void Ov002_BuildPanelLabels(void)\n{\n"
+        "    int khdays_label[32]; /* a KH2 enemy's name, UTF-16, 0-ended */\n",
+    ),
+    (
+        "        if (pRec != 0) {\n",
+        "        if (khdays_kh2_enemies_label(nId, (unsigned short *)khdays_label, 63) > 0) {\n"
+        "            pRec = khdays_label;\n"
+        "        }\n"
+        "        if (pRec != 0) {\n",
+    ),
+]
+HOOKS["ov003@0204d98c"] = [
+    (  # Ov003_SceneInit
+        "int Ov003_SceneInit(int param_1) {\n",
+        "extern int khdays_characters_review(int entry, int *own_model);\n"
+        "extern const char *Port_CharacterCode(int number);\n"
+        "static char sPortReviewPaths[4][24]; /* the game's four seats */\n"
+        "static int sPortReviewOwnModels[4];\n"
+        "static unsigned int *Port_ReviewModel(int entry, unsigned int *game)\n{\n"
+        "    const int n = khdays_characters_review(entry, &sPortReviewOwnModels[entry]);\n"
+        "    if (n < 0) {\n        return game;\n    }\n"
+        '    OS_SPrintf(sPortReviewPaths[entry], "ba/ch/%s/def.p.z", Port_CharacterCode(n));\n'
+        "    return (unsigned int *)sPortReviewPaths[entry];\n}\n"
+        "extern int khdays_ui_review_face(int entry, unsigned char *characters, unsigned short *palette);\n"
+        "static unsigned int sPortReviewFaces[4][0x480 / 4]; /* words: the copies read them a word at a time */\n"
+        "static unsigned int sPortReviewPalettes[4][8];\n"
+        "static void Port_ReviewFace(int entry, int *characters, int *palette)\n{\n"
+        "    if (khdays_ui_review_face(entry, (unsigned char *)sPortReviewFaces[entry],\n"
+        "                              (unsigned short *)sPortReviewPalettes[entry])) {\n"
+        "        *characters = (int)sPortReviewFaces[entry];\n"
+        "        *palette = (int)sPortReviewPalettes[entry];\n"
+        "    }\n}\n"
+        "int Ov003_SceneInit(int param_1) {\n",
+    ),
+    (
+        "            iVar12 = iVar11 << 5;\n            Callbacks_RunTableEntryB(1, iVar6, iVar12, 0x480);\n",
+        "            Port_ReviewFace((int)uVar7, &iVar6, &iVar13);\n"
+        "            iVar12 = iVar11 << 5;\n            Callbacks_RunTableEntryB(1, iVar6, iVar12, 0x480);\n",
+    ),
+    (
+        "RegisterSeqAndInit(puVar10, *(unsigned int **)(&data_ov003_0204f8f8[entry[6] * 4]), 1, 6);",
+        "RegisterSeqAndInit(puVar10, Port_ReviewModel(iVar12, *(unsigned int **)(&data_ov003_0204f8f8[entry[6] * 4])),"
+        " 1, 6);",
+    ),
+    (
+        "            uVar7 = (unsigned int)data_ov003_0204f8bc[entry[6]];\n",
+        "            uVar7 = sPortReviewOwnModels[iVar12] ? 0xffffffff\n"
+        "                                                 : (unsigned int)data_ov003_0204f8bc[entry[6]];\n",
+    ),
+]
+# ... and the game over in a room (ov027, a mission given up or failed: every seat's character standing): a new
+# character's seat's model from its own folder, the file its base's would be (its [actions] give a clip to
+# <base>_mission00)
+HOOKS["ov027@02083168"] = [
+    (  # Ov027_LoadCharacterModels
+        "void Ov027_LoadCharacterModels(void)\n",
+        "extern int khdays_characters_game_over(int seat);\n"
+        "extern const char *Port_CharacterCode(int number);\n"
+        "extern int OS_SPrintf(char *dst, const char *fmt, ...);\n"
+        "static char sPortGameOverPaths[4][32]; /* the game's four seats */\n"
+        "static const char *Port_GameOverModel(int seat, const char *game)\n{\n"
+        "    const int n = khdays_characters_game_over(seat);\n"
+        "    const char *rest = game + 6;\n"
+        "    if (n < 0 || game[0] != 'b' || game[1] != 'a' || game[2] != '/' || game[3] != 'c' || game[4] != 'h' ||\n"
+        "        game[5] != '/') {\n"
+        "        return game;\n"
+        "    }\n"
+        "    while (*rest != 0 && *rest != '/') rest++; /* past its base's folder */\n"
+        '    OS_SPrintf(sPortGameOverPaths[seat], "ba/ch/%s%s", Port_CharacterCode(n), rest);\n'
+        "    return sPortGameOverPaths[seat];\n}\n"
+        "void Ov027_LoadCharacterModels(void)\n",
+    ),
+    (
+        "RegisterSeqAndInit(&data_ov027_02084364->aModel[nLoaded], data_ov027_02084190[nKind], 0, 6);",
+        "RegisterSeqAndInit(&data_ov027_02084364->aModel[nLoaded],\n"
+        "                                   Port_GameOverModel(i, data_ov027_02084190[nKind]), 0, 6);",
+    ),
+]
+# ... its voice: the sounds an actor starts are its seat's (the actor's +9, its character at +0xc), so that a new
+# character's [sounds] replace the base's only for its own actor (runtime/sound/sound_mods.c)
+_SPEAKER = "extern void khdays_characters_speaker(int seat, int kind);\n"
+HOOKS["ov022@020a4490"] = [
+    (  # Ov022_PlayEntityVoice: an actor's cues and voices
+        "        nRet = Slot_Spawn(nArc, nSeqOut, &pActor->vecPos, nFlags);\n",
+        "        { " + _SPEAKER + "        khdays_characters_speaker(pActor->nSeat, pActor->nCharacter);\n"
+        "        nRet = Slot_Spawn(nArc, nSeqOut, &pActor->vecPos, nFlags);\n"
+        "        khdays_characters_speaker(-1, -1); }\n",
+    )
+]
+HOOKS["ov022@020a23a4"] = [
+    (  # Ov022_ScaleMoveDamage: the damage of a move a player overlay's own code makes (a Limit, a special)
+        "    kind = *(unsigned char *)(obj + 9);\n",
+        "    { extern int khdays_characters_own_moves(int seat, int kind, int factor);\n"
+        "      factor = khdays_characters_own_moves(*(unsigned char *)(obj + 9), *(int *)(obj + 0xc), factor); }\n"
+        "    kind = *(unsigned char *)(obj + 9);\n",
+    )
+]
+HOOKS["ov022@020a5570"] = [
+    (  # Ov022_RunComboContacts: the attack an actor's hits come from, for the plugins and KHDAYS_TRACE_CHARACTERS
+        "    pRecord = pActor->pComboLock->pRecord;\n",
+        "    pRecord = pActor->pComboLock->pRecord;\n"
+        "    { extern void khdays_characters_attack(const void *actor, int seat, int kind, int attack);\n"
+        "      khdays_characters_attack(pActor, pActor->nId, ((int *)pActor)[3], *(u16 *)pRecord); }\n",
+    )
+]
+HOOKS["ov022@020976f4"] = [
+    (  # Ov022_StepLocalActorCues: the local player's reaction 0x2e, its Limit's voice (seqarc/LMT_VO0N_<code>_MULTI)
+        "                pActor->hSpawn = Slot_Spawn(pActor->nKindId, 0, &pActor->vecAim, nSpawnFlags);\n",
+        "                { " + _SPEAKER + "                khdays_characters_speaker(((u8 *)pActor)[9], *(int *)((u8 *)pActor + 0xc));\n"
+        "                pActor->hSpawn = Slot_Spawn(pActor->nKindId, 0, &pActor->vecAim, nSpawnFlags);\n"
+        "                khdays_characters_speaker(-1, -1); }\n",
+    )
+]
+HOOKS["ov022@020a48c8"] = [
+    (  # Ov022_SpawnVoiceCue: the cue of an actor's action
+        "        Slot_Spawn(nHandlerId, nCue, pPos, nFlags);\n",
+        "        { " + _SPEAKER + "        khdays_characters_speaker(pActor->nId, pActor->nModelId);\n"
+        "        Slot_Spawn(nHandlerId, nCue, pPos, nFlags);\n"
+        "        khdays_characters_speaker(-1, -1); }\n",
+    )
+]
+
+
+# Hook points for the mods' native plugins (kh.hooks: sdk/include/kh/kh_hooks.h, port/runtime/plugins/interfaces.c).
+# Each routine is renamed khdays_hooked_<name> behind a wrapper of its own name: while no plugin hooks the point,
+# the wrapper calls it at once; while one does, it gives the routine's arguments to the plugins' before-functions
+# (which may change them, or skip the routine giving its result), calls it, then gives its result to their
+# after-functions. Arguments and results as 64-bit slots: integers widened ("int" sign-extended, "uint" not),
+# the game's pointers as references ("ref"). A point's number is its place in this list; the port's catalogue is
+# generated from it (khdays_hook_points.h). Points are added as plugins need them, across the game's subsystems.
+# A world's rooms past the game's 24 (rooms a mod adds): which slot each room is loaded in, kept by the
+# port (runtime/rooms/slots.c) instead of the 24 bytes at +0x17 of the ov002 link context, which a 25th room's
+# aSlotMappings[nPeer] would write past. The five functions that touch them: the two that set, the three that fill.
+_ROOM_SLOTS = "extern int khdays_room_slot(int); extern void khdays_room_slot_set(int, int); extern void khdays_room_slots_clear(void);\n"
+HOOKS["ov002@0207285c"] = [
+    (  # Ov002_GetCtxTableByte: room i's slot
+        "    return *(signed char *)(*(int *)&data_ov002_0207fa10 + arg0 + 0x17);\n",
+        "    " + _ROOM_SLOTS + "    return khdays_room_slot(arg0);\n",
+    )
+]
+HOOKS["ov002@02071ba4"] = [
+    (  # Ov002_LoadPeerIntoSlot: the slot's last room in none, this room in the slot
+        "    if(pCtx->slots[nSlot]>=0) pCtx->aSlotMappings[pCtx->slots[nSlot]]=-1;\n"
+        "    pCtx->aSlotMappings[nPeer]=nSlot;\n",
+        "    { " + _ROOM_SLOTS + "    if(pCtx->slots[nSlot]>=0) khdays_room_slot_set(pCtx->slots[nSlot], -1);\n"
+        "    khdays_room_slot_set(nPeer, nSlot); }\n",
+    )
+]
+HOOKS["ov002@02071990"] = [
+    (  # Ov002_LoadWorldLinkResources: a world's rooms in none
+        "    MI_CpuFill8(pCtx->aSlotMappings,0xff,24);\n",
+        "    MI_CpuFill8(pCtx->aSlotMappings,0xff,24);\n    { " + _ROOM_SLOTS + "    khdays_room_slots_clear(); }\n",
+    )
+]
+HOOKS["ov002@0207185c"] = [
+    (  # Ov002_AllocSceneState
+        "    MI_CpuFill8(obj + 0x17, 0xff, 0x18);\n",
+        "    MI_CpuFill8(obj + 0x17, 0xff, 0x18);\n    { " + _ROOM_SLOTS + "    khdays_room_slots_clear(); }\n",
+    )
+]
+HOOKS["ov002@0207214c"] = [
+    (  # Ov002_ReleaseContextBuffers
+        "    MI_CpuFill8((char *)ctx + 0x17, 0xff, 0x18);\n",
+        "    MI_CpuFill8((char *)ctx + 0x17, 0xff, 0x18);\n    { " + _ROOM_SLOTS + "    khdays_room_slots_clear(); }\n",
+    )
+]
+
+# A room a mod adds has no entry of its own in the lower screen's chain (looked up by the request's value): the
+# summary not shown for it, rather than its box read through a null entry.
+HOOKS["ov002@02064a30"] = [
+    (  # Ov002_SnapshotChainEntry: no entry, nothing copied
+        "    if (copy != 0) {\n",
+        "    if (copy != 0 && entry != 0) {\n",
+    )
+]
+HOOKS["ov002@02064ac0"] = [
+    (  # Ov002_ShowSlotSummary: no entry, closed as when there is no layout
+        "    entry = Ov002_SnapshotChainEntry(*(int *)(self + 8), Ov002_Field_GetHalf86(), 1);\n",
+        "    entry = Ov002_SnapshotChainEntry(*(int *)(self + 8), Ov002_Field_GetHalf86(), 1);\n"
+        "    if (entry == 0) {\n"
+        "        Ov002_DestroyOwnedEntry(self, 1);\n"
+        "        return;\n"
+        "    }\n",
+    )
+]
+
+# Mission Mode's world slots past the game's twelve: the worlds the mods add (runtime/rooms/added.h), each listed under
+# its own name, shown on the world map at its game world's place.
+HOOKS["ov008@0206fce0"] = [
+    (  # Ov008_StepCursorToAcceptedSlot: L and R through every slot
+        "unsigned int Ov008_StepCursorToAcceptedSlot(int param_1, int param_2) {\n",
+        "extern int khdays_mission_slots(void);\n"
+        "unsigned int Ov008_StepCursorToAcceptedSlot(int param_1, int param_2) {\n",
+    ),
+    (
+        "        int x = cell + 0xc;\n        cell = x % 12;\n",
+        "        int x = cell + khdays_mission_slots();\n        cell = x % khdays_mission_slots();\n",
+    ),
+    (
+        "    } while (i < 0xc);\n",
+        "    } while (i < khdays_mission_slots());\n",
+    ),
+]
+HOOKS["ov008@02070c58"] = [
+    (  # Ov008_UpdateMissionListArrows: the arrows when two slots or more list missions
+        "    for (i = 0; i < PICK_COUNT; i++) {\n",
+        "    extern int khdays_mission_slots(void);\n    for (i = 0; i < khdays_mission_slots(); i++) {\n",
+    )
+]
+HOOKS["ov008@0205b4ec"] = [
+    (  # Ov008_WorldMap_UpdateSelectionText: a mod world open (its slot has no flag of the game's)
+        "    isEntryUnlocked = GameState_IsFlagSet(entryId + 0x3bc9);\n",
+        "    isEntryUnlocked = entryId >= 12 ? 1 : GameState_IsFlagSet(entryId + 0x3bc9);\n",
+    )
+]
+HOOKS["ov008@0205bea0"] = [
+    (  # Ov008_MenuCursor_MoveToSlot: a mod world at its game world's place on the map
+        "    if (slot < 0) {\n",
+        "    { extern int khdays_mission_slot_shown(int slot);\n      slot = khdays_mission_slot_shown(slot); }\n"
+        "    if (slot < 0) {\n",
+    )
+]
+
+# An enemy the game's own missions end by their scripts: Xigbar, at his defeat (state 3: its health at the fight's
+# limit or none), only stands, waiting for his mission's script to end the fight -- the "all defeated" of a mission
+# built by the port never came. In the mods' missions he is finished as a defeated enemy is (flags 0x1ae bits 0-1, as
+# Riku's Ov260_AiStep_SetFlags3AndEnd and the Shadow's Ov114_Action6Callback set them).
+# The fight's limit is 70 % of his health (Ov283_Construct; his mission's spawner may give another,
+# Ov283_Slot38_StoreValue): there the story's script takes over. The mods' missions have no such script, so there
+# the limit is none and he falls with no health left, not with a third of it gone; and only then, since state 3 is
+# also where a spawner sending him away puts him (ov107's event 1).
+HOOKS["ov283@020cc690"] = [
+    (  # Ov283_OnDamage
+        "    limit = *(short *)(self + 0x218) * *(int *)(*state + 0x3e8) / 100;\n",
+        "    limit = *(short *)(self + 0x218) * *(int *)(*state + 0x3e8) / 100;\n"
+        "    { extern int khdays_missions_playing(void);\n"
+        "      if (khdays_missions_playing()) limit = 0; }\n",
+    )
+]
+HOOKS["ov283@020ced2c"] = [
+    (  # Ov283_AiEnterPatrol
+        "    SetIndexedSlot(param_1, *(signed char *)(param_1 + 0x20), (void *)&Ov283_PatrolIdleStep);\n",
+        "    SetIndexedSlot(param_1, *(signed char *)(param_1 + 0x20), (void *)&Ov283_PatrolIdleStep);\n"
+        "    { extern int khdays_missions_playing(void);\n"
+        "      if (khdays_missions_playing() && *(short *)(*(int *)owner + 0x21a) <= 0)\n"
+        "          *(unsigned short *)(*(int *)owner + 0x1ae) |= 3; }\n",
+    )
+]
+
+HOOK_POINTS = [
+    # (its file's key, its header as the decompilation writes it, its result's kind, its arguments' kinds)
+    # combat and entities: an actor's HP set (a hit, a cure, a defeat)
+    ("ov022@020acc94", "void Ov022_ActorSetHp(u32 *pEnt, int nValue)\n{", "void", ("ref", "int")),
+    # combat: the damage of a player's attack (its strength times the hit's factor)
+    ("ov022@020a1f84", "int Ov022_ComputeStrengthDamage(struct Actor *pActor, int nScale)\n{", "int", ("ref", "int")),
+    # resources: a file of the game's loaded whole (its name, or a packed handle with bit 31)
+    ("main@0201ef9c", "void *Archive_LoadFile(char *name, u32 kind)\n{", "ref", ("ref", "uint")),
+    # audio: a sound effect started from the sound archive (its sequence archive, its entry)
+    ("main@02033b78", "int PlaySound(int arg0, int arg1) {", "int", ("int", "int")),
+    # combat and entities: an enemy takes a hit (its target, the hit's source, the hit; its damage worked out inside)
+    (
+        "ov107@020c5cfc",
+        "int Ov107_AiState_ApplyHit(struct Obj *obj, struct HitSource *source, struct HitPacket *packet)\n{",
+        "int",
+        ("ref", "ref", "ref"),
+    ),
+    # audio: a positioned sound started (the field's: an actor's cues and voices; its handler, its entry, its place)
+    (
+        "main@02033d0c",
+        "unsigned int Slot_Spawn(unsigned int param_1, unsigned int param_2, unsigned int *param_3, "
+        "unsigned int param_4)\n{",
+        "uint",
+        ("uint", "uint", "ref", "uint"),
+    ),
+    # combat and entities: an actor enters a state by its number (an attack, a jump, a stagger, a Limit ...)
+    ("ov022@020a35f4", "int Ov022_ActorSetState(u32 *pActor, int nState)\n{", "int", ("ref", "int")),
+    # camera: the field's camera, once a frame
+    ("ov002@0204f0a8", "void *Ov002_TickCamera(void)\n{", "ref", ()),
+]
+
+
+def hook_point_pair(index: int, header: str, result: str, kinds: tuple[str, ...]) -> tuple[str, str]:
+    """The text replacing a hook point's header: the routine renamed behind its wrapper."""
+    m = re.fullmatch(r"(?s)(.*?)\b([A-Za-z_]\w*)\((.*)\)(\s*)\{", header)
+    if m is None:
+        raise SystemExit(f"hook point: not a function's header: {header!r}")
+    ret, name, params, gap = m[1], m[2], m[3], m[4]
+    names = (
+        [re.search(r"([A-Za-z_]\w*)\s*$", one)[1] for one in params.split(",")]
+        if params.strip() not in ("", "void")
+        else []
+    )
+    types = [one.strip()[: -len(n)].strip() for one, n in zip(params.split(","), names)]
+    if len(names) != len(kinds):
+        raise SystemExit(f"hook point {name}: {len(names)} arguments, {len(kinds)} kinds")
+    inner = f"khdays_hooked_{name}"
+
+    def slot(n: str, kind: str) -> str:
+        return {"ref": f"(unsigned long long)(unsigned)({n})", "uint": f"(unsigned long long)({n})"}.get(
+            kind, f"(unsigned long long)(long long)({n})"
+        )
+
+    def back(i: int, ctype: str, kind: str) -> str:
+        return f"({ctype})(unsigned)khdays_args[{i}]" if kind == "ref" else f"({ctype})khdays_args[{i}]"
+
+    plain_args = ", ".join(names)
+    slot_args = ", ".join(back(i, ctype, kind) for i, (ctype, kind) in enumerate(zip(types, kinds)))
+    fill = "".join(f"    khdays_args[{i}] = {slot(n, kind)};\n" for i, (n, kind) in enumerate(zip(names, kinds)))
+    if result == "void":
+        plain = f"        {inner}({plain_args});\n        return;\n"
+        call = f"        {inner}({slot_args});\n"
+        out = ""
+    else:
+        widen = "(unsigned long long)(unsigned)" if result == "ref" else "(unsigned long long)(long long)"
+        plain = f"        return {inner}({plain_args});\n"
+        call = f"        khdays_result = {widen}{inner}({slot_args});\n"
+        narrow = f"({ret.strip()})(unsigned)khdays_result" if result == "ref" else f"({ret.strip()})khdays_result"
+        out = f"    return {narrow};\n"
+    return header, (
+        f"static {ret}{inner}({params});\n"
+        f"{ret}{name}({params}){gap}{{\n"
+        "    extern int khdays_hook_on(int point);\n"
+        "    extern int khdays_hook_before(int point, unsigned long long *args, unsigned long long *result);\n"
+        "    extern void khdays_hook_after(int point, unsigned long long *args, unsigned long long *result);\n"
+        f"    unsigned long long khdays_args[{max(1, len(names))}], khdays_result = 0;\n"
+        f"    if (!khdays_hook_on({index})) {{\n{plain}    }}\n"
+        f"{fill}"
+        f"    if (!khdays_hook_before({index}, khdays_args, &khdays_result)) {{\n{call}    }}\n"
+        f"    khdays_hook_after({index}, khdays_args, &khdays_result);\n"
+        f"{out}"
+        "}\n"
+        f"static {ret}{inner}({params}){gap}{{"
+    )
+
+
+def hook_points_header() -> str:
+    """The port's catalogue of the hook points (khdays_hook_points.h)."""
+    lines = [
+        "/* Generated by port/tools/prepare.py from HOOK_POINTS: the mods' native plugins' hook points, by number",
+        " * (port/runtime/plugins/interfaces.c). */",
+        "static const struct {",
+        "    const char *name, *signature;",
+        "    int args, returns;",
+        "} khdays_hook_points[] = {",
+    ]
+    for _, header, result, kinds in HOOK_POINTS:
+        m = re.fullmatch(r"(?s)(.*?)\b([A-Za-z_]\w*)\((.*)\)(\s*)\{", header)
+        signature = f"{m[1]}{m[2]}({m[3]})".replace("\\", "\\\\").replace('"', '\\"')
+        lines.append(f'    {{"{m[2]}", "{signature}", {len(kinds)}, {0 if result == "void" else 1}}},')
+    lines += ["};", f"#define KHDAYS_HOOK_POINT_COUNT {len(HOOK_POINTS)}", ""]
+    return "\n".join(lines)
+
+
+for _index, (_key, _header, _result, _kinds) in enumerate(HOOK_POINTS):
+    HOOKS.setdefault(_key, []).append(hook_point_pair(_index, _header, _result, _kinds))
 
 
 # The routines whose drawing the port takes over: (function, part, the port's function, kind).
@@ -2043,7 +4075,7 @@ for _module, _prefix in (
 ):
     for _function, _role in (
         ("DrawMissionSummaryHeading", "instruction"),
-        ("MainMenu_UpdateSelectionText", "world"),
+        ("WorldMap_UpdateSelectionText", "world"),
         ("DrawMissionDetail", "header"),
         ("MissionMenu_DrawMissionText", "summary"),
         ("MissionMenu_DrawInfo", "objectives"),
@@ -2066,6 +4098,7 @@ for _function, _scope in (
     ("DrawMessageCaption", "field.hud.status"),
     ("ShowNoticeText", "field.hud.status"),
     ("DrawPanelRowText", "field.command"),
+    ("BuildTextItem", "field.breakthrough"),
 ):
     _name = f"Ov002_{_function}"
     UI_HOOKS[f"src/overlays/scenes/ov002_field/{_name}.c"] = [(_name, "text", _scope, "scope")]
@@ -2240,6 +4273,152 @@ def role_scoped(rel: str) -> bool:
     return any(path.startswith(d) for d in ROLE_DIRS) and Path(rel).stem not in ROLE_KEPT
 
 
+# The Menu Overhaul's (runtime/mods/installed.h): each port function the game calls here answers as the
+# game would without that mod. The camps' menus keep their cursor between visits (runtime/menus/camp.c
+# khdays_camp_remember_entry, khdays_camp_restore_entry), the story's menu hovers its entry as it starts.
+HOOKS["ov025@0208b7d0"] = [  # Ov025_Hub_InitEntries
+    (
+        "    pScene->nHoverId = Ov025_UpdateMenuOptionLocksAndDrawCategory(pScene);",
+        "    { extern int khdays_camp_restore_entry(int story, int fallback);\n"
+        "      pScene->nHoverId = khdays_camp_restore_entry(1, Ov025_UpdateMenuOptionLocksAndDrawCategory(pScene)); }",
+    ),
+    (
+        "    Ov025_ReleaseTwoSlotsEx(nCtx, pCursor, &pos);",
+        "    Ov025_ReleaseTwoSlotsEx(nCtx, pCursor, &pos);\n"
+        "    { extern void Ov025_Hub_OnEntryHover(Ov008MenuEntry *entry, u32 keys);\n"
+        "      extern int khdays_camp_hover_at_start(void);\n"
+        "      if (khdays_camp_hover_at_start()) { pScene->nHoverId = -1; Ov025_Hub_OnEntryHover(pEntry, 0xf0); } }",
+    ),
+]
+HOOKS["ov025@0208bf68"] = [  # Ov025_Hub_OnEntryHover
+    (
+        "    pScene->nHoverId = pEntry->nId;",
+        "    pScene->nHoverId = pEntry->nId;\n"
+        "    { extern void khdays_camp_remember_entry(int story, int entry);\n"
+        "      khdays_camp_remember_entry(1, pEntry->nId); }",
+    )
+]
+HOOKS["ov008@02059698"] = [  # Ov008_HandleMenuEntrySelection
+    (
+        "    *(int *)(renderer + 0x88) = selectedEntry->value0c;",
+        "    *(int *)(renderer + 0x88) = selectedEntry->value0c;\n"
+        "    { extern void khdays_camp_remember_entry(int story, int entry);\n"
+        "      khdays_camp_remember_entry(0, selectedEntry->value0c); }",
+    )
+]
+HOOKS["ov008@02057f58"] = [  # Ov008_Menu_RefreshSubitemGrid
+    (
+        "    if (((Flags *)(data_ov008_02090f1c + 0x5c6))->b5 == 0) {\n        e = Ov008_FindEntryById(ui, 9);",
+        "    { extern int khdays_camp_restore_entry(int story, int fallback);\n"
+        "      unsigned int saved = khdays_camp_restore_entry(0, (int)uVar13);\n"
+        "      for (i = 0; i < 7; ++i) if (values[i] == saved && flags[i] == 0) uVar13 = saved; }\n"
+        "    if (((Flags *)(data_ov008_02090f1c + 0x5c6))->b5 == 0) {\n        e = Ov008_FindEntryById(ui, 9);",
+    )
+]
+# The story's Panels page's line (runtime/menus/camp.c khdays_camp_text_row): the text the lower screen's box
+# shows, for the port to show it in its own band.
+HOOKS["ov025@02091070"] = [  # Ov025_RepaintTextRow
+    (
+        "    EnqueueObjGfxCommand(self->animator);\n}",
+        "    EnqueueObjGfxCommand(self->animator);\n"
+        "    { extern void khdays_camp_text_row(unsigned int self, int row, unsigned int text, int style);\n"
+        "      khdays_camp_text_row((unsigned int)self, row, (unsigned int)text, style); }\n}",
+    )
+]
+# Mission Mode's Panels page the same (ov008: the same grid menu under its own names).
+HOOKS["ov008@0205eafc"] = [  # Ov008_RepaintTextRow
+    (
+        "    EnqueueObjGfxCommand(self->animator);\n}",
+        "    EnqueueObjGfxCommand(self->animator);\n"
+        "    { extern void khdays_camp_text_row(unsigned int self, int row, unsigned int text, int style);\n"
+        "      khdays_camp_text_row((unsigned int)self, row, (unsigned int)text, style); }\n}",
+    )
+]
+# The Panels page's preview of a panel held (Ov025/Ov008_PreviewDropSummary): the DS's up and down arrows beside
+# the upper screen's numbers left out while the port draws the page (its status card shows the changes; camp.c
+# khdays_camp_preview_arrows, with khdays_camp_field the changes' words).
+HOOKS["ov025@020a42b8"] = [  # Ov025_DrawPageBWidget
+    (
+        "        nSelection = Ov025_SetPairSelection(pPage, &pairs.aPair[nPair], nArg);\n",
+        "        { extern int khdays_camp_preview_arrows(int delta);\n"
+        "          nSelection = Ov025_SetPairSelection(pPage, &pairs.aPair[nPair], khdays_camp_preview_arrows(nArg)); }\n",
+    )
+]
+HOOKS["ov008@0206ec2c"] = [  # Ov008_DrawPageBWidget
+    (
+        "        nSelection = Ov008_SetPairSelection(pPage, &pairs.aPair[nPair], nArg);\n",
+        "        { extern int khdays_camp_preview_arrows(int delta);\n"
+        "          nSelection = Ov008_SetPairSelection(pPage, &pairs.aPair[nPair], khdays_camp_preview_arrows(nArg)); }\n",
+    )
+]
+# Preferences' steering (runtime/menus/camp.c khdays_camp_navigation_sound): the port's presses on the way to a
+# setting make no sound of their own.
+HOOKS["main@02033b78"].insert(  # PlaySound, before its hook point renames it
+    0,
+    (
+        "int PlaySound(int arg0, int arg1) {",
+        "int PlaySound(int arg0, int arg1) {\n"
+        "    extern int khdays_camp_navigation_sound(int kind, int sound);\n"
+        "    if (!khdays_camp_navigation_sound(arg0, arg1)) return 0;",
+    ),
+)
+# The day's monologue in the theater's voice with its subtitles (runtime/movies/scene_trace.c): the DS's words
+# and the page's arrow left out (Roxas's picture, BG1, stays), A not turning the page while the voice speaks,
+# START taken by the window's pause, and the monologue left once the voice has said it all.
+HOOKS["ov007@0204cac0"] = [  # Ov007_SetupSubDisplay
+    (
+        "        reg_dispcnt[0] = reg_dispcnt[0] & ~0x1f00 | 0x1600;",
+        "        { extern int khdays_monologue_words_hidden(void);\n"
+        "          reg_dispcnt[0] = reg_dispcnt[0] & ~0x1f00 | (khdays_monologue_words_hidden() ? 0x200 : 0x1600); }",
+    )
+]
+_MONOLOGUE_EXTERNS = (
+    "extern unsigned short gPadPressed;",
+    "extern unsigned short gPadPressed;\n"
+    "extern int khdays_monologue_next(int pressed);\n"
+    "extern int khdays_monologue_leave(int pressed);",
+)
+_MONOLOGUE_NEXT = ("    if ((gPadPressed & 1) != 0) {", "    if (khdays_monologue_next((gPadPressed & 1) != 0)) {")
+_MONOLOGUE_LEAVE = ("    if ((gPadPressed & 8) != 0) {", "    if (khdays_monologue_leave((gPadPressed & 8) != 0)) {")
+HOOKS["ov007@0204cf7c"] = [_MONOLOGUE_EXTERNS, _MONOLOGUE_NEXT, _MONOLOGUE_LEAVE]  # Ov007_TextWindowFadeIn
+HOOKS["ov007@0204d170"] = [_MONOLOGUE_EXTERNS, _MONOLOGUE_NEXT, _MONOLOGUE_LEAVE]  # Ov007_ScrollTextWindow
+HOOKS["ov007@0204d23c"] = [_MONOLOGUE_EXTERNS, _MONOLOGUE_LEAVE]  # Ov007_FadeBackdropStep
+HOOKS["ov007@0204d0ec"] = [_MONOLOGUE_EXTERNS, _MONOLOGUE_LEAVE]  # Ov007_AdvanceTextLine
+# The game over's own firefly left out while the window draws its menu as KH2's pause, with KH2's firefly
+# (runtime/menus/retry.c khdays_game_over_hides_orb).
+HOOKS["ov027@0208344c"].append(  # Ov027_UpdateFlushForward
+    (
+        "    Ov002_ResetViewToDefault();\n",
+        "    Ov002_ResetViewToDefault();\n"
+        "    { extern int khdays_game_over_hides_orb(void); if (khdays_game_over_hides_orb()) return; }\n",
+    )
+)
+
+# The Walk mod's (runtime/input/walk.h): the local player's model drawn with its walk, each joint the model sends
+# taken from the walk's clip over the game's own result and given back after (the result is the motion's cache).
+# Without the mod no clip is read and both answer at once.
+HOOKS["main@0202aa9c"].append(  # Scene_DrawNode, inside the shadow and fade scope
+    (
+        "NNS_G3dDraw(node->object);",
+        "{ extern void khdays_walk_draw_begin(int node);\n"
+        "      extern void khdays_walk_draw_end(void);\n"
+        "      khdays_walk_draw_begin((int)node);\n"
+        "      NNS_G3dDraw(node->object);\n"
+        "      khdays_walk_draw_end(); }",
+    )
+)
+HOOKS["itcm@01ffc164"].append(  # NNSi_G3dFuncSbc_NODEDESC
+    (
+        "        state->sendJnt(result);",
+        "        { extern void khdays_walk_send_begin(unsigned int joint, void *result);\n"
+        "          extern void khdays_walk_send_end(void *result);\n"
+        "          khdays_walk_send_begin(nodeId, result);\n"
+        "          state->sendJnt(result);\n"
+        "          khdays_walk_send_end(result); }",
+    )
+)
+
+
 # Hooks by the decomp file, for functions HOOKS cannot name: DS Protect's (ov028) are data in the
 # symbols, their bodies encrypted in the ROM, and several share a file. Applied like HOOKS.
 FILE_HOOKS = {
@@ -2333,13 +4512,276 @@ FILE_HOOKS = {
     ],
 }
 
+FILE_HOOKS["src/overlays/scenes/ov002_field/Ov002_SetCaptionText.c"] = [
+    (
+        "void Ov002_SetCaptionText(const u16 *pText)\n{",
+        "void Ov002_SetCaptionText(const u16 *pText)\n{\n"
+        "    extern void khdays_ui_information_message(const unsigned short *text);\n"
+        "    khdays_ui_information_message(pText);",
+    ),
+]
+FILE_HOOKS["src/overlays/scenes/ov002_field/Ov002_RequestPanelScreen.c"] = [
+    (
+        "    Ov002_StartBlendFade(-1, 0, 300);",
+        "    { extern int khdays_ui_information_keep_hud(void);\n"
+        "      if (!khdays_ui_information_keep_hud()) Ov002_StartBlendFade(-1, 0, 300); }",
+    ),
+    (
+        "    StrCopy16(ctx->pCrawlText, pText);",
+        "    StrCopy16(ctx->pCrawlText, pText);\n"
+        "    { extern void khdays_ui_information_panel(const unsigned short *text);\n"
+        "      khdays_ui_information_panel(pText); }",
+    ),
+]
+FILE_HOOKS["src/overlays/scenes/ov002_field/Ov002_FinishPanelFadeIn.c"] = [
+    (
+        "        Ov002_PopMapSnapshot();",
+        "        { extern void khdays_ui_information_pop_maps(void);\n          khdays_ui_information_pop_maps(); }",
+    ),
+    (
+        "        Ov002_StartBlendFade(0, 0x10, 300);",
+        "        { extern int khdays_ui_information_keep_hud(void);\n"
+        "          if (!khdays_ui_information_keep_hud()) Ov002_StartBlendFade(0, 0x10, 300); }",
+    ),
+]
+FILE_HOOKS["src/overlays/scenes/ov002_field/Ov002_ResetFaders.c"] = [
+    (
+        "    Ov002_PushMapSnapshot(0);",
+        "    { extern void khdays_ui_information_push_maps(void);\n      khdays_ui_information_push_maps(); }",
+    ),
+    (
+        "    Ov002_Ctx_InvokeTagTrackerCallback(Ov002_ForwardToSubDc(0x50));",
+        "    { extern int khdays_ui_information_keep_hud(void);\n"
+        "      if (!khdays_ui_information_keep_hud())\n"
+        "          Ov002_Ctx_InvokeTagTrackerCallback(Ov002_ForwardToSubDc(0x50)); }",
+    ),
+]
+FILE_HOOKS["src/overlays/scenes/ov002_field/Ov002_PushMapSnapshot.c"] = [
+    (
+        "    for (i = 0; i <= 2; i++) {",
+        "    for (i = 0; i <= 2; i++) {\n"
+        "        extern int khdays_ui_information_preserving_maps(void);\n"
+        "        if (khdays_ui_information_preserving_maps()) continue;",
+    ),
+]
+FILE_HOOKS["src/overlays/scenes/ov002_field/Ov002_SetPanelMode.c"] = [
+    (
+        "        pOfs[0] = 0x180000;",
+        "        { extern int khdays_ui_information_keep_hud(void);\n"
+        "          if (nMode != 0 || !khdays_ui_information_keep_hud()) pOfs[0] = 0x180000; }",
+    ),
+    (
+        "        pOfs[2] = 0x180000;",
+        "        { extern int khdays_ui_information_keep_hud(void);\n"
+        "          if (!khdays_ui_information_keep_hud()) pOfs[2] = 0x180000; }",
+    ),
+]
+FILE_HOOKS["src/overlays/scenes/ov002_field/Ov002_SetBgOfs_main001c.c"] = [
+    (
+        "void Ov002_SetBgOfs_main001c(unsigned int param_1, unsigned int param_2) {",
+        "void Ov002_SetBgOfs_main001c(unsigned int param_1, unsigned int param_2) {\n"
+        "    { extern int khdays_ui_information_keep_hud(void);\n"
+        "      if (khdays_ui_information_keep_hud()) return; }",
+    ),
+]
+FILE_HOOKS["src/overlays/scenes/ov002_field/Ov002_SetBgOfs_main0014.c"] = [
+    (
+        "void Ov002_SetBgOfs_main0014(unsigned int param_1, unsigned int param_2) {",
+        "void Ov002_SetBgOfs_main0014(unsigned int param_1, unsigned int param_2) {\n"
+        "    { extern int khdays_ui_information_capture_scroll(unsigned int x, unsigned int y);\n"
+        "      if (khdays_ui_information_capture_scroll(param_1, param_2)) return; }",
+    ),
+]
+FILE_HOOKS["src/overlays/scenes/ov002_field/Ov002_BeginTextCrawl.c"] = [
+    (
+        "    ctx->nCrawlPenX = 8;",
+        "    ctx->nCrawlPenX = 8;\n"
+        "    { extern void khdays_ui_information_crawl(const unsigned short *text);\n"
+        "      khdays_ui_information_crawl((const unsigned short *)ctx->pCrawlText); }",
+    ),
+]
+FILE_HOOKS["src/overlays/scenes/ov002_field/Ov002_OpenPanelScreen.c"] = [
+    (
+        "    MI_CpuFill8(ctx, 0, 0x2c4);",
+        "    MI_CpuFill8(ctx, 0, 0x2c4);\n"
+        "    { extern void khdays_ui_information_reset(void);\n"
+        "      khdays_ui_information_reset(); }",
+    ),
+]
+FILE_HOOKS["src/overlays/scenes/ov002_field/Ov002_ClosePanel.c"] = [
+    (
+        "    ctx->nPanelState = 0;",
+        "    ctx->nPanelState = 0;\n"
+        "    { extern void khdays_ui_information_panel(const unsigned short *text);\n"
+        "      khdays_ui_information_panel(0); }",
+    ),
+]
+FILE_HOOKS["src/overlays/scenes/ov002_field/Ov002_StartPanelFadeIn.c"] = [
+    (
+        "    char *ctx = data_ov002_0207f614;",
+        "    char *ctx = data_ov002_0207f614;\n"
+        "    { extern void khdays_ui_information_panel(const unsigned short *text);\n"
+        "      khdays_ui_information_panel(0); }",
+    ),
+]
+FILE_HOOKS["src/overlays/scenes/ov002_field/Ov002_ClosePanelScreen.c"] = [
+    (
+        "    data_ov002_0207f614 = 0;",
+        "    data_ov002_0207f614 = 0;\n"
+        "    { extern void khdays_ui_information_reset(void);\n"
+        "      khdays_ui_information_reset(); }",
+    ),
+]
+FILE_HOOKS["src/overlays/scenes/ov002_field/Ov002_HoldPanelScreen.c"] = [
+    (
+        "    ctx->nHeld = nHold;",
+        "    ctx->nHeld = nHold;\n"
+        "    { extern void khdays_ui_information_hold(int held, int leaving);\n"
+        "      khdays_ui_information_hold(nHold, bLeaving); }",
+    ),
+]
+
+# Capture the minimap's icon stamps before they are flattened into its 4bpp layer.
+FILE_HOOKS["src/overlays/scenes/ov002_field/Ov002_RedrawMapPanel.c"] = [
+    (
+        "    pScene = data_ov002_0207f638;",
+        "    extern void khdays_minimap_begin(void);\n    extern void khdays_minimap_end(void);\n    khdays_minimap_begin();\n    pScene = data_ov002_0207f638;",
+    ),
+    (
+        "    GFXi_EnqueueCommand(0x16, 0x2720, pScene->pTiles, 0x12c0);",
+        "    khdays_minimap_end();\n    GFXi_EnqueueCommand(0x16, 0x2720, pScene->pTiles, 0x12c0);",
+    ),
+]
+FILE_HOOKS["src/overlays/scenes/ov002_field/Ov002_PlotMapIcon.c"] = [
+    (
+        "    pCtx = data_ov002_0207f638;",
+        "    extern void khdays_minimap_icon(int kind, int x, int y);\n    khdays_minimap_icon(nKind, pCell[0], pCell[1]);\n    pCtx = data_ov002_0207f638;",
+    ),
+]
+FILE_HOOKS["src/overlays/scenes/ov002_field/Ov002_PlotPageGlyph.c"] = [
+    (
+        "    nBand = ((nHeight + 0x1000) / 0x2000) % 8;",
+        "    extern void khdays_minimap_player(int player, int x, int y, int heading);\n    khdays_minimap_player(nSelf, pCell->x, pCell->y, nHeight);\n    nBand = ((nHeight + 0x1000) / 0x2000) % 8;",
+    ),
+]
+FILE_HOOKS["src/overlays/scenes/ov002_field/Ov002_PlotPageEmblem.c"] = [
+    (
+        "    bMask = data_ov002_0207e400[nSelf];",
+        "    extern void khdays_minimap_emblem(int player);\n    khdays_minimap_emblem(nSelf);\n    bMask = data_ov002_0207e400[nSelf];",
+    ),
+]
+FILE_HOOKS["src/overlays/scenes/ov002_field/Ov002_StampCellBlock.c"] = [
+    (
+        "    for (i = 0; i < 8; i++) {",
+        "    { extern void khdays_minimap_stamp(unsigned source, int x, int y);\n      khdays_minimap_stamp((unsigned)pCells, x, y); }\n    for (i = 0; i < 8; i++) {",
+    ),
+]
+FILE_HOOKS["src/overlays/scenes/ov002_field/Ov002_TeardownHudNode.c"] = [
+    (
+        "    int node = (int)data_ov002_0207f638;",
+        "    extern void khdays_minimap_reset(void);\n    int node = (int)data_ov002_0207f638;\n    khdays_minimap_reset();",
+    ),
+]
+
 # The portrait label is measured and drawn here, before dialogue window layout.
+# Selection art only: keep projection, target choice, tween state and all native fallback draws.
+HOOKS["ov022@02085380"] += [
+    (
+        "    u8 runtimeMode = data_0204be04;\n",
+        "    u8 runtimeMode = data_0204be04;\n"
+        "    extern void khdays_reticles_begin(void);\n"
+        "    extern void khdays_reticles_end(int cancel);\n"
+        "    if (runtimeMode == 0) khdays_reticles_begin();\n",
+    ),
+    (
+        "        return suppressInput;",
+        "        if (runtimeMode == 0) khdays_reticles_end(1);\n        return suppressInput;",
+    ),
+    ("return 0;", "if (runtimeMode == 0) khdays_reticles_end(1);\n    return 0;"),
+    ("    Ov022_UpdateSelectionMarker();\n", "    Ov022_UpdateSelectionMarker();\n    khdays_reticles_end(0);\n"),
+]
+FILE_HOOKS["src/overlays/field/ov022_battle/Ov022_UpdateSelectionMarker.c"] = [
+    (  # a KH2 enemy's lock-on mark at its aim point (runtime/kh2_enemies/shell.h)
+        "        target = (char *)*context->type1List10 + 4;\n",
+        "        target = (char *)*context->type1List10 + 4;\n"
+        "        { extern unsigned int khdays_kh2_enemies_lock_point(unsigned int actor, unsigned int point);\n"
+        "          target = (void *)khdays_kh2_enemies_lock_point((unsigned int)context->type1SourceC,\n"
+        "                                                         (unsigned int)target); }\n",
+    ),
+    (
+        "    void *target = 0;\n",
+        "    void *target = 0;\n"
+        "    extern int khdays_reticles_saved_world(int kind, int *world);\n"
+        "    extern void khdays_reticles_projected(int kind, int visible, int x, int y);\n"
+        "    extern void khdays_reticles_target(const int *world);\n"
+        "    /* Use the world camera before native marker drawing switches to orthographic. */\n"
+        "    for (int kind = 0; kind < 5; ++kind) {\n"
+        "        int world[3];\n"
+        "        if (khdays_reticles_saved_world(kind, world)) {\n"
+        "            Ov022SelectionPoint projected;\n"
+        "            int visible = Ov022_ProjectToScreen(world, &projected) != -1;\n"
+        "            khdays_reticles_projected(kind, visible, projected.x, projected.y);\n"
+        "        }\n"
+        "    }\n",
+    ),
+    (
+        "    if (Ov022_ProjectToScreen(target, &point) == -1)",
+        "    khdays_reticles_target((const int *)target);\n    if (Ov022_ProjectToScreen(target, &point) == -1)",
+    ),
+]
+FILE_HOOKS["src/overlays/field/ov022_battle/Ov022_DrawSelectionMarkers.c"] = [
+    (
+        "    Ov002_ResetViewToDefault();\n    Ov002_ResourceNodeCallback(&group->records[0]);",
+        "    Ov002_ResetViewToDefault();\n"
+        "    extern int khdays_reticles_mark(int kind, unsigned identity, unsigned sprite, int x, int y);\n"
+        "    int khdays_replaced = khdays_reticles_mark(enabled ? 1 : 0, (unsigned)context->focus,\n"
+        "        (unsigned)&group->records[0], point->x, point->y);\n"
+        "    if (!khdays_replaced) Ov002_ResourceNodeCallback(&group->records[0]);",
+    ),
+    (
+        "    Ov002_ResourceNodeCallback(&group->records[1]);",
+        "    if (!khdays_replaced) Ov002_ResourceNodeCallback(&group->records[1]);",
+    ),
+    (
+        "            Ov002_ResourceNodeCallback(&group->records[2]);",
+        "            if (!khdays_reticles_mark(3, (unsigned)context->focus, (unsigned)&group->records[2],\n"
+        "                    point->x, point->y)) Ov002_ResourceNodeCallback(&group->records[2]);",
+    ),
+]
+FILE_HOOKS["src/overlays/field/ov022_battle/Ov022_UpdateUiSelectionMarker.c"] = [
+    (
+        "    Ov002_ResetViewToDefault();\n    switch (subsystem->state)",
+        "    Ov002_ResetViewToDefault();\n"
+        "    extern int khdays_reticles_mark(int kind, unsigned identity, unsigned sprite, int x, int y);\n"
+        "    int khdays_replaced = 0;\n"
+        "    if (subsystem->state == 1 || subsystem->state == 2)\n"
+        "        khdays_replaced = khdays_reticles_mark(\n"
+        "            (unsigned)subsystem->displayObject == (unsigned)subsystem + 0xf0 ? 4 : 2,\n"
+        "            *(unsigned *)((char *)subsystem + 0x128), (unsigned)subsystem->displayObject, point->x, point->y);\n"
+        "    switch (subsystem->state)",
+    ),
+    (
+        "        Ov022_PlaceCornerMarkers(subsystem, value, point);",
+        "        if (!khdays_replaced) Ov022_PlaceCornerMarkers(subsystem, value, point);",
+    ),
+    (
+        "        Ov002_ResourceNodeCallback(subsystem->displayObject);",
+        "        if (!khdays_replaced) Ov002_ResourceNodeCallback(subsystem->displayObject);",
+    ),
+]
+
 FILE_HOOKS["src/overlays/scenes/ov002_field/Ov002_SceneApplyPanelRequest.c"] = [
     (
         "void Ov002_SceneApplyPanelRequest(int *pReq)",
         "extern void khdays_ui_text_scope_push(const char *scope);\n"
         "extern void khdays_ui_text_scope_pop(void);\n"
+        "extern void khdays_models_dialogue_speaker(int portrait);\n"
         "void Ov002_SceneApplyPanelRequest(int *pReq)",
+    ),
+    # the panel's portrait, for a KH2 face (models.cpp, motions.txt's `face` lines)
+    (
+        "    ctx = *(int **)&data_ov002_0207f624;",
+        "    ctx = *(int **)&data_ov002_0207f624;\n    khdays_models_dialogue_speaker(pReq[5]);",
     ),
     (
         "        Resource_BindByName(f.aBind, gOv002TextFontEu10SPath);",
@@ -2349,6 +4791,18 @@ FILE_HOOKS["src/overlays/scenes/ov002_field/Ov002_SceneApplyPanelRequest.c"] = [
     (
         "        FreeFieldAt8(f.aBind);",
         "        FreeFieldAt8(f.aBind);\n        khdays_ui_text_scope_pop();",
+    ),
+]
+
+# The panel folded away: no portrait shows (a KH2 face's `face portrait` ends).
+FILE_HOOKS["src/overlays/scenes/ov002_field/Ov002_SceneClosePanelStep.c"] = [
+    (
+        "void *Ov002_SceneClosePanelStep(void)",
+        "extern void khdays_models_dialogue_speaker(int portrait);\nvoid *Ov002_SceneClosePanelStep(void)",
+    ),
+    (
+        "        pNext = Ov002_PanelIdleState;",
+        "        pNext = Ov002_PanelIdleState;\n        khdays_models_dialogue_speaker(-1);",
     ),
 ]
 
@@ -2399,6 +4853,18 @@ FILE_HOOKS["src/overlays/scenes/ov002_field/Ov002_PanelDrawSlotCursor.c"] = [
     ),
 ]
 
+# Observe layout placement without changing the native tilemap or gameplay callbacks.
+FILE_HOOKS["src/overlays/scenes/ov002_field/Ov002_BlitTileRegion.c"] = [
+    (
+        "void Ov002_BlitTileRegion(",
+        "extern void khdays_ui_notification_layout(const void *request, int shown);\nvoid Ov002_BlitTileRegion(",
+    ),
+    (
+        "    Ov002_GetItemFlag(pReq->nDest);",
+        "    khdays_ui_notification_layout(pReq, nFlag);\n    Ov002_GetItemFlag(pReq->nDest);",
+    ),
+]
+
 # New games start with Config's "Command list" (option 6) on X with the D-pad, not X alone, so the
 # command menu moves in all four directions (runtime/input/sequencers.c). Every place that makes a
 # fresh game state sets it, Mission Mode's guest game too (a whole state copied from /ttl/ttl.p2).
@@ -2426,12 +4892,12 @@ for _module, _prefix in (
     ("screens/ov025_camp_menu_2", "Ov025"),
 ):
     _root = f"src/overlays/{_module}/{_prefix}_"
-    FILE_HOOKS[_root + "MainMenu_SetupTextSurfaces.c"] = [
+    FILE_HOOKS[_root + "WorldMap_SetupTextSurfaces.c"] = [
         (
-            f"void {_prefix}_MainMenu_SetupTextSurfaces(int obj)",
+            f"void {_prefix}_WorldMap_SetupTextSurfaces(int obj)",
             "extern void khdays_ui_text_scope_push(const char *scope);\n"
             "extern void khdays_ui_text_scope_pop(void);\n"
-            f"void {_prefix}_MainMenu_SetupTextSurfaces(int obj)",
+            f"void {_prefix}_WorldMap_SetupTextSurfaces(int obj)",
         ),
         (
             "    if (*(int *)(obj + 0x14e0) == 0 || Session_IsReady() != 0) {",
@@ -2472,6 +4938,10 @@ ABI_FIXES = {
     # reads them only with a shape, which that path never has (pShape stays 0
     # from 0x02094990). 0 says so, without the leftover.
     "ov025@02094988": [  # Ov025_MoveGridCursor
+        ("    int nDx;\n", "    int nDx = 0;  /* unread without a list node (port/abi) */\n"),
+        ("    int nDy;\n", "    int nDy = 0;\n"),
+    ],
+    "ov008@0206245c": [  # Ov008_MoveGridCursor: the same, Mission Mode's Panels page's
         ("    int nDx;\n", "    int nDx = 0;  /* unread without a list node (port/abi) */\n"),
         ("    int nDy;\n", "    int nDy = 0;\n"),
     ],
@@ -2774,6 +5244,8 @@ PORT_DS_SYMBOLS = (
     "data_0204c2d0",
     "data_0204c3d8",
     "data_ov022_020b2e78",
+    # the screen whose 3D runs this frame: the KH2 camera is the first's (runtime/camera/kh2_camera_hooks.c)
+    "data_0204be04",
     # the pause's context and Mission Mode's flags (runtime/menus/retry.c)
     "data_0204be08",
     "data_0204c240",
@@ -2784,10 +5256,13 @@ PORT_DS_SYMBOLS = (
     # count, the current mission, the sound manager (its track playing)
     "gGameState",
     "gObjSystem",
-    "data_0204c23c",
+    "gMissionNumber",
     "gSoundMgr",
     # the room's rules, friendly fire first (runtime/battle/stop_magic.c)
     "data_0204c248",
+    # the entity manager: the rooms' collision blobs, read (never cast) for mods' cloth
+    # (runtime/mods/secondary/days_environment.cpp)
+    "gEntityMgr",
 )
 
 
@@ -3099,6 +5574,8 @@ DEFINITION_RE = re.compile(
     re.MULTILINE,
 )
 KEYWORDS = {"else", "goto", "case", "do", "break", "continue", "return", "struct"}
+# a brace, or where a comment, string or character literal may start: brace_depths jumps between them
+BRACE_OR_NOT_CODE = re.compile(r"[{}\"']|/\*|//")
 
 
 def brace_depths(text: str) -> list[tuple[int, int]]:
@@ -3109,6 +5586,10 @@ def brace_depths(text: str) -> list[tuple[int, int]]:
     i = 0
     n = len(text)
     while i < n:
+        start = BRACE_OR_NOT_CODE.search(text, i)
+        if start is None:
+            break
+        i = start.start()
         c = text[i]
         if c in "\"'":
             j = i + 1
@@ -3145,6 +5626,41 @@ def definitions(text: str) -> list[re.Match]:
             continue
         out.append(m)
     return out
+
+
+# A file-scope object whose definition spells out its struct or union (`struct { ... } name[2] = ...;`):
+# the type gets a name of its own (typedef), so the object reads as a definition DEFINITION_RE finds and
+# goes to its DS address like any other. Unnamed, it went to the port's data area: the game, reading it
+# by its DS address (a neighbour's index running into it), found the card's bytes there -- a US card's
+# function addresses in ov016's kickables' rows.
+OBJECT_TYPE_RE = re.compile(r"^((?:(?:const|volatile)[ \t]+)*)((?:struct|union)\b[^;{}()=\n]*)\{", re.MULTILINE)
+OBJECT_AFTER_TYPE_RE = re.compile(r"[ \t]*([A-Za-z_]\w*)((?:[ \t]*\[[^\]\n]*\])*)[ \t]*(?==|;)")
+
+
+def name_object_types(text: str) -> str:
+    """`text` with each file-scope `struct {...} name = ...;` as `typedef struct {...} khdays_type_name;`
+    and `khdays_type_name name = ...;`."""
+    changes = brace_depths(text)
+    starts = [i for i, _ in changes]
+    pieces = []
+    done = 0
+    for m in OBJECT_TYPE_RE.finditer(text):
+        if m.start() < done or changes[bisect.bisect_right(starts, m.start()) - 1][1] != 0:
+            continue
+        opened = bisect.bisect_left(starts, m.end())  # the change the type's `{` makes
+        closed = next((i for i, depth in changes[opened + 1 :] if depth == 0), None)
+        if closed is None:
+            break
+        after = OBJECT_AFTER_TYPE_RE.match(text, closed)
+        if after is None:
+            continue
+        name = after[1]
+        type_name = f"khdays_type_{name}"
+        pieces.append(text[done : m.start()])
+        pieces.append(f"typedef {m[2]}{text[m.end() - 1 : closed]} {type_name};\n{m[1]}{type_name} {name}{after[2]} ")
+        done = after.end()
+    pieces.append(text[done:])
+    return "".join(pieces)
 
 
 def statement_end(text: str, start: int) -> int:
@@ -3414,11 +5930,140 @@ def cmake_list(name: str, paths: list[str]) -> str:
     return f"set({name}\n" + "".join(f'    "{p}"\n' for p in paths) + ")\n"
 
 
+def check_port_calls(out: Path) -> None:
+    """The port's side calls the game's functions the host's way: none of those taking their arguments
+    in a block (references/emit.py; out/references_block_abi.txt)."""
+    block = set((out / "references_block_abi.txt").read_text(encoding="utf-8").split())
+    port_calls = []
+    for source in sorted(p for d in ("runtime", "host", "gfx", "sound") for p in (ROOT / "port" / d).rglob("*.c*")):
+        text = strip_comments(source.read_text(encoding="utf-8", errors="replace"))
+        port_calls += [f"{source.name}: {n}" for n in sorted(block) if re.search(rf"\b{re.escape(n)}\s*\(", text)]
+    if port_calls:
+        raise SystemExit(
+            "references: the port calls game functions that take their arguments in a block: " + ", ".join(port_calls)
+        )
+
+
+# What this script reads, so that a run whose inputs and outputs are all as the last run left them can
+# stop at once: these trees whole, and every header and Python file of the port (the port's own C it
+# reads only for check_port_calls, which runs every time). The C compiler that references/ preprocesses
+# with is not among them (nor is it in references/build.py's cache): after changing Visual Studio, delete
+# --out.
+INPUT_TREES = ("external/khdays-decomp", "port/tools", "port/abi", "port/compat", "port/hal")
+PORT_INPUT_SUFFIXES = frozenset({".h", ".py"})  # compared in lower case, as Windows matches `*.h`
+SKIPPED_DIRS = frozenset({"__pycache__", ".git"})
+COMPILER_ENVIRONMENT = ("KHDAYS_VCVARSALL", "CL", "_CL_")  # what reaches the preprocessor (port/build.py)
+INPUTS_FILE = "prepare_inputs.json"  # in --out: the last complete run's inputs and outputs
+OUTPUT_CACHE_DIR = "references"  # in --out: references/build.py's cache, which every run rewrites
+
+
+REPARSE = stat.FILE_ATTRIBUTE_REPARSE_POINT
+# The coarsest modification times kept (FAT's two seconds): an input stamped later than STARTED less
+# this may have changed after the run read it.
+TIMESTAMP_RESOLUTION_NS = 2_000_000_000
+
+
+class LinkedTree(Exception):
+    """A symbolic link or junction among the inputs: what it reaches is not followed, so no run is skipped."""
+
+
+def file_stamps(top: Path, suffixes: frozenset[str] | None = None, skip_top: frozenset[str] = frozenset()) -> dict:
+    """[size, modification time] of each file under top (of those suffixes), and [] for each directory, by
+    its path from top: the same stamps references/build.py keeps for its cache. skip_top: directories
+    directly in top left out. Raises LinkedTree at a link."""
+    stamps: dict[str, list[int]] = {}
+    prefix = len(str(top)) + 1
+    pending = [str(top)] if top.is_dir() else []
+    while pending:
+        with os.scandir(pending.pop()) as entries:
+            for entry in entries:
+                rel = entry.path[prefix:].replace("\\", "/")
+                if entry.name in SKIPPED_DIRS or rel in skip_top:
+                    continue
+                # a symbolic link or a junction (any reparse point: Python 3.11 has no is_junction)
+                if entry.is_symlink() or getattr(entry.stat(follow_symlinks=False), "st_file_attributes", 0) & REPARSE:
+                    raise LinkedTree(entry.path)
+                if entry.is_dir():
+                    stamps[rel + "/"] = []
+                    pending.append(entry.path)
+                elif suffixes is None or os.path.splitext(entry.name)[1].lower() in suffixes:
+                    st = entry.stat()
+                    stamps[rel] = [st.st_size, st.st_mtime_ns]
+    return stamps
+
+
+def prepare_inputs(out: Path, options: dict) -> dict | None:
+    """Everything a run's output depends on: its options and paths (sources.cmake names its files
+    absolutely), the tools' versions and environment, and the stamps of the files it reads; None when
+    those cannot be told (a link among them)."""
+    import pycparser
+
+    files: dict[str, list[int]] = {}
+    try:
+        for tree in INPUT_TREES:
+            files.update({f"{tree}/{rel}": stamp for rel, stamp in file_stamps(ROOT / tree).items()})
+        for rel, stamp in file_stamps(ROOT / "port", PORT_INPUT_SUFFIXES).items():
+            files.setdefault(f"port/{rel}", stamp)
+    except LinkedTree:
+        return None
+    return {
+        "root": str(ROOT),
+        "out": str(out),
+        "options": options,
+        "python": sys.version,
+        "pycparser": pycparser.__version__,
+        "environment": {name: os.environ.get(name) for name in COMPILER_ENVIRONMENT},
+        "files": files,
+    }
+
+
+def prepare_outputs(out: Path) -> dict | None:
+    """The stamps of what a run wrote into out (not the references cache, nor INPUTS_FILE); None when
+    they cannot be told (a link among them)."""
+    try:
+        stamps = file_stamps(out, skip_top=frozenset({OUTPUT_CACHE_DIR, INPUTS_FILE}))
+    except LinkedTree:
+        return None
+    return stamps
+
+
+def unchanged_since_last_run(out: Path, inputs: dict | None) -> bool:
+    if inputs is None:
+        return False
+    try:
+        last = json.loads((out / INPUTS_FILE).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    if not isinstance(last, dict) or last.get("inputs") != inputs:
+        return False
+    outputs = prepare_outputs(out)
+    return outputs is not None and last.get("outputs") == outputs
+
+
+def record_run(out: Path, inputs: dict | None) -> None:
+    """INPUTS_FILE for the next run, unless an input may have changed while this one read it (stamped
+    near or after STARTED, or since this run's first stamps): the next run then prepares everything."""
+    if inputs is None or prepare_inputs(out, inputs["options"]) != inputs:
+        return
+    if any(stamp and stamp[1] >= STARTED - TIMESTAMP_RESOLUTION_NS for stamp in inputs["files"].values()):
+        return
+    outputs = prepare_outputs(out)
+    if outputs is not None:
+        (out / INPUTS_FILE).write_text(json.dumps({"inputs": inputs, "outputs": outputs}), encoding="utf-8")
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--out", default=str(ROOT / "build" / "port" / "gen-x64"))
+    ap.add_argument("--force", action="store_true", help="prepare everything even when nothing it reads changed")
     args = ap.parse_args()
     out = Path(args.out).resolve()  # sources.cmake names its files absolutely
+    inputs = prepare_inputs(out, {name: value for name, value in vars(args).items() if name != "force"})
+    if not args.force and unchanged_since_last_run(out, inputs):
+        check_port_calls(out)
+        print(f"nothing prepare.py reads changed since it last wrote {out} (--force prepares anyway)")
+        return 0
+    (out / INPUTS_FILE).unlink(missing_ok=True)  # a run that stops leaves none
     patched_dir = out / "patched"
     patched_dir.mkdir(parents=True, exist_ok=True)
 
@@ -3487,7 +6132,7 @@ def main() -> int:
             if rel.endswith(".cpp"):
                 new = cpp_to_c(new, rel)  # rewritten as C (T005a)
                 as_c.add(rel)
-            texts[rel] = new
+            texts[rel] = name_object_types(new)
             module_of[rel] = m.name
             compiled.append((src, rel))
 
@@ -3506,7 +6151,7 @@ def main() -> int:
         rel = path.relative_to(DECOMP).as_posix()
         if rel in listed:
             continue
-        text = transform(path.read_text(encoding="utf-8", errors="replace"))
+        text = name_object_types(transform(path.read_text(encoding="utf-8", errors="replace")))
         names = [
             n
             for n in re.findall(r"(?:^|\})[ \t\w\*]*?\b(data_\w+)\s*(?:\[[^\]\n]*\])*\s*=", text, re.MULTILINE)
@@ -3561,12 +6206,15 @@ def main() -> int:
     # `return g();` passes none. Such a body forwards four.
     tail_report = []
     tail_targets: dict[str, str] = {}
+    by_stem: dict[str, str] = {}  # each file name's first source
+    for r in texts:
+        by_stem.setdefault(Path(r).stem, r)
     for line in (ROOT / "port" / "abi" / "tail_calls.txt").read_text(encoding="utf-8").splitlines():
         key = line.strip()
         if not key or key.startswith("#"):
             continue
         name = key_name.get(key)
-        rel = next((r for r in texts if Path(r).stem == name), None) if name else None
+        rel = by_stem.get(name) if name else None
         if rel is None:
             tail_report.append(f"{key} {name}: no source")
             continue
@@ -3810,7 +6458,7 @@ def main() -> int:
     for m in modules:
         for n, k, a in m.symbols:
             if k in ("data", "bss"):
-                ds_data[n] = a
+                ds_data[n] = runtime_address(m, n, a)
     converted: dict[str, int] = {}
     # C-defined globals the DS names nowhere: statics of a split unit (PHANTOMS).
     ds_names = {name for m in modules for name, _, _ in m.symbols}
@@ -3904,7 +6552,7 @@ def main() -> int:
             # the HAL's too, of any module (the ITCM's OS_IrqHandler, which the
             # BIOS vector names by its DS address)
             if k == "function" and (n in native or n in hal_names_all):
-                ds_functions.append((a, ds_module, n))
+                ds_functions.append((runtime_address(m, n, a), ds_module, n))
     ds_functions.sort()
     sizes = {n: sz for m in modules for n, sz in m.sizes.items()}
     ds_c = [
@@ -3942,7 +6590,7 @@ def main() -> int:
         start, end = m.sections[".bss"]
         for n, k, a in m.symbols:
             if start <= a < end and n not in defined:
-                absolute[n] = a
+                absolute[n] = runtime_address(m, n, a)
     bss_count = len(absolute) - len(converted) - len(PHANTOMS)
     # The decomp's own linker-absolute symbols (tools/configure.py). A data_
     # entry that another, C-defined symbol shares the address of is an alias
@@ -3995,6 +6643,34 @@ def main() -> int:
     functions.update({renames[n]: a for a, _, n in ds_functions if n in renames})
     functions.update({n: absolute[n] for n in rom_run if n in absolute})
     functions.update({f"khdays_ovcall_{target:08x}": target for target in thunks})
+    # The game's routines and data by their decompilation names, for the mods' native plugins (kh.engine:
+    # port/runtime/plugins/engine.c), each table sorted by name: a routine's native function and module, a datum's
+    # reference (where the game keeps it). The overlays' OVERLAY_n_ID are numbers, not data.
+    routine_names: dict[str, tuple[str, int]] = {}
+    for _, mod, n in ds_functions:
+        routine_names.setdefault(n, (renames.get(n, n), mod))
+    datum_names = {n: a for n, a in absolute.items() if not re.fullmatch(r"OVERLAY_\d+_ID", n) and n not in functions}
+    names_c = [
+        "/* Generated by port/tools/prepare.py: the game's routines and data by name, sorted by name, for the mods'",
+        " * native plugins (port/runtime/plugins/engine.c). */",
+        "typedef struct { const char *name; void (*native)(void); int module; } KhdaysRoutineName;",
+        "typedef struct { const char *name; unsigned reference; } KhdaysDatumName;",
+    ]
+    names_c += [f"extern void {native}(void);" for native in sorted({v[0] for v in routine_names.values()})]
+    names_c.append("const KhdaysRoutineName khdays_routine_names[] = {")
+    names_c += [f'    {{"{n}", {native}, {mod}}},' for n, (native, mod) in sorted(routine_names.items())]
+    names_c += ["};", f"const unsigned khdays_routine_name_count = {len(routine_names)};"]
+    names_c.append("const KhdaysDatumName khdays_datum_names[] = {")
+    names_c += [f'    {{"{n}", 0x{a & 0xFFFFFFFF:08x}u}},' for n, a in sorted(datum_names.items())]
+    names_c += ["};", f"const unsigned khdays_datum_name_count = {len(datum_names)};", ""]
+    points_path = out / "khdays_hook_points.h"
+    points_text = hook_points_header()
+    if not points_path.exists() or points_path.read_text(encoding="utf-8") != points_text:
+        points_path.write_text(points_text, encoding="utf-8", newline="\n")
+    names_path = out / "ds_names.c"
+    names_text = "\n".join(names_c)
+    if not names_path.exists() or names_path.read_text(encoding="utf-8") != names_text:
+        names_path.write_text(names_text, encoding="utf-8", newline="\n")
     c_sources = [
         (compiled_path[rel], rel[:-4] + ".c" if rel in as_c else rel)
         for _, rel in compiled
@@ -4009,17 +6685,7 @@ def main() -> int:
     dispatched_calls = {n: a for n, a in functions.items() if n.startswith("khdays_ovcall_")}
     dispatched_calls.update({n: absolute[n] for n in rom_run if n in absolute})
     rewritten, area = rewrite_game(out, c_sources, placed, functions, dispatched_calls)
-    # the port's side calls the game's functions the host's way: none of
-    # those taking their arguments in a block (references/emit.py)
-    block = set((out / "references_block_abi.txt").read_text(encoding="utf-8").split())
-    port_calls = []
-    for source in sorted(p for d in ("runtime", "host", "gfx", "sound") for p in (ROOT / "port" / d).rglob("*.c*")):
-        text = strip_comments(source.read_text(encoding="utf-8", errors="replace"))
-        port_calls += [f"{source.name}: {n}" for n in sorted(block) if re.search(rf"\b{re.escape(n)}\s*\(", text)]
-    if port_calls:
-        raise SystemExit(
-            "references: the port calls game functions that take their arguments in a block: " + ", ".join(port_calls)
-        )
+    check_port_calls(out)
     missing = [n for n in PORT_DS_SYMBOLS if n not in ds_data]
     if missing:
         raise SystemExit(f"references: the port reads {', '.join(missing)}, which the decomp places nowhere")
@@ -4041,6 +6707,7 @@ def main() -> int:
     target = out / "sources.cmake"
     if not target.exists() or target.read_text(encoding="utf-8") != cmake:
         target.write_text(cmake, encoding="utf-8")
+    record_run(out, inputs)
 
     print(
         f"{len(compiled)} sources ({patched} patched), "

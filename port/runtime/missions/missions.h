@@ -1,0 +1,61 @@
+/* The mods' new missions in the running game: read from each mod's missions/ at the start (registry.h),
+ * their files added to the ROM, their rows put in the game's tables as it loads them (tables.h), their
+ * progress answered where the game keeps a mission's (field_store.h) and kept beside each save file
+ * (save_part.h). With no such mod nothing of the game changes. docs/RUNTIME_MAP.md, "Missions and worlds of
+ * mods". */
+#ifndef KHDAYS_MISSIONS_H
+#define KHDAYS_MISSIONS_H
+
+/* After the ROM is assembled, before the game starts: the mods' missions read, numbered, their files added. */
+void khdays_missions_start(void);
+
+/* Once the session log is open: what the start found, told there and in the mods' log. */
+void khdays_missions_report(void);
+
+/* The save list: file `file` (0 on) was loaded; KHDAYS_PLAYED_NONE / _GUEST (savelist.h) a game without one. */
+void khdays_missions_loaded(int file);
+
+/* A save action wrote file `file` (0 on): its part written beside it (removed when the file was deleted). */
+void khdays_missions_saved(int file);
+
+/* The game's joins (port/tools/prepare.py): a field or flag of a new mission (else -1 / 0: the game's own),
+ * the best result of a mission past the game's 200 records, a file as it was loaded. */
+long long khdays_missions_field_get(unsigned int field, unsigned int bits);
+int khdays_missions_field_set(unsigned int field, unsigned int bits, unsigned int value);
+int khdays_missions_flag_get(unsigned int flag);
+int khdays_missions_flag_set(unsigned int flag, int on);
+int khdays_missions_best(int number);
+void khdays_missions_set_best(int number, int value);
+/* Mission Mode's list: whether the row `record` of a new mission is shown for the list's `flags` (its category
+ * << 8, the kinds it shows); -1 for the game's rows (the game's own test). In a room the host lists only the
+ * missions every member has, the same (room.h). */
+int khdays_missions_eligible(const void *record, unsigned int flags);
+/* In a room, as a copy takes the host's choice (Ov008_CommitSynchronizedSnapshotState): on a guest, a new mission's
+ * number and file, the host's, made this copy's own for the same mission. */
+void khdays_missions_from_host(void);
+void *khdays_missions_file_loaded(unsigned top, void *buffer, unsigned size, void *heap);
+/* A spawner node made (Ov002_CreateSpawner): in a mission the port built, one made after its region was
+ * enabled -- a later wave's -- takes the region's state, so that it runs. */
+void khdays_missions_spawner_made(void *node);
+/* Whether the mission being played puts out its chests and emblems in Mission Mode (a new one's), which the
+ * game's own leave out there (Ov002_ScriptSpawnTimedSet, Ov002_SpawnStateSpots). */
+int khdays_missions_spots_shown(void);
+/* Whether one of the mods' missions is being played: an enemy the game's own missions end by their scripts (one held
+ * at its defeat, waiting for them) is defeated there as the others are. */
+int khdays_missions_playing(void);
+/* The KH2 enemy the mission being played puts in its enemy table's row `row` (a mod's mission's `kh2:<name>`), into
+ * `name`: 0 for none (a Days class's row, or a game's mission). runtime/kh2_enemies/shell.h. */
+int khdays_missions_kh2_enemy(int row, char *name, int size);
+/* The KH2 enemy every row of Days's class `enemy_class` in the mission being played stands in for (its enemies' HUD
+ * name), into `name`: 0 when the class has a Days enemy of its own there, two KH2 enemies, or none. */
+int khdays_missions_kh2_enemy_of_class(int enemy_class, char *name, int size);
+
+/* The playing mission's room as a collection's map (a KH2 boss bound to its room is made only there): the map it was
+ * made from ("kh2:bb05", to free; a room the mission's mod adds: rooms/<world>/<key>/room.txt, the studio's
+ * --add-room; a game room a mod replaces: studio/rooms/<world>/<room>.txt, its change -- "kh2 <map>" or "source
+ * <game>:<map>") and how its model was placed into `place` (scale, the turns about x, y and z in degrees, the move: the
+ * studio's placement, p' = move + Rz Ry Rx scale p on the map's model axes); NULL when no mission plays or its room
+ * was made from none. */
+char *khdays_missions_room_source(float place[7]);
+
+#endif

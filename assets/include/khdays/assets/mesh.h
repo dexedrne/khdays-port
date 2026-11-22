@@ -38,6 +38,8 @@ struct NeutralVertex final {
 // One decoded mesh: a flat vertex list plus triangle indices. Vertices are not
 // deduplicated; each GPU vertex command appends exactly one entry.
 struct NeutralMesh final {
+    // Its GPU command list's place from the model's start: where the game's draw sends it from.
+    std::uint32_t list_offset = 0;
     std::string name;
     // Name of the TEX0 texture bound by the mesh's material, or empty if the
     // material has no texture. Resolve it with the TEX0 loader on the same file.
@@ -68,6 +70,9 @@ struct NeutralMesh final {
     bool texture_frames_loop = true;
     std::size_t texture_frames_loop_from = 0;
     bool sky = false;
+    // A KH2 object model's subpart's part (its attribute word's bits 6-10, kn::ModelSKL's showPart and hidePart
+    // name them), -1 for any other mesh
+    int kh2_part = -1;
     std::vector<NeutralVertex> vertices;
     std::vector<std::uint32_t> indices;  // 3 per triangle
 };

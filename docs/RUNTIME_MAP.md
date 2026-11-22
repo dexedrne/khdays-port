@@ -192,10 +192,51 @@ both were 0. What only the decompilation's C says, not a trace, is marked
   `KHDAYS_TRACE_PAD` over a Mission Mode run read mode 0 in every game frame,
   on the title, the character select (scene 7), the camp (19) and the field
   (2); modes 1 (20 fps) and 2 (60 fps) were not seen.
-- **The actors read the pad a game frame late.** The local player's actor has
+- **The actors read the pad a game frame late -- on the DS.** The local player's actor has
   its buttons at +0x18 (pressed) and +0x1a (held), filled from the control
   packet: what `Pad_Sample` read in game frame N is there in frame N+1 (Up
-  read in frame 2329 was +0x1a = 0x40 in 2330; B read in 2577, in 2578).
+  read in frame 2329 was +0x1a = 0x40 in 2330; B read in 2577, in 2578). The
+  order is the battle's, a host's (section 16.1): `Ov022_RefreshSlotRows` copies
+  each member's row of the input table into its actor (`Ov022_LoadNodeFromResource`)
+  and updates it (`Ov022_ActorUpdate`, the command menu's `Ov022_UpdateCommandInput`
+  inside it), and only then the battle's network send (`func_ov022_02089704`, an
+  object's tick later in the same pass) builds this frame's packet
+  (`Ov022_SendControlPacket`: `gPadHeld`, the command chosen, the target). Nor
+  does that packet reach the table at once: alone the game runs in link mode 1
+  (`KHDAYS_TRACE_CONTROLS`), where `MsgQueue_SendGate` queues it
+  (`MsgQueue_Enqueue`); an object's tick (`ContextEntry_InitForRootHeap` ->
+  `Node_FlipDoubleBuffer` -> `AsyncMessage_Flush`) moves the queue into the
+  received channel (`dispatchByObjTypeBits`, `ChannelBuf_Append`; link mode 2's
+  "at once" for gates 3 and 0x12 goes there too), and only the next frame's
+  `List_TryInvokeEntry(0)`, first in `Ov022_RefreshSlotRows`, hands it to gate
+  3's handler (`CmdPacket_Dispatch` -> `Ov022_PublishRequestToSlot`: the
+  packet's 12 bytes to the row at `*data_ov022_020b2ea4` + 0x28 + slot * 0xc,
+  its buttons -- bits 3-14 of the halfword at +2 -- to +0x98 + slot * 6). Alone the
+  port builds a packet as `Ov022_RefreshSlotRows` is about to read the table
+  (after that dispatch, before `func_ov022_0208a1fc` makes the pressed buttons
+  from the held), once a game frame, and `MsgQueue_SendGate` gives only its
+  directions (Right, Left, Up, Down: bits 7-10 of the halfword) to the local
+  player's row as it stands, through gate 3's handler, instead of queueing it
+  (`port/tools/prepare.py`, `khdays_controls_send_early`,
+  `runtime/input/sequencers.c`); the command chosen and `bInput1`, which building
+  a packet clears, are put back. The game's own packet is still built by the
+  network send and queued, and brings the rest -- the other buttons, the command
+  chosen and its target (`func_ov022_02086654`), read after the update that chose
+  them. Given whole (the first try, 2026-11-10), and then with all its buttons,
+  the player could not talk to the Grey Area's members: the actor saw the A that
+  the command menu took for Talk a frame before the Talk came. The player moves
+  by the directions of the frame they were read in (commands and the other
+  buttons as on the DS), and the stick of analog
+  movement and of the KH2 camera's follow with them (`khdays_input_movement_snapshot`:
+  that frame's snapshot, not the one before). Not in a multiplayer session,
+  in Sora's memory (`data_0204be04`), with the mode word at 0x2a (its saved
+  masks are added to `gPadHeld` after that point), or while the network send's
+  object is paused (bit 0 of its first word); `KHDAYS_DS_CONTROL_ORDER=1` keeps
+  the game's order. Headless (`KHDAYS_TRACE_PLAYER=1`, a press of a direction
+  every 121 VBlanks in the field, 24 presses), the player first moved 3-4
+  VBlanks after the press in the game's order (3.54 on average), 1-2 with the
+  port's (1.54): a logic frame sooner. Built early but queued as the game
+  queues it, it still moved after 3-4 (3.50).
 - **Flip Foot** (the Tricky Monkey's status, `+0x2770` = 5): `Ov022_StepChargeSequence` swaps the
   held Up/Down and Left/Right at `+0x1a` (`Ov022_SwapPairedStateFlags`), `Ov022_TranslateCommandToAction`
   makes the heading from them and swaps them back. Analog movement's stick heading turns around when
@@ -227,6 +268,14 @@ both were 0. What only the decompilation's C says, not a trace, is marked
   state. Moving plays the actor's pre-draw animation 1, standing 0. A walk
   animation: *not identified* (Roxas's set names its animations only by
   number, `b_ro_A000`…, and no code found picks another one to move).
+- **The command menu on the gamepad's D-pad** (seen 2026-11-04, windowed,
+  `KHDAYS_TRACE_CONTROLS` and `KHDAYS_TRACE_PAD`, option 6 = 0, Right held all
+  along): `MENU_DOWN` read in game frame 2564 called `Ov002_PanelCursorNext` in
+  2565 (`MENU_UP` `Ov002_PanelCursorPrev`, `MENU_LEFT`
+  `Ov002_PanelCursorStepLeft`); the game was given Right alone in those
+  frames, no X, and the step rate stayed 0x333 -- Roxas did not stop. A
+  press while the command input does not run (an event took the field from
+  2675 to 2732) makes no step; held, it repeats once the input is back.
 - **Buttons, with option 0 = 0 and option 6 = 1:**
   - A: `Ov002_Hud_ActivatePanelSlot` (the selected command); states 3, then
     14, back to 0 some 20 game frames later.
@@ -273,6 +322,7 @@ both were 0. What only the decompilation's C says, not a trace, is marked
     Config `0x37bf` sets how it starts); with a direction held and no camera
     bits the pitch goes back to the preset height every frame.
   - The rate was 0x300 in the mission's field and 0x180 in challenge 07's.
+  - The KH2 camera option replaces what comes of all this in gameplay: `KH2_CAMERA.md`.
 - **Command deck** (`Ov022_UpdateCommandInput`). With option 6 = 1 ("X Only"),
   X pressed with no HUD panel open calls `Ov002_PanelCursorNext` (traced).
   With option 6 = 0 ("X + D-pad", traced in challenge 07): X pressed alone
@@ -389,10 +439,15 @@ The native build prints these to stderr when the variable is set:
   named once (section 10).
 - `KHDAYS_FRAME_LOG=1` -- a line per picture the window draws, in
   `saves/logs/frames-<date>-<time>.log`: the game's time (ms), the newest
-  logic frame, where the picture falls between the two latest (`alpha`), the
-  polygons placed between of all, `between`/`newest`/`cut`, the two logic
-  frames' VBlank times, and the camera's translation and turn between them
-  (section 7, "The picture at the monitor's rate").
+  logic frame, where the picture falls between the two lists it is placed
+  between (`alpha`), the polygons placed between of all,
+  `between`/`newest`/`cut`, those two lists' times, and the camera's translation and turn between them
+  (section 7, "The picture at the monitor's rate"), the newer list's flushes, whether it was a cut, then the
+  polygons drawn where the newer list has them: `effects` (KH2 effects' without an identity, the markers) and
+  `jumped` (moved more than an eighth of the view).
+- `KHDAYS_VSYNC=always` -- VSync kept on while the window draws only the
+  game's pictures as they come (it is off then: section 35); `KHDAYS_SMOOTH_VSYNC=1` -- the smooth pace with
+  VSync even while the screen's lock holds (without it then: section 35).
 - `KHDAYS_TRACE_UPDATES` -- each object update's change to the next.
 - `KHDAYS_TRACE_CAPTURE` -- each screen blend's frame as the window draws it:
   the bank shown from its copy, or at the DS's size and why, and the capture
@@ -425,7 +480,37 @@ The native build prints these to stderr when the variable is set:
 - `KHDAYS_TRACE_CONTROLS` -- what the field does with its controls, when it
   changes: the camera's input bits and targets, the lock-on and command-menu
   input and the calls they make, the movement heading and speed, the local
-  player's states, the frame-rate mode (`port/runtime/input/controls_hooks.c`).
+  player's states, the frame-rate mode, where the control packet is built
+  (`port/runtime/input/controls_hooks.c`).
+- `KHDAYS_DS_CONTROL_ORDER=1` -- the field's control packet built where the
+  game builds it, after the characters' update: the player a game frame behind
+  the buttons, as on the DS (section 3.1), to compare.
+- `KHDAYS_FAST_COMMANDS=0` -- commands a game frame later, as the game gives
+  them; by default an attack (the deck's Attack with the weapon out), magic or
+  an item the command menu chose is given to the local player in the frame it
+  was chosen (`khdays_controls_command_early`, `runtime/input/controls_hooks.c`;
+  not the Grey Area's A, which chooses none). Alone, as the directions.
+- `KHDAYS_TURN_EASE=N`, `KHDAYS_TURN_SPEED=N` -- how the local player turns:
+  each game frame N percent of the turn still left (`TURN_EASE`, default 50;
+  100 all at once, 0 the game's own turning), never less than N percent of the
+  game's speed (`TURN_SPEED`, default 100, up to 1100). A key's eighth or
+  quarter turn so eases out over three or four frames, and a stick turned
+  round quickly is followed half a step behind (fast enough, the player spins
+  where he stands); the game's snap round past 157 degrees is left out, so a
+  turn about eases too. Every steer asks
+  `Ov022_ClampAngleTowardTarget` how far it may turn a frame, at most the
+  actor's +0x4b0 (0xc00 of a turn on the ground: 17 degrees a frame, a whole
+  turn in 0.7 s), which kept a running player from circling tighter
+  (`khdays_controls_turn_limit`, `runtime/input/controls_hooks.c`). Stick, keys
+  and D-pad alike; not in a session, nor with `KHDAYS_DS_CONTROL_ORDER`.
+- `KHDAYS_PRESS_PACE=0` -- without the press pace, on by default (`runtime/input/input.c`, main's
+  frame loop in `prepare.py`): at 30 game frames a second a new press (a
+  button down or let go, the movement stick started or stopped, not its turns)
+  ends the frame's wait for its second VBlank, so the next frame starts at the
+  coming VBlank and reads it, as at 60; the next frame with nothing new waits a
+  VBlank more to give it back, keeping 30 a second. One player alone, the 30 a
+  second mode alone; `KHDAYS_TRACE_PRESS_PACE` logs each early start and each
+  VBlank given back.
 
 `KHDAYS_HEADLESS=1` runs without a window; `KHDAYS_INPUT` plays a script of
 key presses, touches and stick positions (`port/runtime/input/input.h`).
@@ -470,8 +555,10 @@ For the sound (section 6):
   (section 8); `card`: through the emulated card, as before, the reference.
 - `KHDAYS_LOG` -- the session log, `saves/logs/session-<date>-<time>.log`: on
   in the Debug build unless `KHDAYS_LOG=0`, in Release with `KHDAYS_LOG=1`.
-  One line per event, `<seconds> f<frame> <what>`: the scene changes, the
-  overlays started, the game's file reads (one line per file and second, with
+  It starts with the PC's memory and how much of it is free, and its first
+  frame drawn says the graphics API, the card and its driver (a laptop has
+  two cards). One line per event, `<seconds> f<frame> <what>`: the scene
+  changes, the overlays started, the game's file reads (one line per file and second, with
   bytes and milliseconds), each stream asked for and its delays, each sequence
   started (music, effects or voices; the battle music is one) and each player
   stopped, each movie stream the game opens (`movie stream N opened: <path>`)
@@ -479,7 +566,8 @@ For the sound (section 6):
   stopped`, or why not (a second stream, a file it cannot read) -- and the
   channels its sound takes and releases (`sound: a movie's sound on the
   channels of mask 0x3`), every stretch over 50 ms the game ran without a wait
-  (after the reads made in it), a call into DS code with no native function
+  (after the reads made in it; with the memory free then: a PC short of it
+  pages), a call into DS code with no native function
   (`stop:`), a crash, and F12's marks -- each with the DS's two screens two
   VBlanks later in `saves/marks/mark_<n>_frame_<frame>.bmp` and, for that
   frame, engine A's DISPCNT, BG controls and scrolls, blending and windows
@@ -506,6 +594,13 @@ For the picture (`port/runtime/display/display.c`, `port/host/render/gpu_present
   read back each frame and compared -- at 1x with the 2D engines' (the
   software's 3D on, under both), at N x with the old composition -- every
   300 frames how many pixels differed.
+- `KHDAYS_2D_ONCE=0` -- every output pixel of the 2D composed, not each DS dot
+  once (`docs/RENDERING.md`, "The 2D once a DS dot").
+- `KHDAYS_PARTS_2D=0` -- on one screen, both screens composed whole, not only
+  the parts the picture reads (`docs/RENDERING.md`, "One screen: the parts
+  read").
+- `KHDAYS_KEEP_2D=0` -- every screen composed for every picture, also one
+  nothing changed in (`docs/RENDERING.md`, "A screen kept").
 - `KHDAYS_GFX_CHECK=N` -- at one VBlank in N, the port's 2D composed on the
   CPU (`port/gfx/compose_cpu.c`, the code the GPU runs) and compared with
   the 2D engines', even headless; the first differing frames written out as
@@ -603,6 +698,10 @@ For the picture (`port/runtime/display/display.c`, `port/host/render/gpu_present
   (2026-10-18). The graphics dump and the studio write a mesh that does
   not say (a DS model's, an FBX's) as BLEND when its texture's texels (A3I5,
   A5I3) or its vertex colours have an alpha of their own, else MASK.
+- `KHDAYS_TRACE_PRIZES=1` -- the field's prize pictures as the game loads
+  them (their names and table places), a mod's effect for one found or
+  refused, each prize taken (its kind, tier and picture) and the player's HP
+  and munny each time they change (section 33).
 
 - `KHDAYS_SHOTS=FRAME FRAME ...` -- both screens of those VBlanks as the 2D
   and 3D engines drew them, 256x192 each, as `KHDAYS_SHOT_DIR/frame_NNNNN.bmp`
@@ -610,7 +709,9 @@ For the picture (`port/runtime/display/display.c`, `port/host/render/gpu_present
   before them) are drawn at all.
 - `KHDAYS_SHOTS_HD=DIR` -- with a window, at the same frames, both screens as
   the window presents them, at the resolution they were drawn:
-  `DIR/frame_NNNNN_upper.png` and `_lower.png`.
+  `DIR/frame_NNNNN_upper.png` and `_lower.png`. `KHDAYS_SHOTS_BETWEEN=1`: also,
+  on one screen, five pictures between the frame and the one before at
+  `picture_pace = smooth` (`_one_<k>_a<alpha x 1000>.png`, section 7).
 - `KHDAYS_RECORD_FRAMES=DIR` -- (with `KHDAYS_SHOTS`, only the frames it
   lists) each frame drawn as the frame package the
   game thread hands the host (`port/runtime/display/frame_package.h`: the screens,
@@ -618,7 +719,7 @@ For the picture (`port/runtime/display/display.c`, `port/host/render/gpu_present
   `DIR/frame_NNNNN.pkg`, the 3D list's polygons and vertices after it, then
   the same polygons before clipping with their keys, then the port's elements
   (each screen's records, what they stand for left out, and each
-  image they draw once) (format 13; nothing in it has a fixed size). The packages hold the game's data: record into
+  image they draw once) (format 15; nothing in it has a fixed size). The packages hold the game's data: record into
   `saves/frames`, which git ignores, never into the repository.
   `khdays-render-test` reads them there.
 - `KHDAYS_CHECK_COMPOSITION=1` -- every frame drawn (even headless), and
@@ -639,6 +740,13 @@ For the picture (`port/runtime/display/display.c`, `port/host/render/gpu_present
   (`sound:`).
 - `KHDAYS_GPU_DEBUG=1` -- the graphics card's device made with its debug
   layer and validation (when the system has them installed).
+- `KHDAYS_GPU_LOW_POWER=1` -- the low-power card asked for (a PC's integrated
+  graphics beside its own card), to measure or look at the picture there; the
+  session log's `graphics:` line names the card that plays.
+- `KHDAYS_PROFILE_GPU=1` -- every 300 pictures, the time from submitting the
+  3D's work (`raster3d:`) and the 2D's (`gfx:`: its uploads, composition,
+  capture and shrinking) to the card being done with it, each waited for: the
+  pictures are slower while it measures.
 - `KHDAYS_TRACE_PXI=1` -- each message between the game and the ARM7's
   services counted by tag and kind, the first of each kind with the game's
   functions behind it, the counts every 3600 VBlanks (section 12).
@@ -1093,7 +1201,7 @@ the files a mod gives under `mods/<Mod>/sounds/`, named as
   its own, so an original written out and put back plays the same; at
   another rate they are interpolated (Catmull-Rom).
 
-**The originals written out** (`khdays-native --dump-sounds [DIR]`,
+**The originals written out** (`khdays-native --dump-sounds [DIR [NAME...]]`,
 `port/runtime/sound/sound_dump.c`; default `saves/dump/sounds`, and inside a
 repository only under its `saves/`):
 
@@ -1699,9 +1807,17 @@ vertices -- in the field the median share is all of them) have their vertices
 placed between the older's and the newer's, in clip space, then the list is
 clipped and drawn as the game's. The newer list reaches the host in the
 package of the VBlank after the one that first shows it (median 20.6 ms
-after); the picture moves to it over one logic frame from that package's
-VBlank -- up to one logic frame behind the DS's pace's picture. Nothing is
-interpolated into a new scene or across a camera cut: a camera that turned
+after), and the window takes it at its next refresh. Until 2026-11-06 the
+picture moved to it over one logic frame from that package's VBlank, so it
+stood still for a refresh whenever a list reached the window later than the
+one before: at 165 Hz the window takes the game's 30 lists a second 5 and 6
+refreshes apart (30.3 and 36.4 ms), and the camera stuttered (427 stills of
+one or two refreshes in 157 s of the field, a tester's report at a high refresh
+rate). The picture now shows the game's time a steady while ago: a logic frame
+and the longest any of the last 32 lists took from being made to being taken
+(57 ms at 165 Hz, 6.5 more than before), between the two of the three kept
+lists about that time -- none still since. Nothing is interpolated into a new
+scene or across a camera cut (the lists before one are let go): a camera that turned
 more than the field camera can in a logic frame (0xa00, 14.06 degrees: the
 cap in section 3) or moved more than 1.0 in its translation (a bound the
 camera code does not give: the gap measured on the story walk, normal frames
@@ -1712,7 +1828,11 @@ is in flight, so a picture is drawn for the refresh that shows it.
 Measured on the maintainer's 165 Hz monitor (`KHDAYS_FRAME_LOG`, the play
 walk's field, 25 s): 165 pictures a second, none more than 1.5 times the
 period apart (8.9 ms the largest), each a new one save while the next logic
-frame was late (192 of 4,125 the newest list held).
+frame was late (192 of 4,125 the newest list held, before the steady delay).
+`KHDAYS_SHOTS_BETWEEN=1` (with `KHDAYS_SHOTS_HD`) shows the pictures it makes:
+after each frame asked, five pictures of the same two lists at 0, 0.25, 0.5,
+0.75 and 0.999 of the way. A Dark Corridor's (a mission's start, 2026-11-06)
+came out whole at each.
 
 ## 8. Files
 
@@ -1817,6 +1937,14 @@ with `enemy.s.z`, `Ov002_BuildTextItem` with `text.s.z`); words drawn as
 pictures go to VRAM when loaded (`UI/btl/&/bl000.NCGR.z` through
 `Ov002_UploadFileToSubBg1Char`). A screen already built keeps its language
 until the game builds it again.
+
+**The enemy labels** (seen 2026-11-12 by the native stack under the glyphs of "Soldado"):
+`Ov002_BuildPanelLabels` draws, as the field begins (`Ov002_OpenPanelScreen`, from
+`Ov002_CreateAndRestoreHud`), a label for each of up to four enemy classes the mission has --
+`enemy.s`'s text of the class's number (the Soldier's 4), 0x53 and 0x54 swapped for 0x75 and
+0x76 under two mode bits -- into cells of one text surface; `Ov002_ShowEntryLabel` shows the
+targeted enemy's cell above its bar. A mod's KH2 enemy labels its stand-in's class with its own
+name (docs/KH2_ENEMIES.md, "Names").
 
 **The message databases are kept.** `MsgDb_LoadDb(id, mode)` keeps up to 0x21
 databases in the table at `data_0204c238` (0x14 bytes each: two packs, the
@@ -2092,7 +2220,17 @@ its u16 at +0xe is 0 (`Ov002_ConstructGameplayScene`), and only the challenge's
 start copies them in, so a Retry would leave them 100 times larger each time; the
 port divides them back by 100 when it takes the Retry. Seen: targets 105 and 140,
 10500 and 14000 in play, the same after a Retry; the field again, without the
-results.
+results. And a challenge's level (`data_0204c254 + 2`) brings the members' stats
+down as the player's actor is made (`Ov022_ApplyMissionLevelStats`: the row of
+that level plus the member's bonus, written over the member's record in
+`gPartyMembers`, four of 0x104 bytes at 0x0204c678, and flag 0x20ec set so it is
+done once); the field built again clears the flag, and the stats came down a
+second time from the ones already down: the HP maximum at 1 (its floor), the
+alarm zone the whole gauge, a hit the end (players, 2026-11-04, missions 1005
+and 0304's challenges; with mission 0101's challenge given level 10: 359 HP, 89
+in the first try, 1 after a Retry). The port keeps the party as the camp sends
+the mission (`Ov025_MissionList_StartMission`, `Ov008_StartSelectedMission`) and
+gives it back with the Retry.
 
 What the pause draws is in its panel's draw entries
 (`SubObject_SetDrawParams`: the context's +0xc, then +0x18 a slot, 0x18
@@ -2553,7 +2691,7 @@ the five walks every 300 frames (Release, 2026-10-04):
   count, then records led by their u16 size -- +2 the room key (the word the
   list starts the mission with, `data_0204c240` +2), +4 the mission's number,
   +0xc 1 for a record the list does not count, +0x23 the kind: 0 the mission,
-  1 its ordeal badge, 2 its blazon, 4 its unity badge; `Ov008_BuildRankMask`
+  1 its ordeal badge, 2 its blazon, 4 its unity badge; `Ov008_BuildBadgeMask`
   sets bit kind - 1 for every record of the room key. 82 room keys have
   badges: the ordeal badge only, the unity badge only, both, or all three
   (the blazon's record carries the challenge's number, 100 + the mission's).
@@ -3464,7 +3602,7 @@ beside it and logs every frame where they differ.
 | field-3d-both | engine A changes screens at two of the last 8 VBlanks (POWCNT1 bit 15; the game shows its 3D on both screens so, with the display capture), and stays while one of them does: the game skips a change where its frame runs late (a dialog opening), and with two in a row counted the layout became the upper screen's 3D, then the lower's, for the two VBlanks after each skip -- the testers' flickering cutscenes (2026-10-21) | a player's log of missions 46, 47, 51 and 53: the three layouts in turn, every VBlank, through events with Sora's memories |
 | field | scene 2 otherwise | -- |
 | info-upper | the panel of a mission's start (`data_ov002_0207f614`, its state +0x18c, 1-8 from f4207 to f4582 on the play walk) in 3-6: the mission's information on the upper screen, no deck | play walk f4229-4562 |
-| dialog | the field's event (ov023: `data_ov023_0208a784[1]`) has its status halfword's (+0x8758c) bit 1 set and bit 3 (closing, `Ov023_BeginClose`) clear while `Ov023_SceneRun` runs (an event over leaves 0xa there while ov023 stays loaded: mission 56 f6672-7997 runs, then 0xa); or a person talks in the field: the panel of a mission's start in state 10, its box across the upper screen's lower half (9-11 the talk: in 9 the HUD is still drawn, `Ov002_LeavePanelForMap` clearing BG1 and BG3 as it moves to 10; in 11 the HUD comes back) (no ov023 then; the story walk's input, then A through day 7's event, START on the tutorial's page, and UP and A towards Saix in the Grey Area) | story walk f10155-11926; Saix's words: state 10 f12954-13067, the box to f13064, the HUD again from f13082 in state 11 |
+| dialog | the field's event (ov023: `data_ov023_0208a784[1]`) has its status halfword's (+0x8758c) bit 1 set and bit 3 (closing, `Ov023_BeginClose`) clear while `Ov023_SceneRun` runs -- in one of the last 8 VBlanks: with the 3D on both screens some VBlanks' updates leave it out, and a player's day 172 (mission 0202's Sora memory, 0.1.4) showed `[dialog]` one VBlank in three and `[hud]` the other two for 2 s, the dialog blinking (an event over leaves 0xa there while ov023 stays loaded: mission 56 f6672-7997 runs, then 0xa); or a person talks in the field: the panel of a mission's start in state 10, its box across the upper screen's lower half (9-11 the talk: in 9 the HUD is still drawn, `Ov002_LeavePanelForMap` clearing BG1 and BG3 as it moves to 10; in 11 the HUD comes back) (no ov023 then; the story walk's input, then A through day 7's event, START on the tutorial's page, and UP and A towards Saix in the Grey Area) | story walk f10155-11926; Saix's words: state 10 f12954-13067, the box to f13064, the HUD again from f13082 in state 11 |
 | hud | the field, tutorial or field-3d-both otherwise | -- |
 | challenge | the story's camp started the mission as a challenge: `data_0204c240` bit 1 (`Ov025_MissionList_StartMission`: 3 with the challenge's thresholds copied, 1 otherwise); after Mission Mode's camp the byte is its session's (`Ov008SessionInfo`: 3 a wireless host), so not a challenge | run07 walk from f5359; the multiplayer walk (host, 3) not one |
 | lower-3d | engine A on the lower screen (POWCNT1 bit 15 clear) and no change of screens in the last 8 VBlanks | story walk f11933-11943 |
@@ -3798,6 +3936,20 @@ message by its gate, the first halfword of the game's packet on port 12):
   third above the one-screen shape's top of 84 of the time; with the
   battle's member count at 4 (`data_ov022_020b2e78`[1] + 0x34, what
   `func_ov022_020882f8` returns) the shape starts at 64.
+- **A wave of bosses on a guest (2026-11-04).** A mod's mission whose second
+  wave makes two each of Darkside, Dual Blade and Guard Armor (the walk
+  `multiplayer_boss_waves`, two copies on one PC): on the guest the first Dual
+  Blade, its parts and the second Darkside's summons (ids 21 to 41) stood at
+  0,0,0 with full HP, the low byte of their +0x60 flags never set -- in their
+  T pose -- while the host's fought. Their poses (`Ov107_SendPoseMessage`,
+  about 32 bytes each) went in the frame's buffer of 0x1e0 bytes
+  (`MsgQueue_Enqueue`), which dropped what was past it. With the buffer grown
+  (to 3,840 bytes), a frame of 1,982 bytes was copied past the guest's slot for
+  frames received (`ChannelBuf_Append`; `Session_LayoutPacketSlots` gave it
+  0x3c0) and the guest stopped (a call through a function reference 0x1 from
+  `CmdPacket_Dispatch`). With both grown, every boss's position, HP and state
+  byte the same on both copies. The 32 reliable slots (`MsgQueue_Post`) never
+  filled in the walk. `MULTIPLAYER.md`, "The reliable messages".
 
 ### 16.2 The port's list of rooms (2026-10-09)
 
@@ -3967,7 +4119,9 @@ camp's menu with Donald's model, face and numbers. What it holds:
   place is on; then `Ov006_MissionArmCursorRequest` -- the host's row itself,
   a guest's request at +0x4e0 (the same six bytes, sent to the host, which
   answers with the row) -- and no other move until it is answered
-  (`Ov006_MissionIsEntryActive`: the request's count is the row's). A
+  (`Ov006_MissionIsEntryActive`: the request's count is the row's). Neither it
+  nor the camp's twin (`Ov008_UpdateMissionMemberSelectionInput`, `Ov008_LobbyStep`)
+  reads L or R (0x200, 0x100): the port's pages take them (read 2026-10-30). A
   chooses, B unchooses; START with every place chosen goes on
   (`Ov006_SetPendingInput`): the update returns
   `Ov006_MemberMenuNextStateNoOp` while the screens fade out to scene 19.
@@ -3995,6 +4149,31 @@ over Xigbar to Xaldin; the guest's left twice (Xemnas, then round to Roxas),
 right three times, the third over Xaldin to Vexen; its A gave "Espera al
 anfitrión." and "Espera..." in turn and its plate the red ring.
 
+The game's own screen with a mod's characters (2026-10-30; no HD pieces' select, two screens):
+- **Its grid** is a table of two rows of twelve words (`data_ov006_02056410`, the camp's `data_ov008_02090c00`):
+  -2 an edge, -1 the place of a bought character (13-18, put there each update from `data_ov006_020563f8` and
+  `data_ov006_02056470`), else the character. Its first row has nine places (columns 2-10), its second ten (1-10):
+  nineteen, the game's nineteen characters, none to spare.
+- **Its portraits**, as its screen shows them (measured on the lower screen at 1x): 24 x 64 pixels, the first row's
+  from y 32 and x = 24 x column - 28, the second's from y 96 and x = 24 x column - 16 -- the second row half a
+  portrait to the right. An unbought character's place is empty.
+- **What it draws of a place** on a new character is its base's (prepare.py's `_menu` joins): the model, the gauges,
+  the portrait, and the J1 marker over the base's portrait.
+- **The port's pages** (`charselect.c` `ds_step`, `host/screens/ds_select_pages.c`):
+  - The mods' characters follow the game's grid as pages of its nineteen places.
+  - R from the game's grid goes onto the first; on them the port takes the directions and writes the game's own
+    request, as on one screen; L from the first goes back to the character the grid was left on.
+  - The presenter draws each place's face over the lower screen, grey unless a place is on it, then in colour
+    with the place's corners, and the pages as dots under the grid.
+  - The names it writes for a place on a mod's character are the character's own (prepare.py,
+    `khdays_charselect_name`; `Ov006_UpdateMissionMemberMenuScreen`, the camp's `Ov008_LobbyStep`): the chosen
+    one's name and weapon on the upper screen, each place's on its plate.
+- **Seen** with `port/tests/mods_v2/select_pages`:
+  - R onto "Página 1" (in colour, its corners, "Página 1 / Stick" above, "J1 Página 1" on the plate);
+  - R onto the second page;
+  - L back, down to "Página 10";
+  - A, START: the camp with it.
+
 ### 16.4 The camp menu on one screen (2026-10-10)
 
 Mission Mode's camp (scene 19, ov008) runs one screen of its table A
@@ -4004,7 +4183,7 @@ index the next word), while its object stays in `Ov008_RouteCommittedPageState`.
 The menu page is screen 0 (`Ov008_SetupScene`: the options, the description
 and the character's 3D model on the upper screen) over page 0
 (`Ov008_TickMenuState`: the status panel on the lower). Screen 1 is not the
-menu but the holo-missions' world map (`Ov008_MainMenu_StateTick`: its
+menu but the holo-missions' world map (`Ov008_WorldMap_StateTick`: its
 `+0x13fc` is `world_id_&.s.z`, its "entries" worlds, a locked one written
 `select_&.s` record 4).
 
@@ -4122,17 +4301,17 @@ the same in ov008). The port reads that bit for the rows it shows and dims their
 Tutorials DOWN to Config and Save and back; the maintainer's save (day 357) none.
 
 **The Preferences page** (both camps' screen 5: `Ov025_Config_Setup`,
-`Ov008_SetupItemMenu`) keeps in the screen's state (the context's +0x959c, as
+`Ov008_Config_Setup`) keeps in the screen's state (the context's +0x959c, as
 the menu's) +0 the tab shown, +2 its list of tabs (0 the story's, 1 Mission
 Mode's; 2 has the first two tabs only), +0x4c the setting the cursor is on,
 +0x4e each setting's value (two bytes each; `Ov025_Config_LoadValues` fills
 them from the game state, `Ov025_Config_SaveValues` writes them back). Its
-tables: the settings (`data_ov025_020b4f64`, `data_ov008_02090598`, 25 of
+tables: the settings (`gOv025ConfigSettings`, `gOv008ConfigSettings`, 25 of
 0x14 bytes: +2 the name's `cfg_&.s` record, +3 the help's, +6 enabled, +7 the
 values' count -- 0 a heading --, +8 the values, 4 bytes each: +2 the name's
-record, +3 the help's), the lists (`data_ov025_020b4ee8`,
-`data_ov008_0209051c`, 0x12 bytes: +2 the tabs' count, +3 each tab's page)
-and the pages (`data_ov025_020b4ed0`, `data_ov008_02090504`: the first
+record, +3 the help's), the lists (`gOv025ConfigLists`,
+`gOv008ConfigLists`, 0x12 bytes: +2 the tabs' count, +3 each tab's page)
+and the pages (`gOv025ConfigPages`, `gOv008ConfigPages`: the first
 setting and the count): the story's tabs are settings 0-2 (Controls, Chase
 Cam, Cam Speed), 3-6 (the camera's axes, Cursor Position, Command List) and
 7-9 (the heading "Combat Partner Behavior", Target, Support), Mission Mode's
@@ -4157,8 +4336,15 @@ arrows, every setting there ("?" where the game has it), the hand at the
 one chosen, a scroll bar's thumb past ten; the help and the value's help in
 the description's place. Its directions and L and R are the port's
 (`khdays_camp_buttons`): a step over a section's settings, or a section's
-first, pressing the game's own R, L, DOWN and UP to take its cursor there
-(the game's sounds); RIGHT, LEFT and B the game's. Seen (2026-10-10): the
+first, pressing the game's own R, L, DOWN and UP to take its cursor there;
+RIGHT, LEFT and B the game's. Those presses' cursor and page sounds are kept
+from the game and the port plays one cursor sound for the move
+(`khdays_camp_navigation_sound`; before the Menu Overhaul's own commit each
+press sounded: the external review's "sound doubling in mission config"). Seen
+(2026-11-04, Mission Mode's Preferences with the HD PACK, `KHDAYS_TRACE_CAMP`
+and `KHDAYS_LOG`, whose lines say each sound played or kept): one
+`se_sys_click` a move, R and L over two tabs and a held DOWN's repeats
+included, one for RIGHT and LEFT, one `se_sys_kettei` for A and B. Seen (2026-10-10): the
 story's sections from Controls to Command List over two tabs and round,
 Combat Partner Behavior's Support changed (Damage to Recovery); Mission
 Mode's fifteen rules with the five "?", scrolled to Lives; four copies on one PC
@@ -4216,6 +4402,11 @@ movement rows in the game (the native build, `KHDAYS_TRACE_PLAYER`).
   faces), flags (0x8000 the last of its node's run; nothing else on disk), 3 or 4 corners (convex
   but one), its plane, slots at +0x80 (0 gates; 1 and 2 surface tags and walls that open; a
   ground's slot 3 a small number 0-14 that is no name) and, for a ground, one word not read.
+- **Where the game puts its surface tags** (2026-11-20, `khdays-studio --world-info` over every mission room):
+  `nohit` on 1,526 walls of 63 rooms and on no ground nor ceiling; `nocam` on 99 walls and 6 grounds; `sicon` on 83
+  walls; `slide` (no jump lands, `Ov022_StepJumpState`) on 138 grounds of 20 rooms and no wall; `nocatch` on 266
+  grounds, `sea` 16 and `sea2` 648, all grounds. A room made from a KH2 map names its faces after these
+  (docs/KH2_ENEMIES.md, "A KH2 room's floors and walls").
 - **A world's gate models** (entry 1: a count, then 0x90 each, keyed by a link row's key): five
   descriptors of 0x1c as `Ov002_BuildModelSlot` uses them -- kind, the archive entry it loads (0
   none, 255 the gate itself, 45 and 46 Twilight Town's `gate_lock2` and `lightwall`), a turn in
@@ -4318,7 +4509,13 @@ khdays-studio (`--check-missions`, `--mission-commands`).
   `Ov002_ResolveNamedPlacement`); `Ov002_WriteSessionMarker` files it for the player, a point spread
   by player (`Ov002_ScatterPlaceByIndex`) unless state flag 0x20e7. Mission 0010's first area puts
   slots 0-3 near (0, 0.049, 0) facing -90 degrees in room 0 of `tt`; the play walk's player was traced
-  there at (0.00, 0.01, 0.00).
+  there at (0.00, 0.01, 0.00). **Which way a heading faces**: 0 degrees along -z, -90 along +x -- the
+  way `(-sin h, -cos h)` on the floor (seen 2026-11-13, a mod's new mission in `eh` room 2, its Shadow at
+  (4, -3) and two chests at (-2.5, +-1.2): with the start facing -90 the camera behind Roxas looked along
+  +x, the Shadow far ahead and the chests near; facing 0, along -z, the Shadow ahead on the right and the
+  chests on the left). A marker's facing (65536ths of a turn) goes into the same field
+  (`Ov002_ResolveNamedPlacement`'s owner word), and a chest's heading (its `trbox` row, degrees) turns the
+  same way: with 90 and -90 its long sides faced +-x. A spawner (2.32) has no facing.
 - **The groups' tables while the field runs** (`StoreGlobalArrayEntry`'s callers): 0 the main
   program's `data_02042640`; 2 and 4 ov002's (`data_ov002_0207f134`, `0207f484`); 3 ov012's five
   (the scenes played in a mission); n + 5 the table of panel n (`Ov002_SwitchPanelOverlay`, rows
@@ -4357,9 +4554,9 @@ khdays-studio (`--check-missions`, `--mission-commands`).
   list and the saved progress are kept by mission index in fixed save areas (`Ov025_DrawMissionRow`:
   status 0x2ca4 + 3 x id, stage 0x2a4c + 3 x id, rewards 0x92b + 4 x id): a mission with a slot of
   its own needs those kept elsewhere by the port (still open).
-- **A spawner** (`Ov002_ScriptCreateSlotObject`, group 2 command 32; 16 operands): a group of the
+- **A spawner** (`Ov002_ScriptCreateSpawner`, group 2 command 32; 16 operands): a group of the
   table, a source, a mask, a mode, a gate, a point (20.12), then a radius-like number, a tag, two
-  numbers, a second point and a last number. `Ov002_CreateSlotObjectAndStart` makes the slot's object
+  numbers, a second point and a last number. `Ov002_CreateSpawner` makes the slot's object
   -- its point at +0x104, its tag at +0x4a -- and adds each part's enemies, `limit == 0xff ? count :
   min(limit, count)` of them. The table of slots is made first by `InitObjectTables` (a step of the
   same script); an area without that step has no spawners. Checked in the game with
@@ -4371,7 +4568,7 @@ khdays-studio (`--check-missions`, `--mission-commands`).
   short is the **mission's number**, the one `mi/mi/%04d` is formatted with (the last record whose key
   matches wins); +2 goes to the slot context's +0x11 (0..5); +4 to the field record's +0x10 (0x1000 in
   every one); +8 in single player, +0xc in multiplayer (equal in every record), a byte, to the field's
-  +0x8bae -- the base that `Ov002_GetEffectiveHeight` adds an enemy row's +4 to, capped at 0x78 and
+  +0x8bae -- the base that `Ov002_GetMarkerEnemyLevel` adds an enemy row's +4 to, capped at 0x78 and
   at least 1 (1 in 0101, 2 in 0102 ... 61 in 0114: it rises through the missions); +0x10 a 20.12
   number and +0x14 five pairs {s32, 20.12} (all (-1, 1.0)) go to the slot context's +0x98 and +0x9c,
   their readers not found. 18 files have no record (0152, 0153, 0161, 2000, 2001, 3000, 8000-8010,
@@ -4388,16 +4585,118 @@ khdays-studio (`--check-missions`, `--mission-commands`).
   prize boxes (17.0 a class with a shuffled list of prizes -- 0 item, 1 munny, 2 keyed object, 3
   nothing --, 17.1 a box) appear only in 1053, 1351 and 2001, its emblems (17.3) in five missions.
 - **Beside them**: `eid.z` (118 of 24: the drops by enemy class).
+- **How a Mission Mode mission flows** (read in 0004, 0010, 0160 and 1354, traced with `KHDAYS_TRACE_MISSION`,
+  which logs the state fields below as they change, 2026-10-24): the start's `_i` sets the mission up -- its chests
+  (2.76), emblems (2.83), enemy table (2.31), objective texts (2.52), the dark corridor (4.18, 4.19 at a point) --
+  and posts area 11 (2.3, `Ov002_ScriptPostLinkMessage`); an area's `_i` loads its world and room, makes its
+  spawners, the players' starts, the HUD, the notice, and files its events. Area 99's `_e` is where the others go
+  between areas and at the end; state 8862 (or 8853) tells it which area comes next, 8320 which phase an area is in.
+  **Waves**: a spawner (2.32) puts its group out when its step runs (`Ov002_CreateSpawner`, every part
+  at once, unless the group is already settled), so a later wave is a script with spawners run on an event: 0160's
+  `e0` makes two groups and queues itself again on event 0 with 2.7. **2.7** (`Ov002_SubmitRequestBlockKind1`:
+  gate, event, check, -, slot, threshold) with check 1 fires when every spawner row's group has settled -- all its
+  enemies defeated (`Ov002_NodeRunCheckPhase` -> `Ov002_QueryEntryValue(-1, filter)`); 0004 (defeat the
+  Mega-Shadow) files it twice, at once (event 3, its `e1`: state 8326 = 1, the objective done, 8839 = 0, the
+  corridor) and after 4000 ms (event 4, `e2`: to area 99, then back to area 11 in its second phase, the corridor
+  open). **The end**: in 1354 (survive one minute) the clock's end is a counter watch (2.6 kind 4) whose `c0` raises
+  state 8844, an event on it (2.9, 4000 ms) runs `c1`, which posts area 99, and its `_e` ends the mission (0.12): the
+  trace saw state 8326 go 0 -> 1 at the clock's end and the results 4.7 s later. The field root's `+0x8ba8`, the
+  key of `mdb.z`, `trbox` and `evi`, is the mission's file number (`Ov002_ConstructGameplayScene` copies it from
+  `data_0204c240` + 2 and formats `mi/mi/%04d` with it).
+- **The mission gauge** (the bottom screen's bar, read 2026-11-01 for spec 036's eliminate missions): 2.34
+  (`Ov002_ResolveFourDescriptors` -> `Ov002_SetScriptRequest(kind, total, goal, flags)`) sets it at root +0x8c94;
+  the HUD keeps (total, done, goal) at `*(0x0207f62c + 4)` + 0x188. Its kinds in the game's missions: 1 targets
+  defeated (0004, 0102, 0105: 1 of 1), 2 hearts (0151: 104 of 148), 4 a counter (0402 "Defeat seven Fire
+  Plants!": 7 of 10; 0010 all five Scarlet Tangos; 0103 one Poison Plant; 1354 survive: 1 of 1). Tallies move it
+  (`Ov002_AddMissionTally(seat, kind, amount)` -> `Ov002_ApplyTally`): tally 2 moves kind 2, tally 3 kinds 0, 1
+  and 4. Tally 3 comes from: a defeated enemy of the tracked class (2.73 `Ov002_ScriptCmd_SetEventParams(class,
+  100)` -> `Ov002_Event_SetParams` keeps the class at the object context's +0xa; `Ov002_OnPartActorRetired`
+  compares it with the enemy row's byte 0, its class, and adds 1; 21 game missions use it, every one with 100 as
+  the second operand, whose use is not read); 2.38 (`Ov002_ScriptOpInvokeSlot0(-, kind, amount)`, a direct add:
+  0102's `e1` adds 1 when 2.7 check 0 sees group 16, the Guardian's, defeated); the globs' enemies (ov234), the
+  emblems (`Ov021_EmblemStep`) and the jars (`Ov021_PrizeBoxHandleMessage`). At the goal `Ov002_StepProgressBar`
+  raises state 8326 (`Ov002_TriggerOnceOnFlag`), which the areas watch with 2.9. **2.7 check 0** fires when one
+  group is defeated (`Ov002_QueryEntryValue(group)`; its operand packs the single-player group and the
+  multiplayer one << 16: 0x100010 is group 16 in both). The spawner's third operand (2.32) goes to the enemy's
+  status byte +0x179 (`Ov107_Spawner_Run` -> `Ov107_SetStatusAndEmit`): 1 on 0102's Guardian, 2 on 0402's Fire
+  Plants, 0 elsewhere; it does not count toward the gauge, and what it shows is not read (`func_ov022_0209a630`
+  tests it for 1). The port's eliminate missions (port/runtime/missions, studio/core/missions/mission_build.cpp)
+  are built as 0402: a counter gauge and 2.73 with the target class; the missions_eliminate walk traced the gauge
+  0 of 2 (goal 1), 1 of 2 at the first Shadow defeated, state 8326 0 -> 1 two frames later and the mission cleared.
+- **Hearts on the mission gauge** (read 2026-11-01 for spec 036's hearts missions): every defeated enemy posts its
+  class's hearts to tally 2, whatever the mission (`Ov107_AiState_OnDefeat` -> `Ov022_SetPlayerScale(seat,
+  hearts)`, which packs the hearts << 16 with a bonus by the player's step in the low half -> `Ov002_AddMissionTally(0,
+  2, ...)`); a hearts gauge (kind 2) adds the high half (`Ov002_ApplyTally`). A class's hearts are byte 0x6d of its
+  record in Ms/DP.p2f, one entry a class (`Ov107_LoadSpawnRecord` keeps it at the record's +0x5d, the enemy at
+  +0x19f): Shadows, Possessors and the Vendors give 0, Yellow Operas and Dire Plants 13, Fire Plants and Scarlet
+  Tangos 15. 0101's total, 199, is its table's enemies' hearts (11 Yellow Operas, 2 Scarlet Tangos, 2 Dire Plants);
+  its goal, 121, is the mission's own, and reaching it does not end 0101: its `e0` opens the corridor home (state
+  8840), the hearts still counting. 20 game missions have a hearts gauge. The port's hearts missions are built
+  with kind 2, the waves' enemies' hearts as the total and the goal watched as an eliminate mission's; the
+  missions_hearts walk traced 0 of 28 (goal 13), 13 at the Yellow Opera defeated, state 8326 two frames later and
+  the mission cleared.
+- **Organization emblems** (read 2026-11-01 for spec 036's emblems missions; 0158, 0251, 0451 and 0951 "Find as
+  many Organization emblems as you can!"): 4.25 `Ov002_SwitchPanelOverlay(12)` loads panel 12's overlay, ov021, and
+  binds its command table as script group 17 (a panel n is group n + 5, one panel at a time); 17.2
+  (`Ov021_VmCmd0e30` -> `Ov021_CreateEmblemClass`) makes their class in a module slot with their count; 17.3
+  (`Ov021_MarshalFxAndDispatch2` -> `Ov021_EmblemCreate`: slot, index, room, GameState field, x, y, z, heading) puts
+  each out while its field is set (0451 sets 8888-8903 first). An emblem's timer starts at 300 and runs down with
+  the frames, the model shrinking with it; the host picks it up when a player comes within reach and posts tally 3
+  ten points while the timer runs, eight once it has run out (`Ov021_EmblemStep`), and the others' timers start
+  again (`Ov021_ResetChildrenScoreExceptSelf`). Their gauge is a counter of 10 a piece (0451: 104 of 160). 2.45 and
+  2.75 name 392 in these missions; what for is not read. The port's emblems missions copy 0451's steps (fields from
+  8888); the missions_emblems walk traced 0 of 30 (goal 10), 10 at the emblem under the start, state 8326 two frames
+  later and the mission cleared, with no enemy (an empty enemy table, as 0001's). 1354's `c0` adds 1 more to the
+  gauge (its survive gauge), seen after the goal in every built mission.
+- **Reaching a place** (read 2026-11-01; 0001 "Reach Axel's position!"): 2.8 `Ov002_ScriptSubmitPathTask(gate,
+  event, mode, room, tag, x, y, z, kind, radius, height, -, threshold)` files a position check
+  (`Ov002_CreateTaskNodePath`) run on the players (`Ov002_NodeWalkPlayersPhase`: mode 0 the first player to pass,
+  1 all of them, each in the room); kind 0 is within the radius of the point (`Ov002_FitsBudget`, a radius with the
+  top bit set always passes), 1-4 other ranges and boxes (`Ov002_TaskNodePathInRange`, `Ov002_IsWithinRangeHorizontal`,
+  `Ov002_PointInBox3D`, `Ov002_PointInBox2D`). The port's reach missions file one (mode 0, kind 0) whose event runs
+  `c0`; the missions_reach walk (Up held from the start, `KHDAYS_TRACE_PLAYER`) stood still 10 s with nothing, then
+  walked toward +x and the mission was cleared as the player came within 1.5 of the place at x = 5.
+- **The enemy code slots**: a class's code is an overlay in six columns of 0x1e00 bytes (RAM from 0x020cbf20,
+  0x1e20 apart). `Ov107_SpawnEntityClass` loads a class at its first actor into the first free column
+  `data_ov107_020cb6a4[class * 6 + column]` has an overlay for (overlay 114 + the byte; 0xff none), the overlay
+  taking its RAM size / 0x1e00 + 1 columns (`Ov107_LoadEnemyOverlay`); a class with none left is `OS_Terminate`:
+  the field never starts, the frames going on (seen 2026-11-01 with a mod mission whose first wave was a Yellow
+  Opera, ov115 in columns 0-1, then a Shadow, whose only overlay is column 0's). The actors are made in the enemy
+  table's row order (2.49), so the rows' order decides. Shadows go in column 0 only (two columns), Yellow Operas in
+  0 or 2, Hover Ghosts in 0 only (so never with a Shadow), Fire Plants in 0, 2 or 4; a boss's code takes all six
+  (the Guard Armor's ov236, 0xa600 bytes), so it never came out with any other class. The port lifts the limit
+  (2026-11-01, `runtime/core/enemy_overlays.h`): each enemy overlay has its own 64 KB from 0x09000000 (rom.cpp moves
+  its RAM address and static initializers in the overlay table, prepare.py its symbols: data, functions, the BSS;
+  the analyses of the ROM keep the DS's addresses), ov107's three slot tables (`data_ov107_020cbb08` the factories,
+  `cbb98` the overlays' infos, `cbca0` the spawn records) have room for 126 slots at 0x09c00000, and a class whose
+  columns are full takes slot 6 + its id with its first column's overlay (prepare.py's join in
+  `Ov107_SpawnEntityClass`) instead of `OS_Terminate`. A call through an address several overlays share on the DS
+  (ov016's into ov233 or ov291) finds the loaded one's function at its place now (`khdays_native_at`). Seen with the
+  missions_boss walk: Shadows in column 0, a Soldier in 2 (ov122), the Guard Armor in its own slot (ov236 at
+  0x097a0000), all in the field together. An area's `aMarkerIds` (`Ov002_CreateActorFromMarker`: four, for the
+  HUD's pause panel) keeps the first four classes; a fifth comes out all the same.
+- **Chests and emblems in Mission Mode**: neither is put out with mode flag bit 1 (`Ov002_ScriptSpawnTimedSet`
+  returns at once, `Ov002_SpawnStateSpots` skips them): Mission Mode's own missions show none. An emblem found sets
+  bit `kind` of the mission's 4 bits at `0x92b + 4n` (the same bits Mission Mode's list asks for its rows).
+- **Spawners** (2.32, `Ov002_CreateSpawner`; read 2026-10-28 and traced with `KHDAYS_TRACE_MISSION`,
+  which logs each spawner's enemies out and the region's limits): a spawner is a node of a region (the source 2.14
+  made), started by its trigger sphere (the last operand, a radius: 1354's 100) when a player is inside it, then
+  every 0x1000 ticks it binds a free actor of its region (made by 2.49) to each empty place of its group's parts. A
+  region ticks only the nodes it set running, which it does when a player joins it: in a game area that is after
+  the spawners are made (the 2.12 starts come after 2.32), so they run. A spawner made later in the area -- a wave
+  after the first -- stays still (seen: wave 2's spawner made, 0 of its 2 enemies out for 100 s, its node's state
+  4 against the first's 7). A row's +1 low nibble is the most of its class out at once (0, no limit, in every game
+  row).
 
 ## 19. The game's heaps
 
 Read from the decompilation and measured in the port.
 
 - **Where the game's memory comes from**: two NitroSystem expanded heaps `Ov001_CreateMainAndSubHeaps`
-  (ov001 0x0204ce40, from `Ov001_BootInit` through `func_ov001_0204cf5c`) makes at boot from the
+  (ov001 0x0204ce40, from `Ov001_BootInit` through `Ov001_InitGameHeaps`) makes at boot from the
   main arena -- the **main heap**, 0xc8000 bytes from the arena's low end (handle at
-  `data_0204c044`, `data_0204c024` points at it), and the **sub heap**, the whole rest up to
-  `HW_MAIN_MEM_MAIN_END` 0x023e0000 (handle at `data_0204c030`; `data_0204c02c` and `gCurrentHeap`,
+  `gMainHeapHandle`, `gMainHeap` points at it), and the **sub heap**, the whole rest up to
+  `HW_MAIN_MEM_MAIN_END` 0x023e0000 (handle at `gSubHeapHandle`; `gSubHeap` and `gCurrentHeap`,
   0x0204c028, point at it: the default heap). Nothing else takes from `OS_ARENA_MAIN` and nothing
   else makes a heap; `HeapState_Recreate` remakes one of the two over its own region at a scene's
   change, `Heap_SetCurrent(0)` makes the sub heap current again.
@@ -4467,6 +4766,15 @@ Read from the decompilation and measured in the port.
 - **A room's collision has a format limit of its own**: a node of the collision tree names its
   first face in 16 bits, so a room holds at most 32,767 faces of each kind (khdays-studio refuses
   more); the largest such room made from nm room 9 is 8,081,760 bytes.
+- **No block of the default heap outlives its area** (2026-11-14, a tester's crash on a KH2
+  enemy's mission played a second time): the field's blocks go with it (`HeapState_Recreate` at
+  the scene's change, Retry's too), so a block the port took once and kept was another's in the
+  next run -- the KH2 shell's words for its routines' vectors, written each tick over a task's
+  state (`Ov107_NodeXformTaskStart` reading a null state) or the information panel's snapshot
+  list (`Ov002_SelectEntryByKey` walking to 0x74b8, a coordinate). The port's links take a block
+  for a call and free it after it (`runtime/scripts/*_link.c`, `kh2_enemies/shell_days.c`); one
+  the game reads after the call (a KH2 enemy's lock-on point) is kept for the area and freed in
+  `Ov002_ReleaseResources`'s join, before the game frees its own.
 
 ## 20. What gameplay mods hear and change
 
@@ -4482,7 +4790,7 @@ with `KHDAYS_TRACE_MODS=1`, the example mods (`port/mods_examples`) and the walk
 - **The field begins**: `Ov002_ConstructGameplayScene`, again after Retry. `Ov002_BeginMissionRun`
   starts a run of it more than once a mission (its gameplay state 2 entered again: mission 94 started
   two runs 32 frames apart), so the mission's start is the first run after the field is made. In
-  Story Mode the Grey Area is a field too: walking into it raised a start with `data_0204c23c` 0.
+  Story Mode the Grey Area is a field too: walking into it raised a start with `gMissionNumber` 0.
 - **The results**: `Ov005_CommitMissionResults` runs after a give-up as well (mission 94 given up
   from the pause: rank -1, `rewardMode` not 255), with flag 0x2087 (`Ov002_RetireSubFlow`) set from
   the game over on. A cleared or lost mission is not traced yet.
@@ -4516,7 +4824,7 @@ the story walk and `KHDAYS_TEST_DAY`).
   +0x1c, in their first steps (the step at 0x50 of the entry) and clear it at their end; 74 set
   none. Skip in an event's pause (`PauseMenu_Frame`, entry 1 when the mode word lacks bit 1) stops
   the sound effects (`SoundMgr_StopAllSePlayers`) and sets the request through
-  `Ov023_FlushTextBox` (`SetWordAt0x588To1` on the event's state at root + 0x4b88); the machine's
+  `Ov023_RequestEventSkip` (`ActionScript_RequestSkip` on the event's state at root + 0x4b88); the machine's
   next step (`Game_UnwindActionStack`) lets the stretch's waits and callbacks go, pops to the
   target's depth and goes on at the target, and `PauseMenu_OpenIfAllowed` runs the event until the
   main screen's master brightness reaches -16. What follows the target is the scene's end: it runs
@@ -4531,7 +4839,7 @@ the story walk and `KHDAYS_TEST_DAY`).
   section `_m`; group 3 is the movie player's, ov024 / ov012).
 - **The day's script.** `Ov002_ConstructGameplayScene` copies its record (its argument, else
   `data_0204c240`: the mission at +2, the script at +4) to the field's root +0x8ba8 / +0x8baa and
-  opens `mi/mi/%04d`; `Ov023_LoadScripts` names the script `Ov002_FormatResultLine(0)` ("%d" of
+  opens `mi/mi/%04d`; `Ov023_LoadScripts` names the script `Ov002_FormatEventScriptName(0)` ("%d" of
   +0x8baa). In the story both fields of the walk were built from mission 10000, script 0, and the
   script number became the story's day in the same frame (400 the prologue, 7 on day 7): the day is
   the game state's field 0 (9 bits, the save's day). Setting it to 8 at the first field's construction
@@ -4570,7 +4878,7 @@ the story walk and `KHDAYS_TEST_DAY`).
   refused, the pause open 35 frames later). The pause's panel is engine A's BG3 over the scene's 3D,
   which the DS darkens (BLDCNT 0xc1, BLDY 8); on one screen the port draws the situation's shapes
   with the video's picture behind them and no 3D, on two the game's screens as they are. Skip
-  (`Ov023_FlushTextBox`, +0x588) unwinds the event and clears its target, which ends the course;
+  (`Ov023_RequestEventSkip`, +0x588) unwinds the event and clears its target, which ends the course;
   Continue (`PauseMenu_GetMode` back to 0, the request clear) holds the game again and the video
   goes on. Seen on day 7's castle (hd002), both ways.
 - **No cut between the game and an HD scene.** Cut at once, the game's picture gave way to the video
@@ -4645,15 +4953,15 @@ Read in the decompilation, then traced with `KHDAYS_TRACE_ENEMIES=1` (2026-10-22
   (`Ov002_ScriptCmd_RecreateObjectSlot(i)`: an ov107 region, objects + 0x1c, whose members are shown
   and hidden with their room), makes every enemy it will use, idle, in a source
   (`Ov002_ScriptCmd_CreateActorFromMarker(source, row)`), puts its spawners
-  (`Ov002_ScriptCreateSlotObject`: a group of the table at a point, with a reach of 14-16 units) and
+  (`Ov002_ScriptCreateSpawner`: a group of the table at a point, with a reach of 14-16 units) and
   last files every actor by its id (`Ov002_ScriptCmd_BuildSceneIdTable`). Mission 10's first area
   (11) does none of it -- ov107 is not even loaded there (the earlier "no source whenever it was
   tried"); its areas 21 and 31 do. Mission 2's first area made 3 Shadows (row 0, class 0) in source 0
   at the area's build; its spawner ran op 0 every 32 frames.
-- **The level is the row's.** `Ov002_GetEffectiveHeight(row)` -- the mission's level (root + 0x8bae)
+- **The level is the row's.** `Ov002_GetMarkerEnemyLevel(row)` -- the mission's level (root + 0x8bae)
   plus the row's adjustment, 1 to 120 -- goes to the actor's +0x1ec, `Ov107_AiState_LoadStats`,
   which reads the class's stats at that level (`+0x19d`): its HP (`+0x218` maximum, `+0x21a` now),
-  its eight attacks' power (`+0x290 + 6 * i`, through `+0x1d8`, `Ov107_StoreSlotEvent`). A Shadow
+  its eight attacks' power (`+0x290 + 6 * i`, through `+0x1d8`, `Ov107_SetAttackPower`). A Shadow
   of mission 2: level 1, HP 75, attacks 3 and 9; at level 6, HP 93, attacks 6 and 18. A Yellow
   Opera at level 1: HP 75, attacks 7 and 8.
 - **A hit** (`Ov107_AiState_ApplyHit`) takes `+0x21a` down (75, 67, 59, 37, 24 ... 2 seen); at 0
@@ -4664,15 +4972,15 @@ Read in the decompilation, then traced with `KHDAYS_TRACE_ENEMIES=1` (2026-10-22
   `Ov002_OnPartActorRetired`). By then the HP reads full again. Enemies' HP never goes through
   `Ov022_ActorSetHp` (the players' alone).
 - **Set going** (`Ov107_Spawner_Run` op 0): the HP refilled, the actor's home and reach (`+0x1f4`,
-  `Ov107_StoreHitInfo`), moved (`Ov107_MoveNodeAndRelayout`) and its event 0 (`+0x1cc`): its +0x60
+  `Ov107_SetHomeAndReach`), moved (`Ov107_MoveNodeAndRelayout`) and its event 0 (`+0x1cc`): its +0x60
   word gains 0x300; 0x100 is cleared at the defeat and once sent away. Event 1 sends it away (the
   spawner's op 1 when the player leaves it): the Shadow left in 67 frames.
 - **A Shadow starts flat** (ov114): made, its height scale (`+0x390`, 0x1000 whole) is 1, a dark
   shape on the ground (`Ov114_InitNodeAndRegisterHandlers`), and it waits for its +0x60 bit 0
   (`Ov114_SetVisFlagsEnterState`); then its stored action, its entry (`+0x1c9`, the spawner's slot's
-  `+3`; 1 as it is made, `func_ov107_020c6624`), is queued and any action but 0 gives it its whole
+  `+3`; 1 as it is made, `Ov107_AiState_Init`), is queued and any action but 0 gives it its whole
   height (`Ov114_DispatchSubStateByte`). Entry 1 makes it flat again and lets it rise in about a
-  second (`Ov114_AiTargetAndFace`, `Ov114_AiFadeInTick`), 2 sidestep at its height
+  second (`Ov114_AiTargetAndFace`, `Ov114_AiRiseTick`), 2 sidestep at its height
   (`Ov114_StartSidestep`), 6 a dark shape that bounces out (7, `Ov114_BounceEntry`). While flat or sunk
   its body is away: `+0x1ae` bit 0 set and its hit shape (`+0x388`) off. Mission 94's spawner gives its
   three Shadows entry 2 (traced: `entries 2 2 2`): they come standing. Seen with a mod's three Shadows
@@ -4734,10 +5042,38 @@ test mod's waves fought, and the mission stayed in its first area.
 already there, and the routine faults). The battle's beginning places the player itself. Seen: moved 3
 units along x, then kept within 6 units of a point while chasing enemies.
 
+**Saix's berserk, as the boss** (ov259, `Ms/53.p`; read from the decompilation and the ROM's file, not
+seen in play). No model of its own: the body (entry 0, model `016`; Mission Mode's `A_016`, entry 1,
+`data_0204c240` bit 2) holds both looks. The normal one is the shapes on node `saix_00`; the berserk one
+is node `head_02`'s, materials `02_*` on the `bs_*` textures (three `bs_hair*` pieces of its own). Only
+the robe has no `02_` copy. At rest the `02_` materials have alpha 0, so a viewer that draws the model's
+own materials never shows them. Two BMA0 material animations switch the looks by alpha: `016_A`
+(entry 0x1d, pose 0x1b: the `02_` materials 0, the rest 31) and `016_B` (0x1e, pose 0x1c: the reverse).
+`Ov259_SetPose` plays poses 0x1b/0x1c (entry pose + 2) on the body's channel 2, beside its joint
+animation on channel 0 (+0x395 keeps the last of the two; poses below 0x1b go to +0x394).
+The transformation is move 14 (`Ov259_AiEnterFinisher`): it sets the berserk flag (ctx +0x4c) and plays
+pose 4, `016_004` (162 frames), and `Ov259_LandingTick` plays 0x1c 1.33 s in (0x1540 on the Q12-second
+clock). `Ov259_TickWindUp` swaps the claymore 0.5 s later and `Ov259_BurrowBurstTick` pushes the
+players away; pose 2 (`016_002`) follows, the idle `Ov259_AiResetMoveState` picks while the flag is
+set (0 without it). `Ov259_DownEntry` clears the flag, and `Ov259_DownTick` plays 0x1b. His chase (move
+11, `Ov259_AiEnterRise`/`Ov259_RiseTick`) plays pose 1, `016_001`, in both looks. Pose 3, `016_003` (an
+18-frame run cycle like it, with its own `move_01` track), is played by nothing in ov259 or ov107:
+unused (a berserk run by the 0/1, 2/3 pairing is a guess). Poses 23-25 (`016_023`-`025`) are shaped
+as a jump's take-off, air (one held frame) and landing, but the only jump-like move, 18, has no
+take-off: pose 0xf, then `Ov259_RiseTick_2` places him at (-4, 10, -30) in pose 2. `Ov259_ChargeTick`
+loops pose 24 after 2.5 s as `Ov259_TickDive` flies him at the player, pose 26 near them and 25 on
+touching down (`Ov259_SlamSweepTick`'s shockwave follows). Pose 23 is played by nothing; his own jump
+(move 13, `Ov259_JumpEntry`) is pose 14, `016_014`. The claymore is a
+helper actor (+0x384) with two models, `W00` (entry 0x3c) and the berserk `W01` (0x3e; Mission Mode's
+0x3d/0x3f). `Ov259_SwapShells` shows one by scaling the other to 0: berserk in moves 16-18,
+`Ov259_TickWindUp` (after that landing) and message slot 1 (which also anchors effect 0xf on him);
+normal in moves 8-11 and 13, `Ov259_DownEntry` and message slot 4. Entry 0x20 (`K`, texture `kiseki`)
+is the swings' trail, posed per move from 0x21 + pose.
+
 ## 23. The player's defeat and how a run ends
 
 Read in the decompilation, then traced in the game (2026-10-22: the play walk opening
-mission 2 with `KHDAYS_TEST_EVENT=2/0` -- Mission Mode, `data_0204c23c` still 94 -- with the test mod
+mission 2 with `KHDAYS_TEST_EVENT=2/0` -- Mission Mode, `gMissionNumber` still 94 -- with the test mod
 `port/tests/mods_v2/last-stand`, and the mission walk's give-up).
 
 - **A hit on the player** comes through `Ov022_ReceiveHit(actor, request)` on the host alone: the
@@ -4781,7 +5117,7 @@ Read in the decompilation, then traced with `KHDAYS_TRACE_UPDATES` and `KHDAYS_T
 - **The player's way in**: Holo-Missions (the menu's first option) opens the list of a world's
   missions (the play walk's save: Villa Crepúsculo, "Tutorial del modo Misión"); A shows its details,
   A asks "¿Emprender esta misión?" (No by default), LEFT and A answer Yes:
-  `Ov008_StartSelectedMission` writes the mission (`data_0204c23c` its Mission Mode number,
+  `Ov008_StartSelectedMission` writes the mission (`gMissionNumber` its Mission Mode number,
   `data_0204c240` the field record: flags 0xf alone, 0x13, the mission file, kind; the thresholds at
   `data_0204c254`). Back on the menu the camp shows "MISIÓN ACEPTADA, Pulsa START" -- alone, with no
   flag the port's view reads (0x200c stays clear) -- and START leaves for the field. The list of
@@ -4792,7 +5128,7 @@ Read in the decompilation, then traced with `KHDAYS_TRACE_UPDATES` and `KHDAYS_T
   `Ov002_ConstructGameplayScene` (as `KHDAYS_TEST_EVENT` does). Seen: asked at the camp's arrival,
   Holo-Missions 90 game frames later, the list 45, the details 45, Yes 57, START 45, the field 78 later
   with the record `0f 13 02 00 00 00 04 00` -- mission file 2 in place of the tutorial's 10, its first
-  area's Shadows -- and `data_0204c23c` the tutorial's 94 (the results' mission).
+  area's Shadows -- and `gMissionNumber` the tutorial's 94 (the results' mission).
 - **Leaving** as the pause's Give Up does: `PauseMenu_ConfirmFrame`'s Yes on the entry calls
   `Ov002_PauseMissionScene` (the field's root `+0x8b64` bit 0, `+0x8b68` |= 0x10) and sets game field
   0x20ef; the field's session tick then goes through the game over's sub-flow (ov027, flag 0x2087) to
@@ -4894,6 +5230,23 @@ N`).
 - **A mod's track** (`music.play`) is asked for the game's way (`SoundMgr_SwitchBgm`); meanwhile the
   four routines keep the game's requests back (prepare.py's joins, `khdays_link_music_request`), and
   the last of them is made as the mod's track ends.
+- **The tracks' kinds** (`data_02042124`, 48 bytes of main's .rodata): 1 a world's field track (TwilightR_F,
+  Alice_F, Herc_F, Halloween_F, Alasin_F, Existence_F, Beast_F, Neverland_F), 2 its battle's (the `_B`s), 3 a
+  boss's (DestinysForce, MissionBoss1, DisneyBoss1, ShorodingDark, Boss3, Boss4), 0 the rest (Result,
+  Resultsingle, Entrymulti, the characters' and events' themes); all on `PLAYER_BGM` but StrangeWhispers,
+  MissingYou, XIIItheme2 and Icetime (`PLAYER_BGM_EVENT`). The new missions the studio builds on 1354's file play
+  DisneyBoss1 throughout.
+- **The field's track taken up again** (`SoundMgr_Update`, request 5): going from a field's track to a battle's, the
+  manager reads the field track's sequence variable 0 into `+0xb46fa` and keeps its number at `+0xb46f8`; coming
+  back to that same field track it starts it again and writes the variable back (`NNS_SndPlayerWriteVariable(0,
+  +0xb46fa)`), the sequence going on from there; any other request clears `+0xb46f8`. Each start takes a free ARM7
+  player, so the field's and the battle's are often on different ones (seen: TwilightR_F on 0, TwilightR_B on 2, the
+  field's again on 5).
+- **Where the player is** (a room's music, docs/SOUND.md): the field's link context (`data_ov002_0207fa10`,
+  `Ov002LinkCtx`) holds the player's slot at `+0xd` and each of the four slots' room at `+0x2f` -- the room's index
+  in the world's room table at `+4` (`Ov002_StepPeerObjectLoading`), the studio's room number -- and that table was
+  read from the world's archive, `mi/wd/wd_<code>`, which names the world. Seen on the play walk: tt room 0 from frame
+  4165, room 1 from 5399, room 0 again from 6207; a mod's added room as its own index past the world's (eh 23).
 
 ## 28. The magic
 
@@ -4965,6 +5318,13 @@ the port restores it (`runtime/battle/`).
   path for 120 ticks (`KHDAYS_TEST_HOLD=120`): it stood, but bodies touching it still pushed it a little
   (`Ov107_AiState_ResolveContacts`: 0.6 units over the four seconds, Roxas attacking it), its action changed with
   the hit it took (2 to 5) and the hits during the hold lowered its health (67 to 58).
+- **Far enemies' ticks skipped** (`Ov107_ProcessObjectTick`'s first part, read in the decompilation): an enemy past
+  30 units of its nearest player (`Ov107_FindNearestObject`) is updated one frame in four, past 20 or unseen
+  (`+0x60` bit 0 clear) one in three, flagged `+0x60` 0x80 or past 10 one in two -- the frames by its number
+  (`+0x2`) against the actor manager's count (`+0x44`); with the field byte 0x0204c240's bit 2 clear, one behind the
+  view (`Ov107_IsBehindView`) one in three. The frames it waited (`+0x30c`, back to 1 once updated) multiply its
+  next `delta`: its time is kept, its motion goes by jumps. The port skips none (`runtime/battle/enemy_updates.h`,
+  `KHDAYS_DS_ENEMY_UPDATES=1` the DS's way): the jumps showed as stutters in the PC's smoothed pictures.
 - **A hit on an enemy** (`Ov107_AiState_ApplyHit`): dropped during a hit's grace (`+0x2e4`), with `+0x1ac` bit 0 or
   status 0x10; its damage from `Ov107_CalcHitDamage`, the enemy's own handler (`+0x1d0`) lowering its health
   (`+0x21a`, most `+0x218`). A hit may give a status by its flags (`+2`'s byte, mask 0x88c): 1 burning (time
@@ -5080,3 +5440,882 @@ the port restores it (`runtime/battle/`).
   plays without it, or, its own off, that the host plays with it. Seen on the walk `stop` with it off: the session
   log's `stop: off`, the test mod's three panels refused (`unknown panel`), mission 94 played to its time with no
   fault.
+
+## 29. Missions and worlds of mods
+
+Read in the decompilation and seen with the test mod `port/tests/mods_v2/missions` (the walk `missions`), 2026-10-24.
+The port adds a mod's missions to the game's own list and plays them as the game's (`runtime/missions/`).
+
+- **The missions' list** (`UI/cm/msl_<lang>.msi.z`, 273 records in each language): a u16 count, then records led by
+  their u16 size (72-1,076 bytes). `Ov008_BuildRecordNode` makes a 0x58-byte node of each: `+2` the mission file's
+  number, `+4` the mission's number, `+6`/`+8` the first and last day of the story it is listed on, `+0xa` its
+  category (the world picker's: a mission's world, `tt` 0 ... `bb` 9), `+0xc` 1 for the story's hidden "next day"
+  rows (900-916), `+0xe` the number the row shows, `+0x10` a tier, `+0x14`-`+0x17` bytes, `+0x18` the time limit the
+  info shows (seconds), `+0x1a` its enemies, `+0x1c`-`+0x2e` the info's further lines (`+0x28` the results' reward
+  kind), `+0x23` its kind; then four UTF-16 texts: its name, a briefing, the objective the info shows last, a format.
+- **A record's kind**: 0 is a mission's row in the story's lists (`Ov008_RecordFilter_InRange` and its kin, by the
+  day: 108 rows), 4 its row in Mission Mode's (80), 1 and 2 its other entries there (65, 20). A mission has a row of
+  each kind it takes, all with its file and number; Mission Mode's tutorial is mission 94 on file 0010, a kind-4 row
+  alone, shown as 00.
+- **Mission Mode's list** (scene 19, `Ov008_WorldMap_StateTick`) is built a category at a time from the rows
+  `Ov008_IsMissionModeRowListed` takes for the list's flags (its category << 8, bit 3 the kind-4 rows): a row of
+  another kind or category is left out, one whose number is 900 or more too, then one whose last day is not past in
+  the story (`GameState_GetField(0, 9)`, 401 once field 0x44e reaches 6), and one whose mission's 4 bits at
+  `0x92b + 4n` lack its kind's bit. When the camp has no entry flagged (`Ov008_AnyEntryFlagged`: the words from its
+  context's +0x9758, as many as +0x9750 says), the list is the tutorial's row alone (list kind 7,
+  `Ov008_RecordFilter_TutorialRow`). Seen: the walks' guest game (a level-1 Roxas, no file) lists 00, the tutorial, in
+  every world.
+  The list's rows of a world go by DOWN and UP; UP on its first row goes to its last. L and R change the world.
+- **What counts the game's missions**: `Ov008_CalcMissionCompletionPercent` (the camp's percentage) counts the
+  rows of kinds 1 and 2 (`kind & 3`), not Mission Mode's own (kind 4); `Ov005_UpdateAllMissionsClearedFlag` asks
+  missions 1-93 by number. A row of kind 4 alone never changes either.
+- **A mission's progress fields** (the game state's flag array, `gGameState` + 0x10, 0x4000 bits): status
+  `0x28e4 + 3n` (1 seen, 2 cleared, 3 complete: the story's results), crown `0x2a4c + 3n`, Mission Mode's rank
+  `0x2ca4 + 3n` (the only one Mission Mode's results write: its rows' reward kind is 8), the 4 bits at `0x92b + 4n`,
+  and the best result `gGameState` + 0x198c + 4n for n below 200 (`Ov005_CommitMissionResults`, three reads in
+  `Ov005_InitializeResultConfiguration`, the two camps' `*_MissionMenu_DrawInfo`). Each block holds 120 missions;
+  the game reaches no field past the array: the port says so in the session log when one is asked for (`missions:
+  the game reached field ...`), and no run here has said it.
+- **The port's new missions** (`runtime/missions/`): a mod's `missions/missions.txt` gives each mission a number
+  whose four fields all lie past the array (from 3510: 0x92b + 4 x 3510 = 0x4003), its number's last two digits the
+  ones it is shown with (95 on, after the tutorial's 94), and a file number from 20000; `GameState_GetField`,
+  `_SetField`, `_IsFlagSet`, `_SetFlag` and `_ClearFlag` answer its fields from the port's store, and the best result
+  joins answer for numbers past 200, so the game's own code shows, starts, ranks and records it. As
+  `UI/cm/msl_<lang>.msi.z` and `mi/mi/mdb.z` load (`Archive_LoadFile`) the port hands them back with the new
+  missions' rows after the game's: in the list a Mission Mode row made from its template's (its days past the
+  story's, so no story list takes it), its texts in that language (English where it has none); in `mdb.z` its
+  template's row. `Ov008_IsMissionModeRowListed` takes a new mission's row by the port's own test (its category, the
+  kinds the list asks for, its unlock) since its number is past 900; `FS_OpenFile` opens `mi/mi/<its file>` where
+  the port placed the mod's file in the ROM's image (or its template's file, for a mission without its own), the
+  file table not naming it. Its progress is kept in `saves/missions/fileNN.txt` beside the save file (read when the
+  title loads file NN, written after each save action of file NN), never in the DS's save.
+- **In a room** (2026-11-06): the numbers follow each copy's own mods, in their folders' order, so a copy with one
+  more mod of missions numbers the others' differently -- and the game hands the host's choice to the guests as
+  numbers: the host's `gMissionNumber` and field record (`data_0204c240`, its file at +2) go into the session
+  snapshot (`Ov008_TransferSessionSnapshotState`), which each copy takes as its own in
+  `Ov008_CommitSynchronizedSnapshotState`. Two copies with the same missions and one more on the host were let in
+  (a mod of missions alone has no scripts, so no part in the room's fingerprint) and the guest opened another
+  file than the host's. Now each copy tells the others its missions (`runtime/missions/room.h`: identity, a
+  SHA-256 of its block's lines -- comments, blank lines and line ends left out -- and of its own `mission.p2`, its
+  number and file) on the port's mods channel (`MODS_MISSIONS`: the host's to each member as it joins, a guest's
+  to the host as it is welcomed); the host's list takes a new mission's row only when every member has it, the
+  same (`missions: <identity> left out of the room's list`), and the join in the commit gives a guest the host's
+  choice under its own number and file (`missions: the host's mission N (file F) is <identity>: mission M here`).
+  Walk `multiplayer_room_missions`: the host with `extra_missions` (missions alone, before the boss waves' mod)
+  and the boss waves' mission as 3596, the guest with only the latter as 3595.
+- **Seen** (the walk `missions`, the test mod `port/tests/mods_v2/missions`: a mission on 1354's file, "survive for
+  60 seconds", listed in Twilight Town's category; the maintainer's save, file 1): its row last of Twilight Town's
+  (95, "El reloj perdido"); started, the game opened `mi/mi/20000`, the mod heard mission 3595; cleared when the
+  clock ran out (rank 0); the autosave wrote file 99 and the port `saves/missions/file99.txt` (`test.missions/clock 0
+  0 4 0 -1`: Mission Mode's rank 4, no status, no best result, as the game records a Mission Mode mission). With the
+  autosave into the file played: file 1 loaded again with the mod showed the row with its crown; without the mod the
+  list ended at 92 as the game's, and the save's every mission field (1-119, the four kinds) was as before the run.
+- **A mission built from its description** (2026-10-28): a mission with waves in `missions.txt` (`start`, `wave
+  <n>`, `chest`, `emblem`, beside its time, texts, world and room) is built by the port at its start
+  (`runtime/missions/build.cpp`, khdays-studio's `core/missions/mission_build.cpp` compiled in) from the game's own
+  steps: 1354's area (world, room, actors, HUD, clock, the ending's `c0`/`c1`), its start's `_i` (the chests, the
+  emblems, the enemy table, the objective) and 0004's "all defeated" check (2.7). Wave 1's spawners are made in the
+  area's `_i`; each next wave is a script (`w2`, `w3` ...) queued on the last one's "all defeated" event, the last's
+  queues `c0` (state 8844 raised, then `c1` 4000 ms later to area 99 and the results). Each enemy of every wave has
+  its own actor (2.49). A spawner made by a later wave would never run (section 18, "Spawners"): the join at
+  `Ov002_CreateSpawner` sets it running with its region in the port's missions only (session log:
+  `missions: <mission>: a spawner made after its region started, running with it`).
+- **A spawner holds eight enemies** (`Ov107_Spawner_AddSlot`: its slots inside its object, a ninth `OS_Terminate`,
+  the field never shown -- a mission of 9 Shadows on one line stayed black, 8 played): a wave's line of more is built
+  as several spawners at its place, eight each (100 Shadows played, 2026-11-02).
+- **An enemy its mission's script ends**: Xigbar (ov283) at his defeat (`Ov283_OnDamage`: health at the fight's limit
+  or none, state 3) only stands (`Ov283_AiEnterPatrol`, an empty step), waiting for his mission to end the fight; a
+  built mission's "all defeated" never came. Joined: in the mods' missions he is finished as Riku and the Shadow are
+  at theirs (flags `+0x1ae` bits 0-1); seen: "Misión completada" at his defeat. Zero's state 3 is a grab, not his
+  defeat. The fight's limit is 70 % of his health (`Ov283_Construct`'s `+0x3e8`; a spawner's data block may give
+  another, `Ov283_Slot38_StoreValue`): the story's fight (mission file 0304, the only table with his class 0x68) ends
+  there, by its script. In a mods' mission he fell there too, a third of his health gone (seen 2026-11-06: 1295 of
+  1377 a few hits before); joined: there the limit is 0, and the finish is given at no health only, since ov107's
+  event 1 (a spawner sending him away) also queues his state 3.
+- **The resource cache holds 128 files** (`ResCache_FindSlot`, `FileLoader_Init`'s 0x1800-byte table of 0x30-byte
+  entries): full, it gave 0 and `ResCache_Acquire` read through it (a crash reading DS address 0 as an enemy's model
+  was built: ten enemy kinds in one mission, or a mission of six with three players' characters). The port adds tables
+  of 128 from the main heap as it fills (`runtime/core/game_heap.c`, joined in `ResCache_FindSlot`; the session log
+  says `memory: the resource cache grown to N entries`); the game keeps pointers to entries, so none moves.
+- **The 3D's texture VRAM holds 512 KB** (TEXIMAGE_PARAM's place is 16 bits of 8 bytes; the field's frame managers,
+  `NNS_GfdInitFrmTexVramManager(4, 1)` and a palette one of 0x8000): a mission of ten enemy kinds filled it with
+  the enemies, and every file set up after them -- Roxas, the effects, the HUD's counters, the room -- failed its
+  allocation in `G3dRes_DefaultSetup` and was drawn untextured (the room white). The port gives such a file a texture
+  bank of its own (`runtime/display/texture_banks.c`, joined in `G3dRes_DefaultSetup`): the managers' states kept
+  (through the game's stack: its functions take references), reset for the file's allocations, given back; the
+  file's texels, 4x4 texels and indices, and palettes copied to the bank's memory at those places as
+  `Tex_LoadVram` / `Gfx_UploadBlock` would upload them (their loaded flags set). The DS's frame managers free
+  nothing on their own (`NNS_GfdFreeFrmTexVram`), so the game's frees of a bank's keys touch nothing. A draw
+  (`NNSi_G3dDrawInternal`, `InstancedModel_Draw`'s single shape) of a model inside such a file sends its textures
+  from the bank; the frame package draws those polygons with the bank's texture decoded (the replacements' path,
+  one replacement per picture whatever bank shows it). A file is kept only up to its texture images once they are
+  in VRAM (`ModelArchive_DropTextureImage` shrinks the block to `texInfo.ofsTex`) and other files go after that,
+  so a bank is dropped only when a file is set up over its model's part. Seen (2026-11-02): 73 files in banks in
+  that mission, everything textured; `KHDAYS_TRACE_TEXTURE_BANKS=1` says each bank dropped and first drawn. The
+  textures the game sets apart from a model's draw (`Tex0_GetTexPlttParams`: the first texture's TEXIMAGE_PARAM and
+  PLTT_BASE of a file, kept in the field's table at +0x60 by `Ov002_LoadShopTable` and sent by `Billboard_DrawList`
+  for each prize) carry their file's bank in PLTT_BASE's bits the DS does not read (bit 31, the bank in 16-30:
+  `gfx/g3d.h` `KHDAYS_G3D_PLTT_BANK_TAG`), and the geometry takes the texture set before it as the bank's. Not
+  covered: the menus' own texture words (`Ov005_ResolveTextureParams`, `Ov025_ResolveTextureParams`, the noise
+  quads of ov023/ov106), set up in scenes that start with the VRAM empty.
+- **A call into an overlay not loaded** (a function reference whose address starts an overlay's function while
+  another, or none, is loaded there): skipped (answer 0) and said once in the session log (`overlays: a call into
+  overlay N's function ...`) instead of the game stopped. A tester's mission in a replaced Twilight Town room with
+  Xion stopped so, at 0x0207fd2c (`Ov013_SpawnAtOrientedOffset` / `Ov014_DispatchTouchAction`: the field's panel
+  overlays, which a game mission's script loads with `Ov002_SwitchPanelOverlay` and a built one does not).
+- **Chests and emblems of a new mission**: their sets are added to `mi/mi/trbox` and `mi/mi/evi` as they load (the
+  key the mission's file number; a chest's room byte is the mission's room, its opened flag one of the port's past
+  the flag array, kept in the save part). Seven places of ov002 leave chests and emblems out in Mission Mode (mode flag
+  bit 1): `Ov002_ScriptSpawnTimedSet` (the chests put out), `Ov002_SpawnStateSpots` (the emblems' pickups),
+  `Ov002_NoteSeatAnswer` (a chest opened marked in the root's +0x8d80), `Ov002_RaiseSeatFlagsForKey` (the marked
+  chests' flags raised at the end), `Ov002_ModuleHasKey` (the chests' module asked by the panel and the items),
+  `Ov002_GetPanelValueBand` and `Ov002_FillMissionResult` (Mission Mode's own panel and results, left as they are);
+  the first five are joined to act as the story's for a new mission. `Ov002_AppendPendingId`'s ids are the message
+  database's (the names the field shows, `Ov002_BuildKeyEntryTable`), not files.
+- **Seen** (the walk `missions_waves`, the test mod `port/tests/mods_v2/missions_waves`: two waves of Shadows in eh
+  room 2, a chest, an emblem, 120 s; the maintainer's save): listed as 95 "Dos oleadas"; wave 1's Shadow out at the
+  start (`KHDAYS_TRACE_MISSION`: 1 of 1 enemies out), defeated by the attack button; wave 2's spawner made, set
+  running, its two Shadows out (2 of 2) and defeated; state 8326 0 -> 1, "Misión completada", the results (crown
+  reward), the camp. The chest put out (1 of 1 placed), opened with Examinar ("Ganas: Poción", the panel's 1/1), its
+  mark (0001) raised at the end and kept: `test.waves/waves 0 0 4 0 -1 1`. **The emblem**: its pickup is made at its
+  point (the field's pickups, id 1 at (0, 0.049, -1.5), by `Ov002_SpawnStateSpots` with the mission's number 3595),
+  but in these runs it was neither drawn nor picked up: *open*.
+- **A chest's item is read as the mission starts** (2026-10-31, a tester's mission stopped): each chest put out hands
+  its contents key to `Ov002_AppendPendingId`, and `Ov002_BuildKeyEntryTable` (2.46) fetches database 0x15's record
+  for every pending key (`MsgDb_FetchRecord(&rec, 0x15, key, 2)`) and copies its text (`+0xc`). Database 0x15 is the
+  items, from item 1: a chest holding 0 (the studio's old default) made it read through no record --
+  `Ov002_BuildKeyEntryTable.c:120`, an access violation as the field was built. The port's reader now takes a
+  chest's item from 1 to `db/db.p2` entry 0x15's count (630) and leaves a mission with another out, with the reason.
+  The game's own 396 chests hold 1-300.
+- **A mission's 2.39 steps close its room's exits by their keys** (2026-10-31, the second stop): 2.39
+  `Ov002_ScriptDriveFourOperands(0, key, 0, -1)` calls `Ov002_StampEntry`, which takes the room in slot 0
+  (`data_ov002_0207fa10 + 0x2f`) and `Ov002_FindPeerRow(key, room)` -- that room's link row with the key -- and
+  writes its kind and flags. 1354's area stamps keys 0, 2, 3, 20 and 21, its arena's (eh room 2); a mission built
+  from it in tt room 0 found no row for one of them and wrote through a null row (`Ov002_StampEntry.c:49`). The
+  builder now stamps the chosen room's own keys, read from the world's room table (entry 0, a room's `+1` row count,
+  `+0x1c` rows' offset, the key a row's first byte).
+- **2.12's second operand is the room a player starts in** (the third stop of the same mission): 2.12
+  `Ov002_ScriptMoveSlot(seat, room, ...)` writes the room into the seat's record (`Ov002_WriteSessionMarker`); placing
+  the player, `Ov002_StepRosterSlotPhase` turns it into the slot that room is loaded in (`Ov002_GetCtxTableByte`:
+  the link context's `+0x17` table, a room's slot or -1) and `Render_SubmitNode` takes that slot's container. 1354's
+  four 2.12 steps say room 2; in tt, with room 0 loaded in slot 0, room 2 has slot -1 and `QuadTree_InsertObject` read
+  through no container (`ModelObj_Place` <- `func_ov022_02088428`). The builder now writes the chosen room there.
+- **2.5's third operand is the room a queued script runs in** (the same mission, its waves all defeated and nothing
+  after): 2.5 `Ov002_ScriptQueueTextItem(0, event, room, none:room, name, ...)` hands the room to
+  `Ov002_RegisterEventSlot` as the slot's index in the link context's `+0x17` table (a room's loaded slot), resolved
+  later by `Ov002_RefreshSlotValue`; -1 runs it anywhere. The game's missions name their own rooms there (0101: 4 and
+  6, 0201: 0) or -1; 1354's say 2, so a mission built in tt room 0 queued "c0" on its "all defeated" event for a room
+  not loaded, and the event came with nothing to run: no clear (`state[8326:1]` never raised). The builder now writes
+  the chosen room. 2.32's fourth operand, 2 or -1 in any room, is not a room: the spawner's places keep it as a mode
+  (`Ov107_Spawner_AddSlot`, an actor's `+0x1c9`).
+
+## 30. Characters of mods
+
+Read in the decompilation and traced with the walk `mission` (`KHDAYS_WATCH` on the member records and the seats),
+2026-10-28. The port adds a mod's playable characters to Mission Mode (`runtime/characters/`).
+
+- **A player's character** is byte `+3` of its member record, `gPartyMembers` (0x0204c678, four records of 0x104
+  bytes: `+0` the slot, `+1` a kind, `+2` the level, `+3` the character; `PartyMember_Reset` writes the header, the
+  level row `LevelTable_ReadEntry(character, level)` into `+8` and the character's signature skill from
+  `data_02042160`, a table of 22: characters 0x00-0x15). Its numbers are the data folders' (`data_02042a70`, 20
+  codes under `ba/ch/`): 0 ro, 1 ax, 2 xi, 3 sa, 4 xa, 5 so, 6 de, 7 la, 8 le, 9 lu, 10 ma, 11 ri, 12 ve, 13 xe,
+  14 xo, 15 ze, 16 mi, 17 do, 18 go, 19 r2. The game maps three past those onto others itself: 0x13 and 0x14 onto
+  0, 0x15 onto 0xe (`PartyMember_RebuildDerived`'s growth row; `Ov022_FillSelectorStates` and
+  `LevelTable_ReadEntry` 0x14 and 0x15).
+- **From the select to the field** (seen, the walk `mission`, Roxas): the select's places keep the select's own
+  numbers (`+2`, a signed byte: `Ov006_GetMissionRowInfo`), 0-18 in its order (the Organization's thirteen from
+  Xemnas to Roxas, then Xion, the king, Sora, Riku, Donald, Goofy); `Ov006_SelectPlaceToCharacter` turns one into the
+  folders' number (0 -> 0xd ... 12 -> 0, 13 -> 0xe, 14 -> 0x10, 15 -> 5, 16 -> 0xb, 17 -> 0x11, 18 -> 0x12) as
+  `Ov006_UpdateMissionEntrySynchronization` writes the seats, `data_020429c8` (four of 8 bytes: a word set when
+  taken, the character's word; `Slot4_GetIfOccupied`), VBlank 2405. The camp (`Ov008_CommitSelectedPage`) resets
+  member 0 with its seat's character (`Ov008_ResetPartyMemberAndLayout` -> `PartyMember_ResetWithKind(0, 0, c, 0)`),
+  VBlank 2480; the field rewrites the header (`Ov002_UpdatePartyEntries`, VBlank 5565). In multiplayer the camp
+  copies the host's four records whole (`Ov008_CommitSynchronizedSnapshotState`): byte `+3` travels with them.
+- **A player becomes an actor**: `Ov022_FillSelectorStates` loads the overlay of the group named by the character
+  for the player's slot (`Ov029_AcquireOverlaySlot(slot, character)`, `data_ov029_020b30b0[20][4]`: ov030-048 the
+  first player's, ov049 the dual-wielding Roxas, ov050-104 the others'), whose constructor (`Ov030_CreateActor` for
+  Roxas) sets the actor's `+9` (the member's slot) and `+0xc` (a constant of the overlay: its character), loads its
+  body's pack by a literal path (`ba/ch/ro/def.p.z`, `def_hb`, `def_hho`) through `TailForwardTrackEntry(slot, path,
+  1, slot + 7)` -- called by the 74 player overlays' constructors and by `Ov023_CmdSetupPartyActors` /
+  `Ov023_CmdSeatMembers` (there with packed handles, bit 31 set) -- and finds its bones by name (`roxas_tg`,
+  `ro_w_tg_R/L`, `roxas_R`, `Bip01`).
+- **The folder's readers** by the actor's `+0xc` or a character: `LevelTable_ReadEntry` (`lv.b.z`),
+  `Ov022_BuildActorSlot` (`w_.p2`), `Ov022_BuildActionTable` (`ci.b.z`, `cm.b.z`, and the weapon's move block
+  through `Ov002_LoadCharacterWeapon`, `wp.b.z`, read Xigbar's way for character 2), `Ov022_LoadActionRows`
+  (`am.p2`), `Ov022_LoadActorEffects`, `Ov022_StartAnimRequest` (`gl`, `rg`, `as`, `ma0`, `ma2`, `it` `.p.z`,
+  `eta<n>.p.z`), `Ov023_CmdSetupPartyActors`, `Ov008_LoadCharacterWeapon`, and Mission Mode's camp model
+  (`Ov008_Menu_InitSceneObject`: records of 0x34 by character at `gOv008CampCharacterRecords`, the first word its code;
+  `def_hb` for 0, `def` for 5 and 0x10-0x12, `def_h` for the rest; `Ov008_Menu_LoadSceneText` its weapons' texts,
+  Roxas's for Xion).
+- **The port's characters**: a mod's `characters/<key>/character.ini` ([CHARACTERS.md](CHARACTERS.md)) gives a
+  character a number from 0x16 (their identities' order; 0x7f the last, the places' signed byte). Only the
+  select's places hold it: the seats and the members get its base's number (`Ov006_SelectPlaceToCharacter` /
+  `Ov008_SelectPlaceToCharacter` joined), so that the game's tables of characters -- the results', the camp's, the
+  shop's, the saves -- never see one they do not have, and the port keeps which seat is a new character's (the
+  joins at the seats' writes, `Ov006_UpdateMissionEntrySynchronization`, `Ov008_MissionLobbyPoll`; forgotten at
+  the title). The base's overlay plays it. Where the game opens a seat's character's data, the joins
+  (`port/tools/prepare.py`, "Characters of mods") give the character's own folder `ba/ch/c<number>/`, which the
+  port serves at the start (the mod's `data/` files, else copies of the base's: their own places in the ROM, so
+  that a model loaded from there is known as the character's and drawn as its model). The game's own select
+  screens draw a place on one as its base's place (`Ov006_UpdateMissionMemberMenuScreen`, `Ov008_LobbyStep`:
+  their gauges, model pose, names and slots index tables of 19, which a new number would run past: seen,
+  `Ov006_MissionApplyParameterRow` stopped the game reading row 0x16). Their input
+  (`Ov00N_UpdateMissionMemberSelectionInput`) looks for the place on the DS's grid (clamped to 18 there) and,
+  on any button, writes back the grid's character -- -1 for one it does not hold -- and the screen asks for
+  its place every frame (`Ov006_MissionArmCursorRequest`, seen with a watch): joined to keep the place's own
+  number unless a direction moves it.
+- **Its animations** (`skeleton = own`, seen 2026-10-28 with the maintainer's character on Roxas, the walk
+  `missions_waves`): each draw's render object carries the joint animation the game plays (`anmJnt`, its
+  frame and its BCA0 resource). Roxas's: standing `b_ro_A000` (39 frames), running `b_ro_A001` (18), the
+  ground combo `b_ro_B009`, `b_ro_B008`, `b_ro_B015`, then `b_ro_A004`; his folder's packs hold `b_ro_A000`-
+  `A011` (`def*.p.z`), `b_ro_e000`-`E010` (`etc.p.z`), `b_ro_D000` (`it.p.z`), `b_ro_D001`-`D003` (`ma0`-`ma2`),
+  `b_ro_L000`/`L001` (`li.p.z`), `b_ro_E011`/`E013`/`E014` (`eta*.p.z`); the B-series comes from elsewhere
+  (not found in his folder as text). The port draws the character's skeleton from the clip its description
+  gives each name, at the game's animation's point.
+  Sora's (seen 2026-10-31 with a tester's KH2 Sora, `missions_waves` with runs, jumps, B held in the air and Y):
+  the game begins some animations past their first frame (running `b_so_A001` at 4.8 of 18, standing at 1 or 4
+  of 39, the jump `b_so_A003` at 4 of 27 after `b_so_Ca005`), loops its standing, running and guard (`b_so_Ca003`,
+  36 frames: back to an early frame from its last ones) and keeps a held pose at its last frame (`b_so_Ca005`, 2
+  frames, frame 1 held while B is); a hit's stop holds a frame short of the end. So a clip at its own time begins
+  at the game's point, stands only for a hold short of the end (or the pause), goes on through a hold at the end,
+  and begins again when the game's frame goes back from elsewhere than its last few (`runtime/mods/models.cpp`
+  `own_pose`).
+  A model exported from Blender lists its nodes children first (seen 2026-11-06 with a modder's Terra on Saïx,
+  Days's own skeleton names: `Bip01_L_Foot` first, the root `saix_h` last). The pose and the weapon bone's rest
+  placed a node under its parent only when the parent came before it, so every other bone lost its chain and the
+  body lay folded on the ground while the studio's preview showed it right; they now chain the nodes whatever
+  their order (`chain_worlds`, as the rooms' animations did).
+- **Its weapon**: the game puts the weapon on the base model's weapon node, read during the body's draw
+  by the node's callback (`NNS_G3dGetCurrentMtx` at `NODEDESC`, timing 3: the camp's
+  `Ov008_RefreshMatchingMatrices`; the field's actor finds the node by name in `Ov030_CreateActor`). The
+  port loads the character's own weapon bone's matrix there first, so the game's weapon follows it, and its
+  swing trail (`so_w00_trace` ...), drawn by the game from the weapon's places, with it. The nodes' names are
+  the players' overlays' strings, the same as the camp's records (`gOv008CampCharacterRecords`: a left and a
+  right hand by character): `ro_w_tg_R`, `so_w_tg00`, `mi_w_tg_R`, `ve_w_tg`, and `<code>_h_R` for the others
+  that hold theirs in a hand (`ax`, `xig`, `sa`, `la`, `le`, `ma`, `ri`, `xe`, `xo`, `do`, `go`; the dual-wield
+  Roxas `ro_h_R`), with a left `<code>_h_L` for Axel, Xigbar, Larxene, Xemnas and the dual-wield Roxas (Saix's
+  is named but his model has no such node); Xaldin, Demyx, Luxord and Zexion have none (the camp names their
+  model's root, `xaldin_R` ...). Only `*_w_tg_R` was looked for until 2026-10-31 (on Sora the weapon stayed at
+  the base's hand, its trail with it), then `*_w_tg00` and `*_w_tg` until 2026-11-06: on a modder's Terra on Saix
+  the claymore followed Saix's hand, so with the clips the character's own (idle, run) it hung away from the hand
+  while the clips made from Saix's animations looked right. The port now takes the camp's names, both hands.
+- **A paired character of another size** (seen 2026-11-06: a tester's character scaled up on Xion floated; a test
+  copy of Xion's own model, 1.3 times her size, on the `mission` walk with jumps and a combo): Days's animations
+  move the hips by `Bip01`'s travel under the never-moved `xion_R`, and a paired bone not on its node's rest place
+  was carried rigidly from its parent, so the hips kept their height while the legs bent as the game's: in a
+  landing's crouch the feet hung above the shadow. The keyblade's frame, saved at the hand node's draw
+  (`Obj_CaptureSelectedJointMtx`), was the game's own node, so it hung at the smaller Xion's hand. Each paired bone
+  now also moves as far as its node travels beyond where the node above carries it, times its length against the
+  nodes', and the saved frames go where the model's bones carry those nodes, as the game moves them under the
+  bone's node; in the combo's finisher the keyblade still hung off the hand while a bone with no length to measure
+  (at its parent's place at rest) kept the game's size, until it took the model's (the middle of its bones'). At
+  the model's own size nothing changed (the same pictures).
+- **Xion's weapon models** are Roxas's: her overlays (ov044, ov063, ov082, ov099) open `ba/ch/ro/w_.p2` by its
+  name in `Ov0NN_ReloadSceneResources` (her actor's container then, the one `Ov022_BuildActorSlot` builds her
+  weapon from); her own `ba/ch/xo/w_.p2` holds only the swings' traces (`ro_w00_trace` ..., entries 40-66), read
+  for the animation tables and freed; the camp's model does the same (`Ov008_Menu_LoadSceneText`, character
+  0xe: `gOv008RoxasWPath` over the record's file). A mod's character on her code opens its own folder's copy,
+  `ba/ch/c<number>/ro/w_.p2`, in both (the joins; the port serves it with the folder), so its `[weapons]`
+  reach its keyblades (seen 2026-11-06: a tester found only the traces offered for Xion; a test character on
+  her code drew its own `ro_w00600` in the field).
+- **The camp's model in a room**: `Ov008_Menu_InitSceneObject` and `Ov008_Menu_LoadSceneText` draw the local
+  player's character; the joins ask its seat (`Session_GetLocalPlayerIndex`), not seat 0 -- asked seat 0, a guest
+  on a mod's character's base saw itself as the host's character.
+- **The thrones of a room's mission review** (read 2026-10-31; ov003, scene 3, after a mission won in a room):
+  `Ov002_BuildWrapUpReport` packs the seats that are in (`Slot4_GetIfOccupied`) into the report at
+  `data_0204c300` -- +0 their count, +6 + n entry n's character (the seat's +4) -- and `Ov003_SceneInit` makes
+  each entry's throne at the scene model's joint `P<count>_<n>` (`mrslt/data` #8 `re_00`): its chair (#3-#6
+  `ch_1`-`ch_4`), the character's model from `ba/ch/<code>/def.p.z` (`data_ov003_0204f8f8`, by its character;
+  0x13, the dual-wield Roxas, is Roxas there), its animations (`data_ov003_0204f8d0`: the BCA0 holding
+  `<code>_result00`-`06`; Mickey's last `mickey_result06`) and, for some, a robe piece with its own
+  (`data_ov003_0204f8bc`: `<code>_ita`, a 4-bone model, its animations `<code>_ita00`-`06`; none for Sora,
+  Larxene, Luxord, Mickey, Donald, Goofy), and `/mi/ob/0A.z`. The animations bound (`BindAnimTrack`'s last
+  argument: their order in the BCA0): 0 as it begins; the first place (`Ov003_RankPlayers`' group 0, shown last)
+  1 (`Ov003_StateHoldTimer`), then 2 once it ends; the others 4 as their place is shown
+  (`Ov003_StateRebindAnims`, `Ov003_StateCountdownValues`), then 5 (`Ov003_AdvanceAnims`,
+  `Ov003_SceneStateActive`); 3 and 6 never. The port records each entry's seat in the report's join and gives a
+  mod's character's entry its own folder's `def.p.z` (its model, its `[actions]` for those names), leaving the
+  robe piece out when the character has a model of its own. Seen with `KHDAYS_TEST_REVIEW` on two copies (a
+  give-up: both players first): the second seat's mod's character on Roxas's base played `ro_result00` (61
+  frames, looped), `ro_result01`, then `ro_result02` (121, looped) with its own clips. The cards' faces: each
+  entry's 48x48 (6 x 6 characters, 4 bits) from `mrslt/bg_&.p2d.z`'s face sheets (sprite set 3 for characters
+  below 0x10, 4 for the others, 0x24 characters a character), copied into both engines' BG memory at character
+  0x100 + 0x24 x entry, its palette to slot entry + 1; for a mod's character's entry the join copies its picture
+  instead, made into those 36 characters and 15 colours (`ui/character_portraits.cpp`), so that whatever draws
+  the card (the port's HUD pieces move them) shows it. Its buffers are words: the copies
+  (`Callbacks_RunTableEntryB/C`) read a word at a time, and from a byte array not on a word the last byte of each
+  word came from 28 bytes on (seen: the face's columns 6-7 of every character wrong).
+- **The game over in a room** (read 2026-11-01; ov027, a mission given up or failed): `Ov027_LoadCharacterModels`
+  gives every occupied seat (`Slot4_GetIfOccupied`) the model of its character from `data_ov027_02084190`
+  (`ba/ch/<code>/def_h.p.z`, Roxas's `def_hb.p.z`, Sora's, Donald's and Goofy's `def.p.z`, the dual-wield Roxas's
+  `r2`, Mickey's `ba/ch/mi`) and its animation from `/gameover/data` (`data_ov027_020840f0`: the BCA0 holding
+  `<code>_mission00`; entry 2 `ro_con00` is the one played alone, where only Roxas, or Xion, is shown). The join
+  gives a mod's character's seat the same file of its own folder.
+- **Another place's mark on the game's own select** (read 2026-11-01; ov006, the camp's ov008 the same):
+  `Ov00N_SetMissionRowSlotValue(slot, value, visible)` keeps the place's portrait (+0x9510); each rebuild
+  (`Ov00N_MissionInitCells`) lights that portrait (0-18) and puts the mark's two cells (+0x96e4, +0x96f4) on it
+  (`Ov00N_MissionPlaceCellPair`); a value off the grid (-1, 19 on) gives x and y below 0, which
+  `Ov00N_MissionPlaceCell` makes 0, 0 -- the screen's top left, where a corner of the mark showed. For a place on
+  a mod's character while the game's own grid is shown the join gives 0x7fff, which the joined placer puts past
+  the screen's right edge, nothing lit (the port's page marks it instead).
+- **The camp's status panel**: its name is `Ov008_DrawStatusField`'s field 1, the `status_&.s` record
+  `data_ov008_0208f850[character * 6]` (the join writes a mod's character's own name instead); its picture a whole
+  background a character (`Ov008_LoadSubScreenBg`: the subfile `data_ov008_0208f854[character * 6]`, its characters
+  at the lower screen's BG3 0x2000, palettes 4-14), which stays its base's.
+- **Its voice** (read 2026-10-28; heard in `missions_waves`'s session log): an actor's sounds start through
+  `Ov022_PlayEntityVoice(actor, archive, entry)` (its action's cues from `Ov022_StepReactionCues`, its hurt,
+  the player overlay's own: `Ov030_UpdateMotionController`) and `Ov022_SpawnVoiceCue`, both into `Slot_Spawn` ->
+  `NNS_SndArcPlayerStartSeqArcEx`, which starts the entry at once. The actor's seat is its +9, its character
+  its +0xc (`PlayEntityVoice`'s switch on it picks Roxas, Sora, Riku, Xion, Mickey, Donald). Roxas's attack
+  shouts: `seqarc/PLY_ROX/vo_rs02atNN` on a voices' player; his swings `seqarc/WEP_ROX26/se_rox_weap_swingNN`
+  and run steps `seqarc/FIELD_ROX_FS_LAST/se_rox_fs_last_run01/02` are effects. The port is told the actor
+  around those two `Slot_Spawn`s, and a new character's `[sounds]` choose the entry's file then. What it says
+  as its Limit begins comes a third way (seen 2026-11-06, a tester's Limit lines never heard; the stack at the
+  start of `seqarc/LMT_VO02_ROX_MULTI/vo_rs_lb02_multi`): `Ov022_StepLocalActorCues`, the local player's actor
+  in reaction 0x2e, `Slot_Spawn(actor +0x7a8, 0, ...)` -- after `seqarc/COMMON_SYS_BATTLE/se_limit_action`,
+  before the Limit's swings (`LMT_ROX/...`, through `PlayEntityVoice`). Its archives:
+  `LMT_VO01_<three letters>_MULTI`, `LMT_VO02_..._MULTI` for every base (Roxas's also 03 and 04; the
+  `_MULTI`-less ones are the story's), the letters its `PLY_` archive's. Joined the same way since.
+- **Its combos** (`ba/ch/<code>/ci.b.z`, unpacked by its name's `.z`; read 2026-10-28 from Roxas's): a word
+  counting the keyblades (Roxas 18), then 0x34 bytes each -- the six pools' places from the file's start, their
+  counts (u16 x3 a graph), each graph's four entry points into its first pool (s16 x4) -- then the pools, 8
+  bytes a node (the attack's number, then s16 the node it goes on to and the branch: an index in the pool,
+  0x80 the graph's entry point with the next pool as its alternate, -1 none). The keyblade's record is the one
+  `Ov022_RebaseAnimRecord` takes (`ActionTable` +0x18); its graph 0 is the ground combo, 1 the air one
+  (`Ov022_BuildNodeGraph`): pool 0 the chain, pool 1 the finisher, pool 2 the branches' nodes; entry 1 is where
+  the chain's last node goes on (0: from the start), entry 2 its last node. Roxas's first keyblade: ground
+  `0 1`, finisher `2`; air `3 4`, finisher `5`; the others' attacks are numbered by keyblade (1010, 1060, 1000;
+  2060, 2080, 2050 ...).
+- **Its attacks** (`cm.b.z`): a word whose low byte counts them (Roxas 96), their places, then each a record of
+  15 words -- its number, its hits' kind, the animation's row its attack plays (`Ov022_FindOrClaimTagSlot`'s tag:
+  16 rows a keyblade), ..., the hits' count -- and its hits (`Ov022_UnpackChannelGrid`). A sweeping hit (kind
+  0, `Ov022_RunContactMode0`) is 15 words: its damage (fx32, `Ov022_ComputeStrengthDamage`'s factor), its first
+  and last frame, its push out and up, two flags, a level, then its place (x, y, z: turned by the actor's facing),
+  its radius, its spread's cosine and its event. Roxas's first hit: damage 0.75 over frames 6-12 at 1.19 radius;
+  the finisher five hits of 1.5 sweeping round over frames 12-21. `Ov022_LinkActionAnims` keeps at most 64
+  attacks of a keyblade's two graphs. The port writes a new character's `[moveset]` into its own copies of
+  both (unpacked, rewritten, packed again as LZ11 literals) when the game starts.
+- **Its Limit** (seen 2026-10-28 in `missions_waves` with the HP kept low by a test mod, the tutorial's text:
+  hold A once the HP is in the yellow): Roxas's plays `b_ro_L000` as it starts, then `b_ro_L001` at each of
+  its hits with `b_ro_A003`/`b_ro_A004` between them, shouting `vo_rs02at01`/`vo_rs02at03`; the combo comes
+  back after it. Its animations are his folder's `li.p.z` (one BCA0) and its effects `li_e0`-`li_e3`,
+  `li_ea0` (`Ov030_BuildActorHandles`, `Ov030_initStateSlotsDispatch`, the paths written in ov030). Its
+  hits are not `cm.b`'s attacks (`Ov022_RunComboContacts` never runs during them): ov030's own code
+  (`Ov030_EmitTimelineEffect`: a hit every 6 frames, its damage `Ov022_ScaleMoveDamage` with factor 1.23,
+  1.17 for its other kind). Every player overlay makes its own moves' damage through
+  `Ov022_ScaleMoveDamage` (the actor's seat's strength and bonuses, capped at 999, times the factor), which
+  the port joins for a new character's `[limit] damage`.
+
+## 31. Mods' native plugins
+
+- **How the game closes** (read 2026-10-28, `host/app/window.c`): the window's close (`SDL_EVENT_QUIT`) ends the
+  process at once with `_Exit(0)` from the window's thread, the game's thread still running its frame; nothing of the
+  game is stopped. The port's native plugins (`port/runtime/plugins`, docs/MODDING_NATIVE.md) are stopped on the
+  game's thread first: the window asks (`khdays_plugins_quit`) and waits up to a second, the game's thread stops them
+  at its next frame (`khdays_plugins_frame`, from `khdays_host_frame`). Seen with the SDK's Hello World: its goodbye
+  logged and its library released before the process ended.
+- **The first hook points** (seen 2026-10-28 with `sdk/examples/AdvancedNativeMod` in `missions_waves`):
+  `Ov022_ActorSetHp` runs for the player's HP (a Shadow's hit of 1 on a 359-HP player) but not for the enemies'
+  (the Lua mods' `hp` event hears no enemy either): their HP goes another way, a point of its own to find.
+  `PlaySound` starts the menus' sound effects (6-7 a scene there) but none of the field's, which go through
+  `Slot_Spawn` (`Ov022_PlayEntityVoice`, section 30).
+- **The enemies' and the field's points** (seen 2026-10-28, the same mission with `sdk/examples/CustomCharacter`):
+  `Ov107_AiState_ApplyHit` runs for each hit an enemy takes; after it, a Shadow's HP read 0 of 75 from a 618-damage
+  hit and the enemy was still standing (+0x60 bit 0x100): the defeat comes after the routine returns. `Slot_Spawn`
+  started 83 sounds in that field and none in the menus before it (where `PlaySound` started 3-7 a scene).
+- **The standing enemies** are ov107's actor manager's list (`gOv107ActorManager` + 4, `List_First`/`List_Next`: +4
+  its first node, +0x10 its end, a node's +4 the next, +0xc an element whose first word is the actor): the port walks
+  it without the list's cursor (+0x24 of the list), which the game's own walks keep, and takes those set going
+  (+0x60 bit 0x100). The id table (+0x48, `Ov107_Scene_BuildIdTable`) is not used: it is made again after each new
+  actor, and between the two its size (+0x24) is ahead of it.
+- **A player's attacks** (`Ov022_RunComboContacts`, each battle tick of an attack, section 30): the record's first
+  half-word is the attack's id as `[moveset]` names it. Roxas's combo with his own files went 13090, 13080, 13150
+  (Ventus's rewritten ones 0, 1, 2), each attack's hits worked out several times as its frames test them
+  (`Ov022_ComputeStrengthDamage` 1-6 times an attack).
+- **A player's states** (seen 2026-10-29 with `Ov022_ActorSetState`'s hook point, Roxas's code, `missions_waves`):
+  the routine takes the state's number and answers its routine (the DS address the actor keeps at +0x460, 0 for
+  none), which the caller makes the actor's. The combo is 3 then 14 (`Ov022_StepComboState`, mode 0x27); the Limit 23
+  as it starts (`Ov022_SelectForcedState` when the actor's state block says so: mode 0x2e, its `b_ro_L000`), then at
+  each hit 34 (`Ov030_ArmPlayerTarget`) and 24 at once (the pending action 5: mode 0x2f, ov030's own state
+  routine, `b_ro_L001`), and between the hits 2 and 22 (`Ov022_StepJumpState`, modes 3 and 4: its `A003`/`A004`).
+  A before-function that skips 23, 34 and 24 for an actor (answering 0) keeps the Limit from starting: the actor
+  stays in its state, none of the Limit's animations plays (`sdk/examples/CustomLimit`).
+- **The enemies' manager** also holds actors with no HP: beside the waves mission's Shadows one of kind byte 67
+  (maximum HP 0) stood (+0x60 bit 0x100) and took none of the hits dealt to it; kh.actors leaves them out.
+- **A plugin's hit** (`kh.combat`): the players' packet (`Ov022_SendSweepHit`) built with no part node, so that
+  `Ov107_CalcHitDamage` takes its damage as it is; given to `Ov107_AiState_ApplyHit` with the player's +0x4ec as its
+  source, as the game does. Seen: 241 damage spins took Shadows of 75 and 38 HP to 0 (defeated, rewarded), and a
+  Shadow moved by `Ov107_MoveNodeAndRelayout` after a hit answered it had moved.
+
+## 32. Roxas's dual wield and the characters' forms
+
+- **Another character, not another model** (read and seen 2026-10-30): the game plays Roxas's dual wield as
+  character 19, whose data folder (`data_02042a70[19]`) is `r2`, a whole folder of its own: `def.p.z`, `def_h.p.z`
+  (models), `am.p2`, `ab.p2` (animations), `ci.b.z`, `cm.b.z` (combos and attacks), `li*.p.z` (its Limit),
+  `w_.p2`, `wp.b.z` (its two weapons), `lv.b.z`, `ma*`, `it`, `etc`. `Ov022_FillSelectorStates` loads each player's
+  overlay by the member's character byte (`gPartyMembers + 0x104 * n + 3`) through `Ov029_AcquireOverlaySlot`; its
+  table `data_ov029_020b30b0[20][4]` gives row 19 overlays 49, 68, 87 and 104 (one a player: four can play it at
+  once), row 0 (Roxas) ov030 alone; 0x14 and 0x15 are mapped onto 0 and 0xe there, 0x13 is not. Seen in Mission
+  Mode with the Zero Gear (item 0xe6) and three Ability Units (item 0xf1) linked on it: the next camp loads
+  `ba/ch/r2/def_h.p.z` and `w_.p2`, the next field `def_h.p.z`, `ci.b.z`, `cm.b.z` and `am.p2` from `r2` instead of
+  `ro`; the shot shows Roxas hooded with a keyblade in each hand. With two units, `ro`'s.
+- **The items** (`db/db.p2` entry 0x15: a count, then 630 records of 0x64 bytes from item 1; `+0` the panel's
+  deck category, `+6` its kind, `+8` its shape, signed, -1 one cell; `db/db_<lang>.p2` entry 0x15: a name and a
+  description an item, from item 1): the Zero Gear is category 4 (gears), shape 21, kind 240; the Ability Unit
+  category 4, one cell (a link, its name marked Ｌ), kind 251, set on a cell of the gear.
+- **Where the member becomes 19** (each step seen with `KHDAYS_WATCH` on member 0's record, seat 0's word and the
+  camp's record of seat 0, the deck set at the select so that the first camp makes it):
+  1. The camp's construction (`Ov008_MainMenuInit`) walks the deck: `Ov008_BuildMenuListFrom(gGameState + 0xee0)`
+     sums the panels' records into a stat block (`Ov008_FoldPanelIntoTally`, `Ov008_FoldRecordIntoTally`, at the
+     walk's `+0x2c`); its first word not 0 sets game flag 0x2010, else clears it (set with three Ability Units on
+     the Zero Gear, clear with two). The camp's Panels can flip it too (`Ov008_GridMenuBack`,
+     `Ov008_ToggleOptionFlag`).
+  2. It makes the seat's 6-byte camp record (`+2` bit 1 = flag 0x2010, `+4` the seat's character) and
+     `Ov008_StoreSeatCampRecord` -- misnamed: it is the seat's camp record, not input -- stores it at the camp's
+     context `+0x2e + 6 x seat` and sends it to the room (`Ov008_SendMenuMessage(3)` in a session, else 2).
+  3. `Ov008_CommitSelectedPage` -> `Ov008_RefreshSeatCharacter(seat)` rewrites the seat's character word
+     (`data_020429c8[seat] + 4`) with `Ov008_GetSeatCharacter(seat)`: the row's character, and 0x13 when it is 0
+     (Roxas) and the record's bit 1 is set.
+  4. `Ov008_ResetPartyMemberAndLayout` -> `PartyMember_ResetWithKind(0, 0, 0x13, 0)` -> `PartyMember_Reset` writes
+     member 0's character 0x13; the field loads overlay 49, whose actor's `+0xc` is 19, its data `ba/ch/r2/`.
+  The story's route is another: `Ov002_AdvanceRosterSetup` (a mission script's command, mode 7) writes member 0's
+  character 0x13 itself (mode 6: 0x14).
+- **The forms** (docs/CHARACTERS.md, "Forms"): the port's join after step 3's `Ov008_GetSeatCharacter` (prepare.py,
+  `Ov008_RefreshSeatCharacter`; runtime/characters/forms.c) gives a mod's character's seat the base of the form its
+  rules choose, the game's own choice made first (the game's Roxas keeps his). Before it, a Roxas-based mod character
+  with the Zero Gear and three units got 0x13 and its data opened `r2`'s folder, not its own: now it plays its
+  default form's base unless one of its forms is on 19. A form's data is served as a character's (section 30) from a
+  folder of its own, `ba/ch/c100/` on (`Port_CharacterCode`: any number), and `khdays_characters_of(seat, kind)`
+  answers the folder of the seat's form whose base is `kind`.
+- **Its weapons** (seen 2026-10-30, `KHDAYS_TRACE_MODELS=1`, the forms walk): with the dual-wield Roxas the field
+  draws `w_.p2#0/mdl/ro_w13600` and `w_.p2#80/mdl/ro_w14600`, one in each hand; `r2`'s `w_.p2` also holds
+  `#40` `bf_w00_trace` and `#160` `ro_w13600_hit`, not drawn as weapons there. Each weapon model's nodes are its
+  `_a` and `_b` (`ro_w13600_a`, `ro_w13600_b`), its blade along `z` (0.49-0.85 for `ro_w13600`, 0.65-1.03 for
+  `ro_w14600`, in the graphics dump's glTF).
+  The port draws a character's or a form's `[weapons]` file for the model of that name in its own folder.
+- **In a room** each copy makes every seat's word from the room's records (step 2's record travels; the host's camp
+  copies its four members to the guests, `Ov008_CommitSynchronizedSnapshotState`), so a form chosen from a deck,
+  which only its player's copy has, would differ between copies: there the seat takes its first form on the base the
+  game chose, the same on every copy.
+- **The level rows** (`LevelTable_ReadEntry`: `ba/ch/<code>/lv.b.z`, 100 rows of 16 bytes, read through section 30's
+  join): `u16` at `+0` strength (`Ov022_ComputeStrengthDamage`, the member's `+8`), `+2` magic (`+0xa`), `+4` defence
+  (`Ov022_ComputeDamageTaken`, `+0xc`), `+6` the most HP (`Ov022_ApplyMissionLevelStats`), `+8` not known, a pad, and
+  an `int` at `+0xc`, not known (0x5000, 5 in 20.12, at every level of the tables read). Roxas's level 1 is 9, 34, 7,
+  62 and 6 (`+0` to `+8`), his level 100 83, 212, 140, 359 and 31. `r2`'s table is the same as `ro`'s.
+
+## 33. The field's prizes
+
+- **They are pictures, not models** (read 2026-10-30 in the decompilation, seen with `KHDAYS_TRACE_PRIZES=1`): the HP
+  orbs, munny and items a battle or an object drops are billboard nodes, each one textured quad facing the camera,
+  drawn by `Billboard_DrawList` (main@020287e8). A node: +0x00 the next, +0x08 the address of its picture's texture
+  words, +0x0c its place (VecFx32), +0x18 its width and +0x1a its height (fx16: the quad goes from -width/2 to width/2
+  and from its foot, 0, to its height on the billboard matrix's turn, DS 0x020428e0, after the view matrix at DS
+  0x020473e0), +0x1c..+0x1f the texture's corners s0 t0 s1 t1, +0x20 its
+  alpha (0..31), +0x22 its polygon id.
+- **The pictures** come from `mo/prize.pak.z` (11 BTX0), loaded by `Ov002_LoadShopTable` (ov002@02078ef8) into the
+  field stage's table at +0x60, 8 bytes a picture, in the pack's order. Seen in Mission Mode's field (the
+  `missions_waves` walk): 0 `ef_pp`, 1 `prize_01`, 2 `prize_03`, 3 `prize_05`, 4 `prize_06`, 5 `prize_07`,
+  6 `prize_08`, 7 `prize_10`, 8 `prize_11`, 9 `he_prize`, 10 `born`, their texture words at DS 0x300187dc + 8 x n.
+  A node's +0x08 points at one of these entries.
+- **The kinds** (`data_ov002_0207e67c`: 16 of {s8 picture, s8, s8, pad, s16, s16}) as `Ov002_CollectNearbySpots`
+  (ov002@02078bac) takes them: kind 2 tier 0 is `prize_01`, the HP orb (the HP rose as each was taken: 355 to 358, 358
+  to 359 of 359), kind 3 tier 1 is `prize_03`, the munny crystal (the save's munny unchanged during the mission: Mission
+  Mode's munny is the results' PLATINES line, +15 there for this mission's drops). A Shadow dropped one of each.
+  The table's picture bytes (its data, `ov002_spawn_rows.c`): kind 0 `ef_pp` (the grey crystal), 1 `he_prize`,
+  2 `prize_01`, 3 `prize_03`, 6-8 `prize_05`-`prize_07`, 13 `born`, 15 `prize_11`; 9-11 none (0xff).
+  `Ov002_BuildSpawnRow` (read in the C) changes two: kind 0 placed at a spot (mode 3) shows `prize_08`, the blue
+  crystal, its tier + 10; kind 15 tier 3 shows `prize_10`. Kind 0 is put out only in Mission Mode (`data_0204c240`
+  bit 2, `Ov002_SpawnKindIntoFreeSpot`). The node's width (+0x18) and height (+0x1a) come from its speed (tier 0
+  0x200, 1 0x380, others and items 0x500): kind 0 twice as wide and four times as tall (its pictures 16 x 32), kind
+  1 four times both, the rest twice both. Kinds 0 and 1 make the same pickup sound (`Ov002_PlaySlotActionSound`).
+- **The port draws a mod's effect instead** (`port/ui/prize_effects.cpp`): with a mod's
+  `graphics/mo/prize.pak.z/fx/<picture>.txt` (`port/ui/prize_effects_model.h`, made from KH2's `obj/PRIZE.mdlx` by
+  `tools/mods/kh2_prizes.py`) and the settings' "KH2 prizes and chests" on, `Billboard_DrawList` skips the node
+  (a join in `port/tools/prepare.py`) and the effect's current frame is drawn at its place on the 3D layer's
+  sequences, its body as wide as the picture. Taking it is the game's own: with the switch off the same walk took the
+  same kinds, the HP rose the same and the results gave the same PLATINES.
+- **The chests** (seen 2026-10-30, the `missions_waves` walk, with `KHDAYS_TRACE_MODELS=2` and the chest replaced by
+  its own dumped glTF): the mission's chest is `mo/mo#97`'s `eh_box_b`. Every world's chest model (`mo/mo` entries
+  94-99, 101, 102: `<world>_box_b`) has the nodes `dummy0` -> `box2` -> `box1` and `light01`-`light03` (the light
+  rays), at rest all at the model's place, 0.982 wide, 0.717 high, 0.783 deep. Opened, `box1` -- the lid -- is drawn
+  96 degrees from its rest and `box2` 2; the light rays show as it opens. With KH2's `F_EX040_EH` in its place (the
+  KH2 prizes mod: lid `j3` paired with `box1`), the lid turned back on KH2's own hinge as the game opened it.
+
+## 34. A world's rooms
+
+Read in the decompilation and seen with a test mod adding two Dream Drop Distance rooms to `eh` (23 rooms of its own)
+and the `missions_waves` mission played in one, 2026-11-02. The port puts the rooms a mod adds after the world's own
+(`runtime/rooms/added.cpp`).
+
+- **The room table** (`Ov002_LoadWorldLinkResources`): entry 0 of `mi/wd/wd_<code>` (LZ-packed in the game's), u8 the
+  rooms' count, then each room's offset (u32, from the table). A room: s8 id, u8 exits, u8 objects, u8 its collision's
+  member (`Ov002_LoadPeerIntoSlot`), words not read (+0x14 one the studio calls a budget), its exits' offset at +0x1c
+  and its objects' at +0x20 (from the record; relocated at load), an object u8 flags, u8 its model's member. Members
+  and rooms are bytes; the P2's count is 9 bits.
+- **A mission's room is the room's index** in that table, not its id: `room = 5` loads the sixth record (eh's index 5
+  is a room with an empty collision, which `Coll_ResolveModelBlobPointers` cannot read). The ids repeat (eh has four
+  id 0s).
+- **24 rooms a world, the game's.** The link context (`data_ov002_0207fa10`) keeps which of the four loaded slots each
+  room is in at +0x17, 24 bytes, indexed by the room: `Ov002_LoadPeerIntoSlot` writes `aSlotMappings[nPeer]`, the
+  fills of `Ov002_LoadWorldLinkResources`, `Ov002_AllocSceneState` and `Ov002_ReleaseContextBuffers` are 24 bytes,
+  `Ov002_GetCtxTableByte` reads by index. Joined (`port/tools/prepare.py`) to a table of the port's that grows
+  (`runtime/rooms/slots.c`); the game's 24 bytes are still filled and no longer read. Two more hold 24 and do not
+  grow yet (2026-11-14, a tester's mission in eh's third added room, index 25, stopped at its start): the field's
+  pieces' lists, one for each room, the scene context's first 0x18 words (`Ov002_PushBucketNode`, `_ClearListA`/`_B`,
+  `_UnlinkNode`, the walks of `_SceneStep`, `_NotifyNodesOfKind`, `_SetSceneObjectsActive`,
+  `_TeardownAllSpawnSlots`, `_ReleaseAllSlotObjects`: room 24's head is the context's handle, room 25's its scale,
+  0x1000, taken for a piece), and the scene manager's spawn places (`Ov002_EnsureSceneManager`: 24 of 0x184 bytes at
+  + 0xb8, `Ov002_BindSlotActorModel` and `_ResetSlotActorPose` by the room). So a world's added rooms stop at 24
+  rooms in all (`kFieldRooms`, `runtime/rooms/added.cpp`): eh, with 23 of its own, takes one; the others are told
+  in the log and left out, a mission there played in the world's room 0.
+- **A room's collision is LZ-packed** where the game loads it (`Entity_LoadAndAttach`, `Archive_LoadFile` streaming
+  it unpacked into `ModelGroup_Open`): an added room's is written LZ11 (literals, `lz11_literals`).
+- **The lower screen's chain** (`Ov002_ShowSlotSummary` through `Ov002_SnapshotChainEntry`, looked up by the field
+  state's +0x86, the room's id) is the room's map (docs/FORMATS.md, "Room maps"): its box and scale, its picture, its
+  name. A room the game does not know has no entry: its null entry was read. Joined: no entry, nothing shown. An added
+  room with a map (`map.png`, `map.txt`) is given one: its picture after `UI/btl/mapchr.p2`'s, its entry in its world's
+  chain of each `UI/btl/<language>/map.p2` (`khdays_rooms_merge`, its id and picture planned from the game's files
+  whichever is read first). Seen: the waves mission in the added plaza with its map in the corner, the player on it.
+- **An added room's model** is a copy of room 0's model member (the game loads and draws a model there), drawn as the
+  mod's (`graphics` keyed by its member, `khdays_rooms_model`); its names are known from the start
+  (`khdays_origin_want`).
+- Seen: the waves mission started at the added room's origin, its Shadows, chest and emblem there, cleared; the
+  merged archive in the play, mission and multiplayer walks.
+- `KHDAYS_ROOMS_DUMP=<folder>` writes each world archive the mods add rooms to, as served (`wd_<code>`), to look at.
+- **Mission Mode's worlds** (the camp's screen 1, the holo-mission world map, `Ov008_MainMenu_*`): its world is a slot
+  (`+0x54`, a byte) whose list `Ov008_EncodeCursorAction` builds from the rows of that category (`msl` +0xa; flags
+  `slot << 8 | 7`, `Ov008_AppendEligibleRecords`). Twelve slots, the worlds' indices: L and R step through them
+  (`Ov008_StepCursorToAcceptedSlot`, `(cell + 12) % 12`, a slot whose list is empty refused), the arrows show when two
+  list rows (`Ov008_UpdateMissionListArrows`), a slot is locked unless flag `0x3bc9 + slot` (0 and 4 always open:
+  `Ov008_MissionListOpen`, `Ov008_WorldMap_UpdateSelectionText`), its name the slot's record of
+  `UI/cm/str/world_id_<language>.s.z` (u32 8, u32 the count, each a u32 length and UTF-16: the twelve worlds' names and
+  a thirteenth), the map's cursor moved to the slot's place (`Ov008_MenuCursor_MoveToSlot`, held to 0-11). The game's
+  missions use slots 0-5 and 7-10.
+- **A world a mod adds** (`rooms/worlds.txt`: `[world <key>]`, `like = <code>`, `name <language> = ...`) takes a slot
+  from 13 (past the thirteenth name), in the mods' order: joined (`port/tools/prepare.py`), L and R and the arrows go
+  through 12 + its worlds (`khdays_mission_slots`), its slot is open, the map's cursor goes to its game world's place
+  (`khdays_mission_slot_shown`); its name is put after the game's in each language's `world_id` file. Its rooms are
+  added to its game world's archive and its missions played there (`world = <key>`: the port gives the mission its
+  game world and the world's slot as its category), with that world's sky, music and sounds.
+
+## 35. A press's way to the screen
+
+Measured 2026-11-03 (`KHDAYS_TRACE_LATENCY`, the run07 walk's field in a window, Direct3D 12, a
+165 Hz screen): a press reaches the window at once (0.0-0.1 ms), waits 14-20 ms (17 on average) for
+the game's pad sample -- the game reads the pad once a logic frame, 30 a second, as on the DS -- and
+the first picture made after that sample is presented 33.7-34.1 ms later: two VBlanks, the game's
+logic frame. 48-54 ms on average, 67 at most, before the screen's own refresh; loads add their
+pauses (0.2-1.2 s). The port adds nothing a frame of its own: the picture is presented as soon as
+the package arrives (one frame in flight). What waits is the screen's refresh after it, which the
+screen's lock (PLATFORM.md, "Threads, interrupts and time") keeps short and the same each time on a
+60 Hz screen.
+
+Measured again 2026-11-11 on the player's PC (`KHDAYS_TRACE_LATENCY`, the moves walk's field from the player's
+save with their mods, a borderless window over a 60 Hz screen, internal resolution `window`, Direct3D 12),
+the presses in the field only:
+
+| from the press to | the window | the game's pad sample | the picture presented | in all |
+|---|---|---|---|---|
+| the DS's pace, before | 12.4 ms | 20.5 ms more | 53.4 ms more | 86 ms |
+| the DS's pace, now | 0.4 | 16.2 | 36.0 | 52 |
+| the smooth pace, before | 12.8 | 21.8 | 53.4 | 88 |
+| the smooth pace, timed (taken out) | 1.0 | 17.3 | 53.2 | 71 |
+
+Measured 2026-11-14 on the same PC and walk (the borderless window, the player's settings): both paces had
+gone back to 87-88 ms -- the window's thread in `SDL_RenderPresent` 15.5 ms of each refresh, without VSync
+too, with the picture at its lightest (internal resolution 2, no FXAA) as well, and 0.3 ms in a window
+with borders. Two frames in flight had been two swapchain images, not three (SDL makes as many as the
+frames in flight, two at the least), and Windows' independent flip of the borderless window held each
+present until the other image came off the screen:
+
+| from the press to | the window | the game's pad sample | the picture presented | in all |
+|---|---|---|---|---|
+| the DS's pace, two frames in flight | 12.4 ms | 21.6 ms more | 53.2 ms more | 87 ms |
+| the smooth pace (VSync) | 12.7 | 21.5 | 53.5 | 88 |
+| the DS's pace, three frames in flight | 0.1 | 17.5 | 34.1 | 52 |
+| the smooth pace at the refreshes, no VSync | 0.2 | 17.0 | 34.2 | 51 |
+
+- **No VSync while only the game's pictures are drawn** (`khdays_present_wait_for_refresh`,
+  `host/render/gpu_present.c`). With it, `SDL_RenderPresent` waited for a free swapchain image for most
+  of each refresh (15 ms of each 16.7), on the window's thread, which also takes the keyboard's and the
+  gamepads' events: a press waited there, and each picture was presented a refresh after it was drawn.
+  Without it SDL's renderer presents MAILBOX (on Direct3D 12 a flip-discard present at sync interval 0
+  without tearing): the newest picture shown at the next refresh, none waited for. With two swapchain
+  images a present still waited a refresh where the picture went to the screen without the compositor (a
+  borderless window over it: Windows' independent flip), so without VSync the card keeps three frames in
+  flight, three images (two frames in flight were two images: the table above). SDL builds the swapchain
+  anew at each change. VSync is on while the window draws on its own time (an animated backdrop, a movie,
+  the KH2 pause, a settling picture, the settings menu, a monologue), which without it would be drawn as
+  fast as the card goes.
+- **The smooth pace at the screen's refreshes, without VSync** (`smooth_unblocked`,
+  `khdays_present_between_due_ms`, `host/render/gpu_present.c`; `host/app/window.c`). While the screen's
+  lock holds (PLATFORM.md: the game's VBlank 6 ms before each refresh, at 60, 120 or 240 Hz), the smooth
+  pace draws as the DS's does: each package as it comes, presented without waiting and shown at the
+  coming refresh, and on a screen faster than 60 Hz a picture at each refresh between packages, timed from
+  the package. The 3D is placed by the refreshes since the newer list's package came, one refresh's share
+  already at the first: at 60 Hz half of the step at the package that brings it, the whole at the next,
+  evenly -- the step starts on screen at the same refresh as at the DS's pace, never past the newer; a
+  game frame of one VBlank (the press pace's early start) shows its newest at once. Where the lock does not
+  hold (a screen at 75 or 144 Hz, a session, the time held) or with `KHDAYS_SMOOTH_VSYNC=1`, the smooth pace
+  keeps VSync and its steady delay (`picture_delay`, section 7).
+- **Not done: the pad read later.** The game reads the pad (`Pad_Sample`) every VBlank, 3 ms after it,
+  and works 5-10 ms after the read (up to 12) before its next wait. A read held until a margin before the
+  next VBlank gained 2 ms; held past it (to the game's next frame, the field's two VBlanks), the 3D's
+  swap came a VBlank later in half the frames (30 of 60), and the presses took longer in all: the game's
+  work belongs right after its VBlank. Nor is a picture drawn before its VBlank: the VBlank's handler
+  changes the 2D then.
+
+## 36. The Dark Corridors
+
+Traced 2026-11-07 (mission 6, day 13, started from the camp by a Lua mod's `mission.start(6)`; the play walk's input;
+`KHDAYS_TRACE_CORRIDORS=2`, `=3`):
+
+- **Days's standing oval** is a model: `mi/ob/06.z`'s `E000_xx_000` (13 nodes: `Box01`-`Box04`, the floor's
+  `Plane01`-`04`, `bilbord` with `S1`, `Plane02`, `s3`, `cs`), drawn as a field object through the 3D engine's Flush
+  at scale 1. Its file's joint clips are `E000_xx_000` (opening, 70 frames), `E010_xx_000` (holding, 60) and
+  `E020_xx_000` (closing, 61), with material and texture animations of the same names. In mission 6 it is first drawn
+  at the game's frame 1659 (E000), holds from 1727 (E010), closes from 1787 (E020) -- its `bilbord` parts fading from
+  that clip's 40th frame, nothing seen from its 53rd -- and is no longer drawn from 1847; Roxas and Vexen step out of
+  it meanwhile. `mi/ob/09.z` has the same model with `E010_xx_000` alone; `mi/ob/07.z`'s `E_100_xx_000` (the same
+  look, one clip of 167 frames) was not seen in play. `mi/ob/08.z`'s `E110_xx_000` (thorns, a whirlpool) is another
+  effect. The floor swirl (`mo/mo#45`, `E040_xx_000`) and the corridor home's floor hole (`mo/mo#46`) are others.
+- **Its size as seen**: its smoke lines' model reaches 7.556 above its floor, but its pictures fade out well inside
+  it: on the frames its darkness (each pixel's change from the frame before it showed) reaches 3.6-3.8 above its floor
+  at its middle and is 2.4 across, the screen's rows taken to the model's heights through the oval's own matrices.
+- **Its floor**: the oval stands sunk in the ground -- its floor at the world's -0.090, Vexen and Roxas beside it at
+  0.000 (every model's place, `=3`). Its flat floor pieces lie above its floor: `smog_c` at 0.039 and 0.083 (under
+  the ground there) and its floor shadow `smog_d` at 0.135, the one seen.
+- **KH2's corridor** is the first effect of KH2's `event/effect/tt_event_904.pax` (docs/FORMATS.md, "KH2's effects"):
+  one repeating emitter of 34 layers and 150 frames. Its oval -- a bowl behind a depth-only mask holed in its shape,
+  seen through the hole from its +z -- reaches 430 above its floor (its y 0, y down) and is 300 across; told to stop,
+  it closes in 92 ticks (KH2's 60 a second).
+- **The port** (`port/runtime/mods/kh2_corridors.cpp`, with the KH2 Prizes mod's `kh2fx/` files and the settings'
+  "KH2 Dark Corridors" on): the oval's draw is taken (`khdays_models_draw_begin`), its shapes left out
+  (`khdays_models_shape`, their matrix commands still run), and the corridor run 60 times a second of the game's
+  frames (two ticks a frame at 30) and drawn there: KH2's floor on Days's floor shadow (0.135 above the oval's floor;
+  on the oval's own, KH2's shadow -- discs and rings at its y 0 -- lay under the ground and was hidden), its top on
+  the oval's seen top ((3.7 - 0.135) / 430 of the oval's units a KH2 unit, then 2.5 across), its axes the oval's
+  turned half a turn about z (y up, its front on the oval's +z) and the oval turned about its up so that its front
+  looks at the camera (seen from the front, as KH2's are: the maintainer's choice), its triangles as effect polygons (docs/RENDERING.md, "KH2's effects") depth-tested against the
+  scene. It closes within the oval's closing clip, when the clip has as long left as its closing takes (92 ticks:
+  46 frames), so both end together; an oval that stops being drawn without one closes it where it was, its triangles
+  added as the 3D list closes (`khdays_g3d_add_swap_hook`). The pictures are its pages as textures, the remaster's HD
+  ones (`kh2fx/<file's stem>/-<n>.dds`) with HD graphics on. Each copy of a multiplayer game draws its own from its
+  own game; nothing is sent.
+- **Its sounds** (`KHDAYS_TRACE_SOUND=1`): Days's oval starts `seqarc/EV_DARK_APPEAR/se_ev_dark_appear` (2.5 s) and
+  `se_ev_dark_loop` (a 5.2 s loop) together as it opens, `seqarc/EV_DARK_DISAPPEAR/se_ev_dark_disappear` (3.2 s) as
+  it closes, and stops the loop 8 frames (60 a second) after that -- in mission 6 and the scenes that load
+  `mi/ob/06.z`; the play walk's arrival (the floor swirl) starts none of them. KH2's corridor effect names no sound
+  (its element's is -1): KH2's scenes play their own (docs/FORMATS.md, "KH2's sound banks and its scenes' sounds").
+  Twilight Town's event 904 (tt04, bank 2984) starts its sound 10 (10.4 s: it rises, holds about 7 s and fades) at
+  frame 1953 and the corridor at 1954, and its sounds 16 (6.4 s) and 17 (3.6 s, footsteps) at 2874, stopping the
+  corridor at 2892; di02's event 899 (a variant of the corridor, bank 3101) starts none at its corridors, and no
+  sound of the other banks goes with one (those the Organization's banks share are their attacks'). The KH2 Prizes
+  mod (`tools/mods/kh2_prizes.py`) plays KH2's sound 10 as the loop -- heard from the opening, stopped with the
+  loop -- leaves the appear silent and plays sound 16 as the disappear (on to its end), its `sounds/switches.txt`
+  tying the three to "KH2 Dark Corridors" (docs/SOUND.md, "Mods' sounds").
+- **Checked against a reference player** drawing the same effect with KH2's own pictures from the game's camera
+  (`=3` logs it) over the frame before the oval showed: the hole's inside within 1-2% (each region's mean colour),
+  once its bare-colour triangles took the GS's rule (the vertex colour itself without a picture: they had been twice
+  as bright).
+
+## 37. KH2's enemies in Days's enemies' places
+
+Traced 2026-11-08 (the `kh2_enemies` walk: Twilight Town's arena of mission 1354, a custom mission's waves of KH2
+Soldiers and a Shadow, `KHDAYS_TRACE_KH2_ENEMIES=1`; docs/KH2_ENEMIES.md):
+
+- **The field's step**: `Ov107_ProcessObjectTick`'s `delta` is 4096 a frame at 30 frames a second.
+- **A wave's enemies** are made from the mission's enemy table's rows by `Ov002_CreateActorFromMarker` when the area
+  loads (each row's actors at once, idle), and set going by their spawner; a defeated one is reused for the next wave
+  0.4-0.7 s later (`Ov107_AiState_OnDefeat`, then set going again) without being made again.
+- **An enemy's model** (the Soldier's `Ms/04.p`, the Shadow's `Ms/00.p`, each the first model in its file) is drawn
+  with the position matrix its place in the world (the Soldier's its srt's translation exactly, the Shadow's 6 cm
+  from it), the camera folded into the projection; the same files hold other models drawn near it (`Ms/04.p`'s at
+  +0xca00, 0.5 away) and `Ms/SharedEffect.p2f` the enemies' shared effects; neither its actor, its node (+ 0x9c) nor its render
+  object holds a word that leads from one to the other within 0x400 bytes (a battle actor's node's + 0x24 is not its
+  render object here).
+- **Its lock-on mark** turns with the actor's srt rotation: left unturned, it stood off the KH2 model.
+- **Days's hit and defeat sounds** (`MON_SOLDIER/se_soldier_dmg_*`, `COMMON_SYS/se_all_enemy_dead01`) and its defeat's
+  effects (the dark burst, the heart rising) play from Days's side of a hit, its Days tasks held or not; its appearing
+  sounds (`MON_SOLDIER/se_soldier_ex`, `COMMON_SYS/se_all_enemy_syutsugen`) as its spawner sets it going; the Shadow's
+  `MON_SHADOW/se_shadow_dmg_*`, `se_shadow_dead`. Each is started through `Slot_Spawn` at the enemy's place (the y
+  0.55 above its feet, the x and z within 0.25 of its srt's, a hit's at the hit), the player's weapon's
+  (`WEP_ROX26/se_rox_weap_hit`) at the same moment elsewhere: the port's join there keeps the stand-in's own quiet at a
+  KH2 enemy's place (`khdays_kh2_enemies_quiet`).
+- **A spawner's actor** (`Ov107_Spawner_FindFreeActor`): any idle one of the slot's kinds entry's class (+ 0x19c,
+  + 0x19d, + 0x19e against the entry's bytes), whatever row it was made from; `Ov002_UpdateSlotLookup` gives every
+  placed row its entry through `Ov107_AllocSortedEntry`, which rows of one class and level share. The slot's owner
+  tag (`Ov002_CreateSpawner`: the spawner's place among the field's objects << 8 | the group in its record, + 4 of
+  the 12-byte slot, copied to the actor's + 0x2d0) names the row: the field's objects + 0x44 (0x18 bytes each, + 0x14
+  the s8 record), the records at the enemy table + 8 (+ 4 their groups, 4 bytes each, the row first).
+- **The ground under it** (+ 0x13c the distance under its sphere's centre, + 0x140 whether found): a KH2 leap of
+  5 m came down 0.5 m and more a tick and went through the floor, Days's collision not stopping it, the ground then
+  not found under it.
+- **The room's walls** (seen 2026-11-14, the coliseum made from KH2's `he00`, its ring walled at +-9.2 m and its
+  stands at +-20 m from the floor up): `Collision_CastRay` along the ground a metre up met none of them, in 200 s of
+  the Lingering Will's rushes; the ground under a point it met everywhere. A sphere cast (`Collision_RunSphereCast`,
+  `map_only` 1) along the same way met the walls (1556 ways stopped in the next 200 s, none crossed). A stand-in set
+  down its Days sphere's radius (0.45 m) off a wall stays there: Days's collision pushes it no further.
+- **The deck under an enemy's own command menu** (seen 2026-11-14, Zexion's Lexicon, f5675 of a Mission Mode walk):
+  the deck's names are a text canvas of their own (`Ov002_DrawPanelRowText`'s, flagged `command_cache` in `text.c`)
+  apart from the deck's BG3 cells of `UI/btl/*/main.p2` (`hud.deck`) and its cursor sprite: all three must be left
+  out for a picture drawn in its place to stand alone (the names had shown over it). The text part emits before the
+  HUD: asked from the menu's state of the VBlank before, Days's names showed for a frame each time the book opened
+  (Zexion opens and closes his Lexicon several times: 94.9 s, 98.8 s, 102.2 s in one walk); it now asks whether
+  the book will stand this VBlank. During the Lexicon the reaction command "Turn" (714) is offered every frame, so X
+  never reaches the deck's cursor; Down in that walk moved Roxas, not the cursor. Between his books the deck is
+  Days's own: A on its Items row opened the list, as Days's A does.
+- **A player's pad and model for a form of KH2's** (2026-11-15, read from the decompilation for Luxord's card and
+  die): the host runs every player's `Ov022_ActorUpdate` (`Session_GetLocalPlayerIndex() == 0`), and at the start of
+  `Ov022_TranslateCommandToAction` the actor's + 0x18 holds this frame's pressed buttons (1 the command -- `nButtons &
+  1` triggers it --, 0x800 the jump, as `Ov022_StepJumpState` and the partner's AI read it) and + 0x1a the held ones
+  (0x40 up, 0x80 down, 0x20 left, 0x10 right, 0x800 the jump), a guest's too; `Ov022_HeadingFromHeldDpad` makes the
+  heading from + 0x1a (Up 0, Left 0x3fff, Down 0x8000, Right 0xbfff), `Ov022_StepWalkState` adds + 0x478
+  (`nAngleBias`, the camera's turn) and moves along (-sin, -cos) of the sum. Its lock (`bLocked`) zeroes both and the
+  command, so a player locked there makes no way and no command. + 0x694 bit 0 (`bSuppressDraw`) keeps
+  `Ov022_ActorUpdate` from drawing the model (it returns before `Scene_DrawNode`).
+- **The weapons of a hidden player** (seen 2026-11-15, Luxord's die in a window run, the maintainer's screenshot the
+  same): with + 0x694 bit 0 set Roxas's body was gone and his keyblade still drawn beside the die. His two weapon
+  slots (+ 0xda8, 0x164 each) are drawn by `func_ov022_0209c9fc` (gated on + 0x694 bit 2, each slot's + 0xda9) at his
+  hand's place, which bit 0 does not reach; `Ov022_TickSubObjectChain` draws its sub objects (the ground mark, the
+  anim records) only *with* bit 0 set -- with it set the next run showed Roxas's body in its rest pose over the die
+  (an anim record's node). Bit 0 is no plain "not drawn": the port hides the player by his node's flag 0x20 instead
+  (read by `Ov022_ActorUpdate`, `Ov022_ActorSetState` and `Ov022_RunReplayFrame` before `Scene_DrawNode`, set on an
+  actor's node by nothing of the game's) and leaves his weapon slots undrawn while he is a form
+  (`khdays_kh2_enemies_turned`, prepare.py's join there).
+- **A KH2 mission's damage trigger** (read 2026-11-15, the PS3 build): `YS::UNITSCRIPT::DamageCallback(OBJ *, DAMAGE
+  *)` runs trigger 6 of the unit scripts (a mission's: `VM::callback(6, {obj, damage}, 2)`), the routine's first pop
+  the damage. `trap_damage_damage` (2:46) is `YS::DAMAGE + 0x28` (the damage, an int), `trap_damage_is_cure` (2:72)
+  whether its attack's record (+ 0x20) has the type byte (+ 4) 5 or 6; `trap_sysobj_is_player` (1:309) takes the
+  object's + 4, `trap_obj_part` (1:213) the object entry's + 0x4c (Luxord's 4005, KH2's player's and his forms' 1).
+  Luxord's `EH14_MS103` drains its gauges there: the player's (0) by 100 x damage / 4000, Luxord's (1, part 4005) by
+  100 x damage / 3000; his signal 136 (a gauge out) takes his damage pattern 9 off (`1:324`, `trap_obj_pattern_reset`:
+  + 0xabc's bit) and sets his health to 1 (`1:155` by `1 - 1:228`). Pattern 9 is `BTLOBJ::is_withstand`'s first test
+  ((+ 0xabc | + 0xac0) & ~+ 0xac4, bit 9): `BTLOBJ::add_damage` then leaves a hit that would take the health to its
+  least or below one over it -- he cannot fall while his time lasts (`1:211(self, 9)` at his start). The port runs the
+  mission's trigger 6 on a KH2 enemy's hit (its damage in its health's measure) and on a player's HP lost (in the
+  measure of the mission's boss's health against what Days shows of it: Days has no KH2 player's health), answers
+  2:46, 2:72 and 1:213 so, and keeps a withstanding enemy's health one over its least. Seen (2026-11-15, a window run):
+  Luxord's health kept at 1 by it and Days's stand-in defeated all the same by the same hit -- each Days enemy class's
+  own hit handler (`Ov120_Actor_OnHit` and the rest) works the damage out again (`Ov107_CalcHitDamage`) and takes
+  that off its HP, never the amount `Ov107_AiState_ApplyHit` kept; the kept amount now goes to that second working
+  out too (`khdays_kh2_enemies_dealt`, prepare.py's join on `Ov107_CalcHitDamage`), once, in its frame.
+- **KH2 PC's wide move of the mission pieces' side columns** (2026-11-15): KH2's HD pieces place a piece by its
+  column's clip (16, 17, 15 for a gauge) as the PS3 build's `MISSION_GAUGE::create` does; the HD data's right column
+  of Luxord's two time gauges (`EH14_MS103`'s "gage" SEQDs, clip 17) is at x -85 -- every other mission's right column
+  is inside the 512 dots (296 to 376) -- so that with the side columns' 85 dots out on the wide screen the two halves
+  meet in the middle ("SORA [TIME GAUGE VS] LUXORD", 3.5 to 503.5 dots). Laid out by its side the port had cut it at
+  the screen's left edge.
+
+- **Xigbar's sniping** (2026-11-15, B_EX140_LV99 in a window run, the coliseum; docs/KH2_ENEMIES.md, "The scope,
+  the pictures and the screen's shake"): `scope_start` puts him at KH2's (0, -800, 1900) -- 8 m up, 19 m out -- and
+  his scope camera's eye between his head (2 m over his place) and a point 1.5 m short of the player (zoom 0.4, 1
+  locked on); its target follows Roxas's middle at up to 15 a tick. The lock-on came every few seconds with Roxas
+  moving under it; twelve rounds then `scope_end_self` (the sights' layout 3 played out in 1 s, the event "20" after).
+  His layouts drew where KH2 puts them (the 4:3 picture's middle), the HD pages 19 and 20 of his archive after its 19
+  effect pages. Days's player has no KH2 pose: 1:83 on him (bone 140) gave the running actor's bone before -- the
+  scope looked down at Xigbar's own chest; now his aim point. Events gave no control back: `scope_start`'s 1:42 kept
+  Roxas still for the whole scope until the port ended an event as `YS::EVENT::phase_end` does.
+
+- **Final Xemnas and Riku** (2026-11-16, B_EX170_LAST_LV99 with P_EH000_LAST in window runs, the coliseum; docs/
+  KH2_ENEMIES.md, "Final Xemnas and Riku"): a whole battle played -- his dance with his double, the air fight (Riku in
+  his AQ10 for 8 s, back to his AI after), two grabs each freed with "Rescue" at its first offer (the menu showing
+  "Saltar / Razia tenebrosa / Atacar", Riku moved by the pad and striking with 197 and 198, the camera on him), and the
+  dome: fired 6 s after 8:3 (his "60" over), 30 Reflects taken, ended 30.09 s after it fired (1800 ticks at KH2's 60).
+  Riku's party AI: walk 2, run 8, search 800 cm, lost at 1200; his normal_attack2 (152) every second within 2.2 m,
+  jump_attack2 (182) up to 3.2 m above him.
+- **A hit's karma** (the same runs): Xemnas set his limit to 75 (2:76); a run of 8 Days hits (10 each) put him in
+  `revenge` at the next damage motion's frame 20 -- twice in a whole battle where the reflect path had entered it
+  on every reacting hit (453 times in one run, his 1 HP held under Riku's flinching blows).
+- **Cracks across the screen were held effects** (the same runs): Xemnas's thorns (effect 3, elements 10 to 12) are
+  held by 0:66 and then faded by 0:52 (12 ticks, `EFFECT::fadeout_kill`); the port ended an effect by its age, which a
+  held one's does not move on, and the thorns stayed drawn where they fell for the rest of the fight (found with
+  KHDAYS_KH2_HIDE_ELEMENTS and the slivers KHDAYS_TRACE_KH2_ENEMIES=2 tells).
+- **The dome on black, Riku hurt** (2026-11-16, a window run in the coliseum, the player kept unhurt by a local
+  switch to reach the dome): 8:6 came 2.3 s after 8:3 and 8:7 6 s after 8:5; between them the room's models were
+  left out and the 405 lasers stood all round on black, as KH2 shows them with its map's group 0 and sky hidden; the
+  room came back at 8:7. A green triangle that flashes in some frames is the reaction command's appearance (its pulse
+  from "Reflect"), not the room. Riku: 100 health (plrp), Xemnas's blows at level 99 on a Proud save -- power 150 90,
+  100 60, a laser (25) 16 (30 x the power over 100, x 2 for Proud) --, knocked out at 0 four times in 300 s, up 1800
+  ticks (30 s) after with 25; the lasers struck him twice in the dome. Knocked out he stood: this Riku's set has no
+  54 nor 55 (DUMM entries 216 to 223), so KH2's MOTION::change finds nothing to lie in.
+- **The dome the right way up, the double's blades** (2026-11-19, window runs, the same mission): the dome's lists had
+  their y turned over -- from above, a field of dots under the characters; given as an effect's place in the world is
+  (KH2's y), it stands round them, its lasers sticks of 8 sprites a metre long (as `RyjMegaBirthUserCtrDrawShapeLine`
+  spaces them; the port had set them the whole length apart): from inside, round lights in rows with dark between,
+  from above a burst of sticks. KH2's effects' pictures read as the GS reads them (plain linear, not alpha-weighted):
+  the halos red, not their cores' beige. The double's blades (elements 1 and 2, bound and fading with it) hung in the
+  air while it was faded out; drawn now only while it shows (its dance, 123 to 130 s; its `run3`).
+- **Riku knocked out as KH2 has him** (2026-11-19, a window run): knocked out at 129 s by a blow of 90, he went on
+  fighting (his set has no 54: KH2's AI acts on), his stars (00effect.bar's 14) over his head from his reaction's end,
+  closed in each of his attacks and started again after it (nine times), up at 159 s with 25; hit by Xemnas's blows
+  on his bones' hit spheres (`TYPE_HIT`), no longer on his room-collision cylinder.
+- **The event cameras' start and end, Xemnas kept in the coliseum** (2026-11-19, window runs with the KH2 camera on):
+  his grab's "11" (0x4c) started from the game's camera (eye 4 312 -425, its field of view 0.95) and was on its keys'
+  within about 33 frames (eye 103 440 -1237 against 67 474 -1227); at its end and at "50"'s (0x31 + 6 0) the KH2
+  camera took up from the sequence's last view -- after "11" a view from 19 m up, looking down -- and was back behind
+  Roxas a second later; after "40" and "51" (no 0x31) it took up where it stood. His `mode_bomb` warp, 18 m from the
+  player, had put him at (1.89, 0.25, -13.45), behind the coliseum's gate, and at x or z of 9.8 by its stands; kept in
+  by the walls, (1.20, 0.25, -7.77). Not mended: "50" and "51" are placed round the world's middle, where the script
+  puts the player first (1:217 to (0, 0, 0), turned to -z), as KH2's arena has them; shots of "50" (frames 135 to 285)
+  stand 13 to 16 m from the middle, beyond the coliseum's walls (8.7 m), and show them. Hit in a corner by Roxas's
+  aerial blows he rose up a pillar to 5.7 m (motion 10) before his next attack took him down.
+- **Vexen, his disc, his count and his freeze** (2026-11-19, window runs in the coliseum, level 99): his disc homed
+  on the player only while his entrance lasted (`1:140` on its target record, on the player, gave 0), then flew off
+  in a straight line, 3 cm farther each update -- the gauge stopped at 68; with the player there it fills while the
+  disc touches him (0 to 100 in about 25 s standing still), but a full gauge left the count at 0 (`4:41`'s amount and
+  index read the other way round) and emptied it; set right, the count went 1 to 5 in 160 s of a chase, the
+  Anti-Sora came at 116 s (count 1) and the gauge's warning at 241 s (count 5). His freeze (atkp 1816) held the
+  player from 145 s to the run's end; now frozen at 89.27 s, the ice shattered and the player let go at 94.37 s (the
+  strike's reaction), a reaction command offered meanwhile ("Forcejear" in the Spanish game's).
+- **Attacks reflected: Lexaeus and Sephiroth** (2026-11-19, window runs in the coliseum, level 99): Roxas's block (Y) of
+  Lexaeus's strike (atkp 1843) at 89.79 s turned it back -- his motion 140 (recoil, then a counter at its frame 160),
+  "Megadescarga" offered and taken at once (708), the player let go at 94.87 s, Lexaeus on at 97.28 s; his S_ATTACKs
+  (1842, 1965, 1966) landed through the block all through the run. Before the state hold his next state's motion (201,
+  `atk_nagi`) replaced 140 in the same tick. Chasing and striking, Roxas's blows never landed during an ATTACK of his in
+  two runs, and once during one of Sephiroth's (1144, its sphere 0.14 m off). Sephiroth's reaction command 664 at 84.21
+  s: his split flash landed on the invincible player at 84.41 s, `rc_success`, the player free at 85.75 s; at 117.77 s,
+  warped to (5.7, 8.5), the coliseum's wall stopped the flash's dash and the player stayed in AQ90 to the run's end.
+- **Marluxia's doom and KH2's world unmirrored** (2026-11-19, window runs in the coliseum, level 100 -- 99 for KH2):
+  his count from 99 down by his hits; with the level set to 3 the player fell at 0. Its figures, laid along the
+  camera's left by his script, read "59" for 95 while the KH2 enemies' world kept Days's z (a mirror of KH2's); with
+  KH2's world Days's turned half round x (y and z the other way, as KH2's maps are laid as rooms) they read "89", "71",
+  the tens on the left. Lexaeus, Final Xemnas (Riku, the player held, Rescue) and Sephiroth (warps, RC 664) played
+  and drew as before (docs/KH2_ENEMIES.md, "Days's side: the shell", its axes).
+- **Sephiroth's split flash** (2026-11-19, window runs, level 100): before, 4 of 11 reaction commands 664 missed (the
+  flash 46 to 180 degrees off the player -- he had walked into the coliseum's corner facing it, never turned by his
+  walk's 1:80) and the player stayed in AQ90; twice the flash was cut by a landing (motion 5, his grab's thread's 1:95
+  on the player falling to him) and he stood till struck. With the Spec's turn speed, range 22 and the player's
+  motion given back: 17 of 17 ending in `rc_success`, the flash facing the player (1.00) at its frame 49 from 1 to
+  20 m. The same runs on Lexaeus, Final Xemnas, Marluxia and Vexen: Final Xemnas's dome then struck the chasing
+  player down (208 s) and Marluxia fell to him (168 s); Vexen still climbs the corner (8.8, 4 to 7.5, -8.8) as he did
+  before these changes (open).
+- **The screen's white** (2026-11-19, Sephiroth's reaction command 664, window runs): his `rc_success` asks 0:31 for 1
+  frame and 0:32 for 1 a frame later -- the white at 1.00 for a tick, then 0.00. Laid in the game's MASTER_BRIGHT
+  registers for the frame drawn, the whole screen stayed white for the 195 frames shot after (A and B 0x4010: the
+  game kept the value); laid in the frame package (`KD_MASTER`, the information), with the fade back stretched 60
+  times by a local test switch, the window went white (mean 231 of 255) and back to its own in about a second.
+
+## 38. Days's commands on KH2's reaction command bar
+
+Read in the decompilation, then seen in story Mode (day 357's Twilight Town, the save khdays-antiguo.sav's file 1)
+with the KH2 enemies' mod's `zz0command.2dd` and KHDAYS_TRACE_CONTROLS (docs/KH2_ENEMIES.md, "The reaction command's
+bar").
+
+- **The command offered**: `Ov022_UpdateCommandInput`, each tick the local player has field control, puts the
+  command of the thing aimed at (`Ov022_GetSubKindIfState2`: the actor's + 0x4f0 2, its object's + 0x17 low bits;
+  -1 none) in the deck's first row (`Ov002_PanelSelectSource(kind, usable)`), Attack (0) otherwise. Its label is
+  `UI/btl/<language>/cmd.s` record kind + 5 (0 Attack, 6 Examine, 7 Talk, 8 Trick, 9 Bone); a town's panel (+ 0x58
+  set) has no Attack and labels the first row Talk (record 7), greyed.
+- **Its press**: A takes the first row as kind 9 (`Ov002_PanelActivateSlot`); the host's
+  `Ov022_TranslateCommandToAction` makes kind 9 an attack (pending action 1) and, with something aimed at and free
+  (`Ov002_IsObjectFree`) and no combo running (+ 0xd80), the command (pending 2), which wins. It takes the command
+  only with A among the received buttons (+ 0x18 bit 0) or the received "chosen without A" (+ 0x4e8 bit 2, the
+  sender's + 0x4e8 bit 1: the L shortcuts' way).
+- **The port** (the setting on, the bar's pieces there): the first row keeps Attack, the bar shows the command, the
+  reaction button (X) chooses kind 9 with argument 1 and "chosen without A"; the host keeps only the command (pending
+  2) for it, only the attack for argument 2 (the deck's A while the bar has a command).
+- **Seen**: Days's command 1 at the shop window by the station's stairs, offered at f2572, f3188 and f3588; X at
+  f3638 made Roxas's words ("La torre del reloj...") as Days's own A does with the setting off. The game did not
+  sample the pad for 40 VBlanks after it, its pressed buttons kept: a press counts once (X newly there at a sample).
+  A with the setting on there: no words. The deck's first row read Attack, greyed.

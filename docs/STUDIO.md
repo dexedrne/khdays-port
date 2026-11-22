@@ -50,6 +50,14 @@ taken, else the first; a clip that moves none of the game's nodes is refused.
 every node kept (it must read back exactly), every node replaced by its own
 motion, and every file rebuilt half kept, half replaced.
 
+**A model's animations** (`core/models/game_model.cpp`, `--model-animations
+<model>`) are every BCA0's of its folder's files with as many nodes as it has,
+for a model of `mi/ch` the motions of `mi/mo`, and for a character's of
+`ba/ch/<code>` its own in the files a room's mission review and game over share:
+`mrslt/data`'s `<code>_result00`-`06` (the thrones) and `gameover/data`'s
+`<code>_mission00` (these may move a node more than the model has, left out as
+the game leaves it: Sora's thrones' 25 for his 24).
+
 `--export-model <model> <out.gltf> [animations]` writes a model as "Export this
 model..." does, its textures beside it (the dump's own glTF's pictures, else its
 first picture of each texture) and its animations at 30 frames a second; with
@@ -90,6 +98,10 @@ convex pieces of four corners, each classified by its facing, its names from the
 rules in the slots their kind takes (gates slot 0, the others 1 and 2), a
 ground's slot 3 and last word from the nearest ground of the original -- and the
 tree is built over them (a root square of a power of two holding every face).
+A material named as the room's export names its collision (`ground`, `wall` or
+`ceiling`, then names: `wall nohit`) gives its faces the surface tags among those
+names by itself; gates and walls that open stay the rules' (the modder places
+them), and the face's list stays its facing's.
 It is checked before it is saved: written and read back the same, every face 3-4
 corners, convex, its bounds its corners', a plane the game can build, every slot
 naming a record or none, the tree as the walk wants and no deeper than it goes,
@@ -102,10 +114,10 @@ pieces from (`setup/state.json`) -- by the installer's own reader
 (`installer/collection_archive.py`, run with the install's Python,
 `setup/python`, or the system's in the repository's tree), asking kh2_first,
 kh2_fifth and kh2_sixth in the collection's language folder (`Image/dt`,
-Steam's; `Image/en`, the Epic Games Store's) into
-`saves/collection/kh2/original/map/<map>.map` and
-`remastered/map/<map>.map/-N.dds`; `--has` lists the maps a copy holds. The
-map is made into `saves/collection/kh2/made/<map>/<map>.gltf` (assets'
+Steam's; `Image/en`, the Epic Games Store's) into the collections' folder
+(`saves/collection` unless the setting `collections` names another), as
+`kh2/original/map/<map>.map` and `kh2/remastered/map/<map>.map/-N.dds`; `--has`
+lists the maps a copy holds. The map is made into `kh2/made/<map>/<map>.gltf` there (assets'
 `kh2_room`: its background, skies and placed pieces with their motion, its HD
 pictures as PNG, docs/RENDERING.md "Mods' graphics" for its extras), and the
 change names it (`kh2 <map>`). Its first place: where Days put the map when the
@@ -131,8 +143,82 @@ of the room model's corners agree on with the map's, at KH2's scale; a mod's
 the room's own pair first, marked, with its evidence. The map's own floors and walls (its `ID_`
 collision, `kh2_room`'s `collision_scene`) are a fourth choice for a KH2 room's
 collision: written as `<map>_collision.gltf` beside its model and taken like
-another model's, placed as the model is (the Usual Spot's: 334 grounds, 847
-walls, 155 ceilings, a fifth of the floors made from its visible model).
+another model's, placed as the model is. Each face goes by what KH2 says of it
+(its attribute word, docs/KH2_ENEMIES.md "A KH2 room's floors and walls"): one
+that stops no character nor attack is left out; a wall that stops characters but
+not attacks (KH2's invisible walls) is named `nohit`, which Days's attacks and
+camera go through, as Days's own invisible walls are (Days names walls alone so:
+its camera would go under a floor named so); a KH2 wall that faces up
+(the top of a column, of a railing) is a ground named `slide`, on which Days
+lands no jump; a wall stops from both sides, a ground or ceiling from its own (a
+ceiling's back is no ground). One stopping attacks alone stays a face: Days's
+one collision stops characters with it too. The materials carry those names
+(`ground nohit`, `wall`, `ground slide` ...).
+
+**Rooms from the collections** (`core/rooms/collection_source.h`). The maps of KINGDOM HEARTS FINAL MIX, KINGDOM
+HEARTS II FINAL MIX, Re:Chain of Memories and Birth by Sleep FINAL MIX (KINGDOM HEARTS HD 1.5+2.5 ReMIX, setting
+`collection_1525`) and of
+Dream Drop Distance (KINGDOM HEARTS HD 2.8 Final Chapter Prologue, setting `collection_28`; else the folders the
+install recorded with the game's executable there) are found in the player's own packages: a package's index keys
+each file by the MD5 of its path, so each game's name pattern (KH2's `map/<w><nn>.map`, DDD's
+`map/<w>/<w>_<nn>/bin/<w>_<nn>.pmp`, KH1's `<w>00_<nn>.bin`, Re:CoM's `MAP<mm>/<nnnn>/MP<mm><nnnn>.AZF`, Birth by
+Sleep's `arc/map/<w><nn>.arc`) is tried for
+every world code and number and asked for (a game's maps listed in about a second, no list of the games' files
+kept). A map is taken out by the installer's reader with the game's own executable into the collections' folder
+(the setting `collections`, `saves/collection` when empty), `<game>/original/` and `<game>/remastered/`, and made into
+`<game>/made/<map>/<map>.gltf` there with its pictures, what the making did kept beside it (`<map>.made.txt`: its
+triangles, pictures and pieces, whether it has its own collision, what was left out), its own floors and walls into `<map>_collision.gltf` beside it (Dream Drop Distance's from its
+`.bcd`, Birth by Sleep's from the `.bcd` in its archive, KINGDOM HEARTS FINAL MIX's from its `.bin`, Re:Chain of
+Memories' from its `.mcd`: docs/FORMATS.md, "Dream Drop Distance's rooms", "Birth by Sleep's rooms", "KINGDOM HEARTS
+FINAL MIX's rooms" and "Re:Chain of Memories' rooms"). KH2's and KINGDOM HEARTS
+FINAL MIX's skies come with the model (KH1's its `.gvbl` assets), drawn around the camera behind everything; Dream
+Drop Distance's textures its `.txa` animates change picture as in the game (thunder, clouds, sparks). The change
+names it `source <game>:<map>` (KH2's keep their `kh2 <map>`). Its first place: in its game's units (KH1's and KH2's
+centimetres at 0.01, Re:CoM's and Dream Drop Distance's metres at 1), its lowest main floor (the lowest height
+holding a quarter of the floor area the most held one does) at the room's ground, then moved across until most of the
+room's places -- its markers and its origin, where missions put the player -- stand on its floors (eh_01: 5 of 5). Its own floors and walls are chosen for its collision when it has
+them. A stage the player falls through (Dive) is listed as such: it has no floor. The map view's "A room from
+another game" lists a game's worlds and maps (taken out or not). A world is listed by the name its game gives it,
+its code after it ("Twilight Town (tt)", "Castle Oblivion (MAP13)": `collection_world_name()`), in those lists, a
+room's adding and the command line's. A room with no collision of its own (a Dive
+stage) is given one made from its model (`own-collision` then says so). A room's sky is drawn only with **Its sky**
+ticked, and then as the game draws it: about the viewer, out of reach (fifteen times the camera's distance from what
+it turns around, the room in front of it), never in its own place, where its dome (Dream Drop Distance's are a few
+metres about the origin: rg_06's 20 wide and 10 high) is a ball in the room; **Frame the room** puts the view back
+over its floors, and the picture's lower edge is dragged to make it taller (a double click: big or half).
+
+A map this build of the studio made already (its model and record written after the studio's executable was) is
+used as it is when a list's **Use** or a room added asks for it; one made by an earlier studio is made again (a later
+one may read the map better). **Take out every map** (Settings, the map lists, a mission's room list) takes out and
+makes every map of the games chosen at once: it asks where (the setting `collections`, its own folder chooser), says
+for each game how many maps its copy holds, how many are ready, the space its folder takes and about what the rest
+would add -- the space all of the game's maps took out of Steam's copy and made (2026-11-11: KINGDOM HEARTS FINAL MIX
+6.8 GB, KH2 18.1 GB, Re:CoM 4.0 GB, Dream Drop Distance 18.9 GB, Birth by Sleep 4.5 GB; all five about 52 GB) less
+what the folder holds already; a game's first maps are no measure of its others (twelve of Birth by Sleep's took 13 MB
+each, all of them 23) -- against the drive's free space, and takes the games chosen out on a thread of its own: a
+package's maps eight at a time in a run of the reader, then each made (the textures its model names taken out then),
+the maps that could not be made named at the end (KH1's Atlantica lm00_14 to 17: the copy holds no HD model of them;
+KH2's tr02 and tr07: its map reader reads past their end). A game's row has its own **Take out only this one**, and a
+game's map list asks for that game alone (**Take out this game's maps**, the others not chosen). **Stop** stops after
+the step under way; what was taken out stays.
+
+```
+khdays-studio --collection-rooms ddd [<world>]       the maps of a game in the player's collections (kh1, kh2,
+                                                     recom, ddd, bbs)
+khdays-studio --collection-take ddd:eh_01            its files taken out
+khdays-studio --collection-room ddd:eh_01            made into a model (and its own collision)
+khdays-studio --collection-take-all ddd|all [<folder>]
+                                                     every map of a game (or of every game found) taken out
+                                                     and made, into <folder> for this run or the setting's;
+                                                     its space said first, the maps not made named at the end
+khdays-studio --collection-space ddd|all [<folder>]  what that would take, nothing taken out
+khdays-studio --render-model <model> <png> [<collision model>]
+                                                     drawn as the previews draw it, from two sides (its sky
+                                                     left out; framed by the collision's floors when given)
+khdays-studio --replace-room <Mod> tt 0 ddd:eh_01 own-collision
+python port/tools/collection_room_walk.py ddd:eh_01 --walk-save OLD.sav
+                                                     in place of Twilight Town's room 0, played, frames saved
+```
 
 ## Missions
 
@@ -147,6 +233,182 @@ takes `from`'s content (world, rooms, enemies, starts, texts) as mission
 `target`, whose place in the Mission Mode list, its name there, its unlock and
 saved progress stay the target's (kept by its number); its chests and emblems
 are copied when the target's sets have as many rows.
+
+### New missions
+
+A mission of the mod's own (`core/missions/mod_missions.h`) is listed in Mission
+Mode after the game's, in its world's category: `missions/missions.txt` holds a
+block for each (`[mission <key>]`: `name <lang>`, `objective <lang>`,
+`description <lang>`, `category`, `world`, `room` (an index, or the key of a room the mod adds), `level`, `time`, `unlock`,
+`template`, and for its places `kind`, `target`, `goal`). The port plays it, in this order: made from its places on the map
+(below) when it has waves; else its own file `missions/<key>/mission.p2`; else
+its template's file as the game has it -- in that mission's own world and rooms,
+whatever the block's world and room say; a mission with none of them is left
+out ("nothing to play yet"). In a multiplayer room the host's list shows only
+the missions every player has, the same: players may have others too. The tool
+writes the files and reads them back with
+the port's own reader (`port/runtime/missions/registry.c`) before it says they
+are saved. In the window **Missions** (top right): **New mission** (a key, a
+world, a room of it, and a template -- **None** by default: the mission is made
+from its map; a game mission's file otherwise, copied as the mission's own, and
+choosing one sets the world to its); the window says how each mission is played;
+and for each mission its **Places on the map** (below) and its **Words and
+settings** (each one's words in the five languages, where it is listed, when it
+opens, its **Kind** -- with **Emblems**, the **Points to collect** (the window says
+how many emblems it has and the points they give); with **Reach**, a word on its
+place; with **Hearts**, the **Hearts to collect** (the window
+says how many its waves give); with **Eliminate**, the **Enemy to defeat** and **How
+many** --; **Save to the mod** writes and reads back each change). Another mission
+chosen, or the studio closed, with changes not saved asks first. A game mission's
+**New mission from this one** opens that window with the mission as the new one's
+template; its **Replace another game mission with this one...** puts the
+mission's content in another game mission's slot instead. From the command line:
+
+    khdays-studio --new-mission <Mod> <key> <game mission|none> <world> <room>
+    khdays-studio --mission-set <Mod> <key> <setting> [<language>] <value...>
+    khdays-studio --check-mod-missions <Mod>
+
+`--check-mod-missions` reads every new mission as the port does, its world and
+room, its file, and the rows the port adds to the list in each language; it exits
+1 with a line for each problem.
+
+**Rooms a mod adds** (`core/rooms/added_rooms.h`). A room of the mod's own is added to a world without replacing
+any of Days's: `rooms/rooms.txt` lists them (`<key> <world>`), their files in `rooms/<world>/<key>/` -- `room.gltf`
+and its pictures (the model drawn) and `collision.bin` (its floors and walls as the game reads them, built as a
+replaced room's are, on room 0's records and markers). Another game's map is placed in its units with its lowest main
+floor at height 0 and one of its floors under the origin; the modder's own model as it is. A new mission plays there
+with `room = <key>` (its waves, start and places in the room's own coordinates: `start = 0 0 0 0` is on its floor);
+the port puts the rooms after the world's own when it reads the world (docs/RUNTIME_MAP.md section 34). Added rooms
+have no exits: only missions reach them. Each is given its map on the lower screen, drawn from its floors as the
+game's are (`core/rooms/room_map.h`: `map.png` in the map's colours, a prop's few pixels drawn as the floor, and
+`map.txt`: where its origin falls, its scale -- the finest of the game's that holds it -- and its name,
+`name.<language>` for one language); both can be edited (docs/FORMATS.md, "Room maps").
+
+In the map view, **Add as a room...** beside a collection's map (KH2's, or another game's), or **My model as a new
+room...**, asks the world (the game's, or one the mod adds) and the room's key, and adds it the same way.
+
+    khdays-studio --add-room <Mod> <world> <key> <model> | <game>:<map> [<collision model> | own-collision]
+    khdays-studio --remove-room <Mod> <world> <key>
+
+A room added from a collection's map keeps where it came from in its folder's `room.txt` (`source kh2:bb05`, its
+`scale`, `turn` and `move`): KINGDOM HEARTS II's bosses bound to their rooms fight only in a room made from their own
+map (docs/KH2_ENEMIES.md, "Bosses bound to their rooms"), and the missions check says when one is put elsewhere.
+
+**Worlds a mod adds** (`rooms/worlds.txt`, `core/rooms/added_rooms.h`). A world Days does not have is listed in
+Mission Mode under its own name, after the game's worlds (L and R reach it), its missions played in its rooms: its
+rooms are added (`--add-room <Mod> <its key> ...`, their folders `rooms/<its key>/<room>/`) to the game world it names
+with `like` -- whose sky, music and sounds it plays with -- and a mission is put in it with `world = <its key>` (the
+new mission's world list offers the mod's worlds after the game's). Its name per language (`name es = ...`), or one for
+all (`name = ...`); English where one is missing.
+
+    [world isle]
+    like = eh
+    name en = Isle of Waves
+    name es = Isla de las olas
+
+    khdays-studio --add-world <Mod> <key> <code> [<language>=<name> | <name>]...
+
+**A room's music** (`core/rooms/room_music.h`). A room plays the mod's music in place of the game's while the player
+is in it (docs/SOUND.md, "A room's music"): one file for its field and one for its battles and bosses -- without the
+battle's, the field's goes on through the fights. WAV, FLAC or Ogg Vorbis; a file with no loop points of its own plays
+whole, over and over. A game room's are the mod's `sounds/rooms/<world>/<room>.<ext>` and `<room>_battle.<ext>` (in a
+world the mod adds, its game world's rooms), a room the mod adds keeps its own in its folder, `music.<ext>` and
+`music_battle.<ext>`. They are chosen in the map view's **Music** (a game room) or with **Music...** beside a mission's
+room (any room, the mod's own too); choosing another replaces the one there, of whatever extension.
+
+    khdays-studio --room-music <Mod> <world> <room | key> field|battle <file> | none
+
+**Waves, chests and emblems.** A mission with waves needs no file of its own:
+the port builds it at its start (`core/missions/mission_build.h`, compiled into
+the port as it is) from its block's lines, out of the game's own steps (1354's
+area, start and ending, 0004's "all defeated" check, 0402's tracked enemy class,
+0001's position check, 0451's Organization emblems), with its world, room, start,
+time limit, notice and objective:
+
+    start = <x> <y> <z> <facing>               # where the players start, degrees
+    wave <n> = <class>x<count> ... at <x> <y> <z>   # a spawner of wave n (1-255)
+    # an entry may be kh2:<name>/<class>x<count>: a KH2 enemy (docs/KH2_ENEMIES.md) in the Days class's place, the
+    # class itself without KH2's enemies; kh2:<name>x<count> stands in a Days Soldier's (class 4) and makes the
+    # mission need them
+    chest = <item> at <x> <y> <z> <heading>     # a chest holding one of the game's items
+    emblem = <kind 0-2> at <x> <y> <z>          # one of each kind at most
+    collect = <x> <y> <z>                        # emblems: an Organization emblem
+    reach = <x> <y> <z> <radius>                 # reach: the place to reach
+    kind = waves | eliminate | hearts | emblems | reach   # how it is cleared (default waves)
+    target = <class>                             # eliminate: the enemy class to defeat
+    goal = <n>                                   # eliminate: how many of it; hearts: hearts; emblems: points (0: all)
+
+Wave 1 comes out at the start, each next wave when every enemy of the last is
+defeated. A `waves` mission is cleared when the last wave is (or failed by its
+time). An `eliminate` mission is cleared once `goal` enemies of the `target`
+class are defeated, whichever waves they are in and whatever the others still
+standing; the mission gauge on the bottom screen counts them (as the game's 0402
+"Defeat seven Fire Plants!": a counter gauge and the tracked class, script
+commands 2.34 and 2.73). Only the target class's enemies placed in the waves
+count, so a target no wave has, or a goal above how many there are, leaves the
+mission out with the reason; a waves mission keeps `target` and `goal` unused.
+A `hearts` mission is cleared once `goal` hearts are collected: every defeated
+enemy gives its class's hearts (the game's, `Ms/DP.p2f`; Shadows and Possessors
+give none), and the gauge shows them over all the waves' enemies give (as the
+game's 0101 "Defeat Heartless and collect hearts!", a hearts gauge); waves whose
+enemies give no heart, or a goal above what they give, leave the mission out with
+the reason. An `emblems` mission is cleared once its Organization emblems
+(`collect` lines) give `goal` points: one gives 10 picked up while whole and 8
+once it has shrunk (picking one up makes the others whole again), and the gauge
+counts them over 10 a piece (as the game's 0451 "Find as many Organization
+emblems as you can!": panel 12's overlay, the emblems' class and pieces, script
+commands 4.25, 17.2 and 17.3); by default the goal is 8 a piece. A `reach`
+mission is cleared once a player comes within the radius of its place (as the
+game's 0001 "Reach Axel's position!", script command 2.8). Neither needs enemies:
+their waves, if any, come out as any mission's and end nothing. The room's own exits are closed while it is played (each of its link
+rows, by its key). A chest's item is the item's number, 1 to the game's item
+count (`db/db.p2` entry 0x15): the game reads that item's record as the
+mission starts, so a chest with no item (0) or one past the last leaves the
+mission out with the reason instead of stopping the game. Any of the game's
+enemy classes come out together, as many as the waves have: on the DS their code
+shared six slots of memory (a Shadow and a Hover Ghost never fitted together, a
+boss took all six), and the port gives each class's code its own place
+(`port/runtime/core/enemy_overlays.h`). A class must be one a game mission has a
+row of (its row is copied; the window lists them by name). The chests and emblems
+are added to the game's `trbox` and `evi` as they load and put out in Mission
+Mode for new missions; a chest's opened flag is kept in the port's save part (an
+emblem's pickup is made at its place, but it is not drawn nor picked up yet).
+
+**Places on the map** (`app/views/mission_map.cpp`) chooses, above the map, where
+the mission is played -- its world (the game's, or one of the mod's own) and its
+room (the world's own, or one the mod adds to it; the list's last entry adds one -- another game's map, chosen by
+game, world and map, or the modder's model -- and chooses it, as the New mission form's Room list does) -- and the
+map follows at once;
+the choice is saved with the places (first, so the mission is built on the room
+shown) or with **Save to the mod**. It shows the mission's room as
+the game has it -- its models and, over them, its floor -- or as the mod replaces
+it (the mod's world file and its model of the room), or the mod's added room
+(its model and floors), with the players' start and each chest (an arrow the way
+it faces), each spawner (its wave and how many enemies), each
+emblem, each Organization emblem and the place to reach (its radius drawn) on it.
+A heading turns the game's way: 0 degrees faces -z, -90 +x (seen in the game:
+a start facing 0 had Roxas look along -z, -90 along +x; a chest's heading is the
+same turn). The game gives spawners no facing (2.32 has none: its enemies turn
+to the player themselves) and the emblems none. A place is dragged over the
+floor (it stands on the floor under the pointer, the collision's grounds; a
+click without a drag only chooses it); an arrow's tip is dragged round its place
+to turn it (Shift: in steps of 15 degrees); one is added by choosing what (**Players'
+start**, **Enemies**, **Chest**, **Emblem**, **Organization emblem**, **Place to
+reach**) and clicking the floor; the one
+clicked is changed beside the picture: where it is, onto the floor, its facing, a
+spawner's wave and enemies (by name, from the classes the game's missions have,
+with how many of each), what a chest holds (the game's items by name, a search
+box over them; a new chest holds a Potion), an emblem's badge, the place to
+reach's radius, or it is removed. A
+place over no floor is ringed red. **Save the places** writes the start, waves,
+chests, emblems, Organization emblems and place at once where the first of them was in the mission's block
+(`set_mod_mission_spots`), when the mission reads as the port reads it and builds
+as the port builds it; otherwise the file is left as it was and the reason told.
+From the command line (each change checked by building the mission):
+
+    khdays-studio --mission-wave <Mod> <key> add <n> <class>x<count> ... at <x> <y> <z> | clear [<n>]
+    khdays-studio --mission-chest <Mod> <key> add <contents> at <x> <y> <z> <heading> | clear
+    khdays-studio --mission-emblem <Mod> <key> add <kind> at <x> <y> <z> | clear
 
 ## 2D sheets
 
@@ -227,3 +489,13 @@ its `StoreGlobalArrayEntry` calls), and `studio/tools/enemy_names.py` writes
 `core/missions/enemy_names.cpp` (each enemy id's overlay's name, its variant
 number left out). Both are committed; a table the decompilation does not have is
 left out.
+
+## Driving the window from a script
+
+What only the window shows (a window's layout, its buttons' effect) is checked by driving it: with the environment
+variable `KHDAYS_STUDIO_INPUT` naming a file, the studio reads the lines appended to it, one a frame, as a person's
+mouse and keys (`studio/app/scripted_input.h`: `move X Y`, `click X Y`, `wheel N`, `key NAME`, `text WORDS`,
+`wait FRAMES`, `quit`; X and Y in the window's pixels), after the backend's own events so that the person's mouse
+does not move it. The window opens without taking the focus. A script appends steps, captures that window alone
+(Windows: `PrintWindow` with its client area and full content) and appends more; `--port <folder>` keeps its
+settings (`saves/studio.ini`) and anything taken out in a folder of its own.

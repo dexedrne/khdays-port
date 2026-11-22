@@ -31,8 +31,14 @@ typedef struct KhdaysG3dPolygon {
     float ymin, ymax;
     int32_t translucent;
     int32_t flags;       /* KHDAYS_G3D_HUD, KHDAYS_G3D_BEYOND_DS, KHDAYS_G3D_MOD */
-    int32_t replacement; /* the texture drawn instead (runtime/mods/textures.h), or -1 */
+    int32_t replacement; /* the texture drawn instead (runtime/mods/textures.h), or -1 (or a bank's, below) */
+    int32_t shadow;      /* a character shadow's caster or receiver: its mask (gfx/character_shadow.h) */
 } KhdaysG3dPolygon;
+
+/* A game polygon whose texture is in a texture bank past the DS's VRAM (runtime/display/texture_banks.h):
+ * its `replacement` until the frame package's list is marked (textures.h), -2 less the bank. */
+#define KHDAYS_G3D_BANK_REPLACEMENT(bank) (-2 - (int32_t)(bank))
+#define KHDAYS_G3D_BANK_OF(replacement) (-2 - (int32_t)(replacement))
 
 /* A polygon as the game sent it, before clipping, in a list's `pre` arrays: its vertices in clip space
  * (the game's in fixed point, a mod's in floats, ten words each), what it was drawn with, and the key
@@ -51,10 +57,23 @@ typedef struct KhdaysG3dPreInfo {
     int32_t widen;       /* the clip factor, in 1/4096 */
 } KhdaysG3dPreInfo;
 
-#define KHDAYS_G3D_HUD 0x1       /* sent by the HUD's own drawing (khdays_g3d_set_hud) */
-#define KHDAYS_G3D_BEYOND_DS 0x2 /* the DS's polygon or vertex RAM would not have held it */
-#define KHDAYS_G3D_MOD 0x4       /* a mod's model's, drawn instead of the game's (runtime/mods/models.h): no DS's */
-#define KHDAYS_G3D_SKY 0x10      /* a mod's sky: behind everything else, its layer in bits 8-15 */
+#define KHDAYS_G3D_HUD 0x1         /* sent by the HUD's own drawing (khdays_g3d_set_hud) */
+#define KHDAYS_G3D_BEYOND_DS 0x2   /* the DS's polygon or vertex RAM would not have held it */
+#define KHDAYS_G3D_MOD 0x4         /* a mod's model's, drawn instead of the game's (runtime/mods/models.h): no DS's */
+#define KHDAYS_G3D_SKY 0x10        /* a mod's sky: behind everything else, its layer in bits 8-15 */
+#define KHDAYS_G3D_SEQUENCE 0x20   /* ordered native sequence commands; pltt identifies the retained program */
+#define KHDAYS_G3D_MARKER 0x40     /* screen-projected selection art: after world geometry, inside the 3D layer */
+#define KHDAYS_G3D_CLIP 0x20000000 /* a mod model's clip volume: not drawn; the world inside it left out */
+/* A KINGDOM HEARTS II effect's triangle (assets/kh2_effect.h, runtime/mods/kh2_corridors.h): after the translucent
+ * polygons, before the markers, in the order sent, depth-tested; blended as the GS's ALPHA byte in its `pltt` says,
+ * (A - B) * C / 128 + D, with A, B, D the source colour, the colour there or 0 and C the source alpha. Its own
+ * depth rules below. (Bits 0x80, 0x100 and 0x10000-0x40000 are the shadows', and a sprite shadow's receiver ID is in
+ * bits 18-23: character_shadow.h.) */
+#define KHDAYS_G3D_EFFECT 0x1000000
+#define KHDAYS_G3D_EFFECT_DEPTH_WRITE 0x2000000   /* writes its depth (the GS's ZBUF without ZMSK) */
+#define KHDAYS_G3D_EFFECT_DEPTH_ONLY 0x4000000    /* its depth alone, no colour (the GS's TEST 0x72001) */
+#define KHDAYS_G3D_EFFECT_NO_DEPTH_TEST 0x8000000 /* drawn whatever lies nearer (TEST 0x3000d) */
+#define KHDAYS_G3D_CLIP_OWNER 0x40000000 /* a polygon of a model with a clip volume: drawn inside one */
 #define KHDAYS_G3D_SKY_LAYER(flags) (((flags) & KHDAYS_G3D_SKY) ? ((flags) >> 8) & 0xff : 0)
 #define KHDAYS_G3D_OVER_2D                                                                                             \
     0x8 /* a HUD polygon the DS shows over all its 2D (its BG0 the top layer): the one
@@ -70,9 +89,8 @@ typedef struct KhdaysG3dPreInfo {
         uint64_t name##_slot;                                                                                          \
     }
 
-/* A list in drawing order: the opaque polygons as submitted, then the
- * translucent ones, sorted by Y unless SwapBuffers asked for manual order.
- * It holds its polygons and vertices in memory of its own, as many as come. */
+/* A list in drawing order: opaque, projected shadows, translucent (Y-sorted unless manual), then selection
+ * markers in submission order. It holds its polygons and vertices in memory of its own. */
 typedef struct KhdaysG3dList {
     int32_t npolys, nverts;
     uint32_t swap_params; /* the SwapBuffers bits it is drawn with */
@@ -115,9 +133,53 @@ int khdays_g3d_finish(const KhdaysG3dList *from, const KhdaysG3dPreVertex *verti
  * from a draw of `resource`, until khdays_g3d_draw_end -- their key (above). */
 void khdays_g3d_draw_begin(const void *resource);
 
+/* The texture bank the textures sent from now on are in (runtime/display/texture_banks.h): 0 the DS's
+ * VRAM. */
+void khdays_g3d_texture_bank(int32_t bank);
+
+/* A PLTT_BASE carrying a bank (texture_banks.h khdays_texture_banks_tag_pltt): the DS reads only its 13 low
+ * bits, so the port puts the bank above them for the textures the game sets apart from a model's draw (the
+ * field's prize pictures): the bit, and the bank in bits 16-30. The texture set before it is the bank's. */
+#define KHDAYS_G3D_PLTT_BANK_TAG 0x80000000u
+#define KHDAYS_G3D_PLTT_BANK(word) ((int32_t)(((word) >> 16) & 0x7fffu))
+
 /* NNS_G3dGlbFlushP (prepare.py HOOKS): the camera of the list being built. */
 void khdays_g3d_frame_camera(const int32_t projection[16], const int32_t camera[12]);
 void khdays_g3d_draw_end(void);
+
+/* The camera (world to view) of the latest flush, the draws' after it, as a
+ * float matrix like khdays_g3d_matrices'; 0 before the first flush. */
+int khdays_g3d_camera(float camera[16]);
+
+/* The camera of the list being built's first flush (the frame's field camera: the enemies' own flushes after it fold
+ * it into the projection and leave the identity there), as khdays_g3d_camera's; 0 before it. */
+int khdays_g3d_list_camera(float camera[16]);
+
+/* NNS_G3dGlbFlush and NNS_G3dGlbFlushP (prepare.py HOOKS): the base transform
+ * the flush sends (NNSG3dGlb +0x94: rotation 3x3, translation, scale, fx32).
+ * Flush multiplies it onto the camera in the position matrix; FlushP folds
+ * camera and base into the projection and leaves the position at identity
+ * (`in_projection`). */
+void khdays_g3d_flush_base(const int32_t base[15], int in_projection);
+/* The latest flush's base transform (a model's place in the world, without the
+ * camera) as a float matrix like khdays_g3d_matrices': translation x rotation x
+ * scale. 1: Flush's (the position matrix starts at camera x base), 2: FlushP's
+ * (it starts at identity), 0: none yet. */
+int khdays_g3d_base(float base[16]);
+/* A base transform's words (NNSG3dGlb +0x94: rotation rows, translation,
+ * scale, fx32) as such a matrix: the GE's MTX_MULT_4x3 of the rotation and
+ * translation, then MTX_SCALE (a vertex scaled, turned, moved). */
+static inline void khdays_g3d_base_matrix(const int32_t words[15], float base[16])
+{
+    for (int i = 0; i < 16; ++i)
+        base[i] = 0.0f;
+    for (int c = 0; c < 3; ++c)
+        for (int r = 0; r < 3; ++r)
+            base[c * 4 + r] = (float)words[c * 3 + r] / 4096.0f * ((float)words[12 + c] / 4096.0f);
+    for (int r = 0; r < 3; ++r)
+        base[12 + r] = (float)words[9 + r] / 4096.0f;
+    base[15] = 1.0f;
+}
 
 void khdays_g3d_reset(void);
 
@@ -184,6 +246,20 @@ void khdays_g3d_set_widen(float k);
  * to the sides and the one picture's 3D shapes place it (host/render/gpu_raster3d.c). */
 void khdays_g3d_set_hud(int on);
 
+/* What the polygons drawn from now on are faded by, 0..1 (1: as they are; a polygon faded out is not drawn). */
+void khdays_g3d_set_fade(float fade);
+
+/* What the colours of the game's and the mods' polygons drawn from now on are multiplied by, a channel each (1 as they
+ * are; held to the brightest): KH2's lights a boss's script has on (runtime/kh2_enemies/shell.h). Never the HUD's
+ * polygons nor KH2's effects' (their colours their own). Back to 1 with khdays_g3d_reset. */
+void khdays_g3d_set_tint(float r, float g, float b);
+
+/* Selection-marker draws only. Does not change HUD placement or the ordering of the 2D layers. */
+void khdays_g3d_set_marker(int on);
+
+/* The building list's stable slot (0..3), for transient images retained with that list. */
+int khdays_g3d_build_slot(void);
+
 /* --- A mod's model, drawn instead of the game's (runtime/mods/models.h) ---------------- */
 
 /* The matrices now as floats (1.0 the DS's 0x1000): position, vector and
@@ -223,6 +299,53 @@ typedef struct KhdaysG3dClipVertex {
  * (runtime/mods/textures.h), -1 for none. */
 void khdays_g3d_mod_polygon(const KhdaysG3dClipVertex *v, int n, uint32_t attr, uint32_t tex, int32_t replacement,
                             int translucent, int sky);
+
+/* How far past the view's sides a piece or a polygon of a mod's model must lie, wholly, to be left
+ * out (khdays_g3d_mod_cull_sides): this many times the view's half-width and half-height, so that a
+ * picture between two of the game's steps (g3d_interp.h), the camera turning, finds everything it
+ * shows. */
+#define KHDAYS_G3D_CULL_MARGIN 2.0f
+
+/* Whether a mod's polygons can be left out of what is being drawn (in a model draw: not otherwise,
+ * where a polygon's place is its material's count) and, if so, the view's sides they must lie wholly
+ * past, in clip space: x > *kx * w or x < -*kx * w, y > *ky * w or y < -*ky * w
+ * (KHDAYS_G3D_CULL_MARGIN times the sides finish_mod_polygon clips at). */
+int khdays_g3d_mod_cull_sides(float *kx, float *ky);
+
+/* `polygons` polygons of a mod's, of attributes `attr`, left out of the model draw: counted as made
+ * without making them, so that each later polygon of the draw keeps its place (the pictures between
+ * steps pair polygons by it). */
+void khdays_g3d_mod_skip(uint32_t attr, uint32_t polygons);
+
+/* A KH2 effect's triangle or quad (KHDAYS_G3D_EFFECT): `gs_alpha` the GS ALPHA byte it blends with, `effect_flags`
+ * its KHDAYS_G3D_EFFECT_* depth rules, `replacement` its picture (runtime/mods/textures.h, -1 for none: its vertex
+ * colours alone). Its vertices' colours are factors x 63 (the GS's 0x80, 1, is 63; up to twice that), their
+ * alpha 0..1, s and t as a mod model's (a 1024 x 1024 texture repeated). */
+void khdays_g3d_effect_polygon(const KhdaysG3dClipVertex *v, int n, int32_t replacement, uint32_t gs_alpha,
+                               uint32_t effect_flags);
+/* The identity of the next KH2 effect triangle sent (its draw's key, kh2::EffectDraw::key, and its place in it), kept
+ * for that one triangle: the pictures between two game frames find it in the older list (g3d_interp.h) and place it
+ * between, as a model's polygons; a triangle with none (key 0) is drawn where the newer list has it. */
+void khdays_g3d_set_effect_key(uint64_t key, uint32_t index);
+#define KHDAYS_G3D_KEYED_EFFECT 0x80000000u /* a KhdaysG3dPreInfo's ordinal: an effect triangle's with its identity */
+
+/* A triangle of a mod model's closed clip volume (runtime/mods/secondary model_link.h clip_volumes), both sides,
+ * first in the drawing order: not drawn; a polygon not of such a model (not KHDAYS_G3D_CLIP_OWNER) is left out
+ * where it lies between the nearest and the farthest of the volumes a pixel shows (docs/RENDERING.md). */
+void khdays_g3d_clip_polygon(const KhdaysG3dClipVertex *v);
+/* While on, the mod polygons sent are a clip volume's owner's (KHDAYS_G3D_CLIP_OWNER). */
+void khdays_g3d_set_clip_owner(int on);
+
+/* A screen-projected sequence in the 3D layer; its program is retained in the frame package.
+ * The shader samples the atlas and blends each element against the scene at full alpha precision. */
+void khdays_g3d_sequence_polygon(const KhdaysG3dClipVertex *v, int n, uint32_t attr, int32_t atlas, uint32_t program);
+
+/* What runs as the game closes each 3D list (its SwapBuffers), before the list is put in its drawing order: the
+ * port's polygons that belong to no model's draw of that list (runtime/mods/kh2_corridors.h's corridors closing
+ * where their oval was, runtime/kh2_enemies/shell.h's enemies ending after their Days enemy is gone). Each hook
+ * added once, run in the order added. */
+typedef void (*KhdaysG3dSwapHook)(void);
+void khdays_g3d_add_swap_hook(KhdaysG3dSwapHook hook);
 
 /* For traces: `hook` hears of each polygon added to the list being built,
  * as it is added (NULL: none). */

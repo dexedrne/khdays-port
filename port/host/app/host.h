@@ -33,13 +33,18 @@ void khdays_host_present(const uint32_t *upper, const uint32_t *lower);
  * shows the two screens as they are. It only changes between frames. */
 int khdays_host_frame_wants(void);
 
+/* KHDAYS_SHOTS_HD=DIR: the next frame the window shows saved there as a picture, asked by the game thread (a KH2
+ * enemy entering a state KHDAYS_SHOT_STATES names); nothing without that folder or a window. */
+void khdays_host_shot_soon(void);
+
 /* How many times the DS's width the 3D should cover (more than 1 in
  * widescreen; 1 when headless or at 4:3), for khdays_g3d_set_widen. It only
  * changes between frames. */
 float khdays_host_frame_widen(void);
 
-/* The internal resolution the picture is composed at (1 to 8; 1 when headless), for what the game
- * thread draws at that resolution (the port's own elements). It only changes between frames. */
+/* The scale the picture's 2D is composed at (the window's, or the internal resolution when that is
+ * finer; 1 when headless), for what the game thread draws at that resolution (the port's own elements:
+ * HD text, the KH2 HUD's pictures). It only changes between frames. */
 int khdays_host_frame_scale(void);
 
 /* The video settings the game thread reads (KHDAYS_HOST_*): HD graphics from
@@ -49,6 +54,7 @@ int khdays_host_frame_scale(void);
 #define KHDAYS_HOST_MOVIES_DS 0x4   /* [video] movies = ds: the DS's own pictures */
 #define KHDAYS_HOST_MOVIES_HD 0x8   /* [video] movies = hd: the player's HD videos */
 #define KHDAYS_HOST_ONE_SCREEN 0x10 /* [video] screens = one */
+#define KHDAYS_HOST_NO_CULLING 0x20 /* [video] culling = off: a mod's models drawn whole */
 int khdays_host_graphics_flags(void);
 
 /* The package the game thread fills next (NULL without a window). It belongs
@@ -79,7 +85,11 @@ enum {
     KHDAYS_ENH_SEPARATE_LOCK_ON = 1 << 1,
     KHDAYS_ENH_DPAD_COMMAND_MENU = 1 << 2,
     KHDAYS_ENH_ANALOG_MOVEMENT = 1 << 3,
-    KHDAYS_ENH_MOUSE_CAMERA = 1 << 4, /* the camera turned by the mouse's motion (the analog camera's join) */
+    KHDAYS_ENH_MOUSE_CAMERA = 1 << 4,     /* the camera turned by the mouse's motion (the analog camera's join) */
+    KHDAYS_ENH_CHASE_FREE = 1 << 5,       /* Chase Camera's Free (runtime/menus/camp.h khdays_camp_chase_free) */
+    KHDAYS_ENH_KH2_CAMERA = 1 << 6,       /* the field camera moves as KH2's (runtime/camera/kh2_camera.c) */
+    KHDAYS_ENH_KH2_FIRST_PERSON = 1 << 7, /* with it, Select is KH2's first person view */
+    KHDAYS_ENH_AUTO_LOCK = 1 << 8,        /* a lock lost but by letting it go locks on again */
 };
 
 /* Everything the game needs to know about the player's input at one moment.
@@ -106,6 +116,9 @@ typedef struct KhdaysInputSnapshot {
     uint16_t mouse_speed;      /* the mouse camera: percent of MOUSE_COUNTS_A_FRAME (controls_hooks.c) */
     uint8_t ui_open;           /* 1 while the settings menu is open: no input reaches the game */
     uint16_t enhancements;     /* KHDAYS_ENH_* switched on */
+    int16_t sticks[2][2];      /* the pad's two sticks as they are, [left, right][x, y] in SDL's range (y grows
+                                  downwards), whatever their roles: the Enemy Profiles' model viewer turns and
+                                  zooms with them (runtime/menus/enemy_viewer.c); 0 without a pad */
 } KhdaysInputSnapshot;
 
 /* The latest snapshot, for the game's own read of the pad once a game frame: a button pressed and let
@@ -115,6 +128,12 @@ void khdays_host_input_take(KhdaysInputSnapshot *out);
 /* The DS buttons held (KHDAYS_KEY_* bits, runtime/input/input.h), from the latest
  * snapshot. */
 uint16_t khdays_host_buttons(void);
+
+/* The movement stick (KhdaysInputSnapshot's move_x, move_y) from the latest snapshot. */
+void khdays_host_movement(int *x, int *y);
+
+/* KHDAYS_TRACE_LATENCY: the game sampled the pad at VBlank `vblank` (game thread). */
+void khdays_host_latency_sampled(uint32_t vblank);
 
 /* Where the mouse is held on the lower screen, in its pixels; returns 0 when
  * not touching. */

@@ -26,8 +26,27 @@ order while their conditions hold. Their lines:
 | `backdrop <file> [at <corner>] [fit]` | a picture of the mod's `layouts/` folder (PNG) behind everything, covering the picture (with `fit`, inside it: all of it shows at any aspect ratio), its aspect kept, held at the corner |
 | `preload <file>` | a picture named as a backdrop's is (and an animated one's atlas) read ahead on a thread of its own while its section holds, so showing it later holds nothing up |
 
+A shape `at mission-panel` is laid out as at the top left and moved, with the
+section's other shapes `at mission-panel` (the panel and its lower edge), to the
+place the player chose for the game's mission panel (Settings → Enhancements:
+Mission panel in gameplay, in the field; while paused, in the pause), the same
+margin from the edges it meets as from the top left's. Away from the counters'
+corner the hearts counter under it (`shape upper 0 0 108 86`, and the HUD's 3D
+there) goes up 24 into it; with Mission panel visibility "Pause only" the field
+leaves those shapes out. Its push holds only in the top row. A shape's effect
+`away-from-panel` makes room for it: the pieces of a top or bottom corner move
+by the panel's height and 2 (down at the top, up at the bottom, with its push)
+when it is put in their corner or meets one of them, and a panel in the middle
+row goes up, no higher than the top left's margin, clear of those under it.
+
 A length is in the picture's DS dots at the HUD's scale (its factor, 1 at the
 default HUD size); `fixed(N)` is one that does not follow it, `A+fixed(B)` both.
+
+`information-mod` holds while a valid KH2 information replacement is enabled,
+including gaps between messages. The port's native banner crops require
+`!information-mod`; custom compositions that crop those banners can use the same
+condition. The replacement is placed independently at the picture's top left
+(`docs/KH2_SEQUENCES.md`), rather than sampled from either screen's banner crop.
 
 A backdrop's name may hold the title menu's state: `{lang}` the game's language
 (en, fr, de, it, es); `{menu}` root, story or mission (`intro`: its fade-in
@@ -55,6 +74,17 @@ picture, moving and fading over the frames of its clips. Its lines:
 | `prompt <action>` | (after a piece) it shows the input the player has for the action on the device played, where an icon for it is given (`khdays_composition_set_prompt`), its height kept, its right edge where it is; its own texels otherwise |
 | `icon <name> <x> <y> <w> <h>` | an input's icon in the atlas, named `<family>:<input>` (`xbox`, `playstation`, `pad`; `host/app/profile.c`'s gamepad names) |
 | `button <action> <x0> <y0> <x1> <y1>` | a rectangle of the picture the mouse clicks to do the action (`open_settings`: the settings menu) |
+| `sway <units> <frames>` | (after a piece) it sways right and back as KH2's pointing glove, about half `units` each way, every 89 / 3 frames (`frames` read, kept for older files) |
+| `wander <units> <x swings> <y swings> <frames>` | (after a piece) it wanders over KH2's firefly's figure, `units` each way, `sin(pi * swings * f / frames)` across and down |
+
+With the Menu Overhaul (docs/MENU_OVERHAUL.md), a clip that follows another level
+of the menu (not the picture's first showing) plays twice as fast.
+
+A section's condition `mod-<id>` (or `!mod-<id>`) holds while that mod of the
+port's features is installed (`port/runtime/mods/installed.h`: `menu-overhaul`).
+A shape's effect `push <state>[|<state>...] <dx> <dy> <frames>` moves it by dx, dy
+(the port's units) while one of the states holds, easing there and back over
+that many of the game's frames.
 
 After a picture of its own group (another row selected), the clip that follows
 the same groups and the loop go on from the frame they were at, not from their

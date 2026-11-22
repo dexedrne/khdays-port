@@ -1,7 +1,12 @@
 /* A picture between two of the game's 3D lists, for frame rates above the game's: the polygons the
  * newer list shares with the older one get their vertices placed between the two at `alpha` (0 the
- * older, 1 the newer), linearly in clip space; then the list is finished like the game's, so at 1 it
- * is exactly the newer list. Plain C, no shared state (docs/RENDERING.md, "The 3D"). */
+ * older, 1 the newer), linearly in clip space -- their places, colours and alpha; their texture
+ * coordinates are the newer's (a texture scrolled round would run back between) --; then the list is
+ * finished like the game's, so at 1 it is exactly the newer list. A model drawn more than once (the
+ * field's prizes, the enemies) is matched to its nearest drawing in the older list, not its place in
+ * the order (which changes as one comes or goes); a model or polygon that moved more than an eighth of
+ * the view (a cut, a wrong match) and the selection markers (moved from one target to the next) are
+ * drawn where the newer list has them. Plain C, no shared state (docs/RENDERING.md, "The 3D"). */
 #ifndef KHDAYS_GFX_G3D_INTERP_H
 #define KHDAYS_GFX_G3D_INTERP_H
 
@@ -12,11 +17,25 @@ typedef struct KhdaysG3dInterp {
     int32_t vert_capacity;
     int32_t *slots; /* the older list's polygons by key: index + 1, 0 free */
     int32_t slot_capacity;
+    struct KhdaysG3dInterpGroup *groups; /* the model drawings of both lists (g3d_interp.c) */
+    int32_t group_capacity;
+    int32_t *group_of; /* each newer polygon's drawing, -1 none (outside a model draw) */
+    int32_t group_of_capacity;
     int32_t matched, polygons; /* the last picture's: polygons placed between, of all */
-    int32_t jumped;            /* of those matched, how many moved more than a quarter of the view
-                                   between the two lists (its first vertex): a wrong match's mark */
+    int32_t jumped;            /* of those found in the older list, how many moved more than an eighth of
+                                   the view (its drawing's place, or its first vertex): drawn where the newer
+                                   list has them */
     int32_t jumped_mod;        /* of those, a mod's model's */
-    struct {                   /* the draws they came from (the first few): resource, occurrence, how many */
+    int32_t effects; /* of the newer's, the KH2 effects' triangles without an identity and the markers: drawn
+                         where it has them (a keyed effect triangle is found as a model's polygon is) */
+    /* The match of the pair named last (khdays_g3d_interp_pair): each newer polygon's older one, -1 none, kept
+     * while the same two lists come back (refreshes between two of the game's frames differ only in alpha). */
+    uint64_t pair_older, pair_newer;
+    int keyed, cached;
+    int32_t *older_of;
+    int32_t older_of_capacity;
+    int32_t cached_npre, cached_matched, cached_jumped, cached_jumped_mod, cached_effects;
+    struct { /* the draws they came from (the first few): resource, occurrence, how many */
         uint64_t draw;
         uint32_t occurrence;
         int32_t count;
@@ -25,6 +44,10 @@ typedef struct KhdaysG3dInterp {
 
 /* The picture at `alpha` between `older` and `newer` into `out`; 0 when
  * there is no memory (`out` then holds the newer list as it is, or nothing). */
+/* Names the two lists the next khdays_g3d_interpolate calls take (any value that differs when either list
+ * does, e.g. the game frames' times): the same pair again reuses their match. Never named, each call matches. */
+void khdays_g3d_interp_pair(KhdaysG3dInterp *work, uint64_t older, uint64_t newer);
+
 int khdays_g3d_interpolate(KhdaysG3dInterp *work, const KhdaysG3dList *older, const KhdaysG3dList *newer, float alpha,
                            KhdaysG3dList *out);
 

@@ -23,6 +23,15 @@ struct PreviewImage {
     std::array<bool, 2> mirror{false, false};  // and mirrored
 };
 
+// How a triangle's alpha is drawn: by its picture (blended where the picture has soft texels, its solid
+// ones opaque: the DS's pictures), or as a glTF material says, the way the port draws a mod's -- opaque
+// (alpha left out), mask (left out below `cutoff`, else opaque) or blend (blended all over).
+struct PreviewAlpha {
+    enum class Mode { picture, opaque, mask, blend };
+    Mode mode = Mode::picture;
+    float cutoff = 0.5f;
+};
+
 struct PreviewVertex {
     std::array<float, 3> position{};
     std::array<float, 3> normal{};  // zero: not lit (drawn in its colour)
@@ -41,9 +50,9 @@ public:
     // (column-major); `light` the direction light comes from (unit).
     void begin(int width, int height, const Mat& view_projection, std::array<float, 3> light);
     // A triangle; `cull`: its back left out (front counter-clockwise, as glTF);
-    // `tint` multiplies its colour.
+    // `tint` multiplies its colour; `alpha` how its alpha is drawn.
     void triangle(const PreviewVertex& a, const PreviewVertex& b, const PreviewVertex& c, const PreviewImage& image,
-                  bool cull, std::array<float, 3> tint);
+                  bool cull, std::array<float, 3> tint, PreviewAlpha alpha = {});
     // The picture drawn on the graphics card, twice the size given to begin()
     // (shown at that size it is smoothed); null when it could not be drawn.
     SDL_GPUTexture* finish();
@@ -72,8 +81,11 @@ private:
         const std::uint8_t* image = nullptr;
         int sampler = 0;
         bool cull = false, blend = false;
+        bool solid_first = true;  // blended: its solid texels drawn opaque first
+        float cut = 0.5f;         // not blended: the alpha below which a pixel is left out
         bool operator<(const Batch& o) const {
-            return std::tie(blend, image, sampler, cull) < std::tie(o.blend, o.image, o.sampler, o.cull);
+            return std::tie(blend, image, sampler, cull, solid_first, cut) <
+                   std::tie(o.blend, o.image, o.sampler, o.cull, o.solid_first, o.cut);
         }
     };
 
@@ -100,6 +112,20 @@ private:
 // A camera turning around `target`: yaw and pitch in degrees, `distance`.
 Mat orbit_view_projection(std::array<float, 3> target, float yaw, float pitch, float distance, float aspect);
 std::array<float, 3> orbit_eye_direction(float yaw, float pitch);
+
+// A room's sky as the game draws it (port/runtime/mods/models.cpp: turned with the room, never moved): about the
+// viewer, out of reach. `points` its points as the room is drawn; Sky::at() one of them put about the orbit camera's
+// `eye`, as far as fifteen times the camera's `distance` from what it turns around (its far plane is at twenty): the
+// room in front of it, never a ball in the room.
+class Sky {
+public:
+    explicit Sky(const std::vector<std::array<float, 3>>& points);
+    std::array<float, 3> at(const std::array<float, 3>& p, const std::array<float, 3>& eye, float distance) const;
+
+private:
+    std::array<float, 3> middle_{0, 0, 0};
+    float radius_ = 0.0f;
+};
 
 // The point an orbit camera turns around, moved over a view `view_height`
 // pixels tall while the mouse is over it (`hovered`): dragged with the right

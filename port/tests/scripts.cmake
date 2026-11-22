@@ -1,6 +1,6 @@
 set(runtime "${CMAKE_CURRENT_LIST_DIR}/../runtime")
 add_executable(khdays-script-test "${CMAKE_CURRENT_LIST_DIR}/script_test.c" ${runtime}/scripts/scripts.c ${runtime}/scripts/sandbox.c
-               ${runtime}/scripts/manifest.c ${runtime}/scripts/order.c ${runtime}/scripts/folders.cpp
+               ${runtime}/scripts/manifest.c ${runtime}/scripts/order.c ${runtime}/scripts/folders.cpp ${runtime}/mods/list.c
                ${runtime}/scripts/mods_log.c ${runtime}/scripts/queue.c ${runtime}/scripts/api_events.c
                ${runtime}/scripts/api_mod.c ${runtime}/scripts/api_state.c ${runtime}/scripts/api_menus.c
                ${runtime}/scripts/api_actions.c ${runtime}/scripts/api_v2.c ${runtime}/scripts/api_enemies.c

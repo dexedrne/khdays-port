@@ -262,7 +262,10 @@ def _emit(job):
     try:
         _, text = _source_text(source, meta)
         ast, tp = _parse_text(source, text)
-        out_text, e = emit(ast, tp, index, file_key(source))
+        # the game's own routines (rewritten/src/: not the SDK's libraries, libs/, nor the port's HAL, native_hal/)
+        # routed for the plugins
+        tree = output.replace("\\", "/").rsplit("/rewritten/", 1)
+        out_text, e = emit(ast, tp, index, file_key(source), routes=len(tree) == 2 and tree[1].startswith("src/"))
     except Exception as ex:  # noqa: BLE001
         r.error = f"{type(ex).__name__}: {ex}\n{traceback.format_exc()[-1500:]}"
         return r
@@ -354,6 +357,7 @@ def rewrite_all(
     """Each (source, output) rewritten; the numbers into gen/khdays_data_area.h.
     Returns the outputs in the order given and the data area's size; stops
     naming every file that failed."""
+    from . import parse  # noqa: F401  (its pycparser check, here before the workers start)
     from .emit import Index
 
     processes = processes or max(1, (os.cpu_count() or 2) - 1)

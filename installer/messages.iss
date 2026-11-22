@@ -2,11 +2,11 @@
 ; translations).
 
 [Messages]
-en.WelcomeLabel2=This installs a PC port of KINGDOM HEARTS 358/2 Days.%n%nYou need your own copy of the game: the installer asks for its ROM (358/2 Days, Europe) and prepares the game from it on this computer. KINGDOM HEARTS HD 1.5+2.5 ReMIX and HD 2.8 Final Chapter Prologue are optional, for the HD menus and videos.
-es.WelcomeLabel2=Esto instala un port para PC de KINGDOM HEARTS 358/2 Days.%n%nNecesitas tu propia copia del juego: el instalador pide su ROM (358/2 Days, Europa) y prepara el juego a partir de ella en este ordenador. KINGDOM HEARTS HD 1.5+2.5 ReMIX y HD 2.8 Final Chapter Prologue son opcionales, para los menús y vídeos HD.
-fr.WelcomeLabel2=Ceci installe un portage PC de KINGDOM HEARTS 358/2 Days.%n%nIl vous faut votre propre copie du jeu : l'installateur demande sa ROM (358/2 Days, Europe) et prépare le jeu à partir d'elle sur cet ordinateur. KINGDOM HEARTS HD 1.5+2.5 ReMIX et HD 2.8 Final Chapter Prologue sont facultatifs, pour les menus et vidéos HD.
-de.WelcomeLabel2=Dies installiert eine PC-Portierung von KINGDOM HEARTS 358/2 Days.%n%nDu brauchst deine eigene Kopie des Spiels: Das Installationsprogramm fragt nach ihrem ROM (358/2 Days, Europa) und bereitet das Spiel daraus auf diesem Computer vor. KINGDOM HEARTS HD 1.5+2.5 ReMIX und HD 2.8 Final Chapter Prologue sind optional, für die HD-Menüs und -Videos.
-it.WelcomeLabel2=Questo installa un port per PC di KINGDOM HEARTS 358/2 Days.%n%nServe la tua copia del gioco: l'installazione chiede la sua ROM (358/2 Days, Europa) e prepara il gioco da essa su questo computer. KINGDOM HEARTS HD 1.5+2.5 ReMIX e HD 2.8 Final Chapter Prologue sono facoltativi, per i menu e i video HD.
+en.WelcomeLabel2=This installs a PC port of KINGDOM HEARTS 358/2 Days.%n%nYou need your own copy of the game: the installer asks for its ROM (358/2 Days, Europe or North America) and prepares the game from it on this computer. KINGDOM HEARTS HD 1.5+2.5 ReMIX and HD 2.8 Final Chapter Prologue are optional, for the HD menus and videos.
+es.WelcomeLabel2=Esto instala un port para PC de KINGDOM HEARTS 358/2 Days.%n%nNecesitas tu propia copia del juego: el instalador pide su ROM (358/2 Days, Europa o Norteamérica) y prepara el juego a partir de ella en este ordenador. KINGDOM HEARTS HD 1.5+2.5 ReMIX y HD 2.8 Final Chapter Prologue son opcionales, para los menús y vídeos HD.
+fr.WelcomeLabel2=Ceci installe un portage PC de KINGDOM HEARTS 358/2 Days.%n%nIl vous faut votre propre copie du jeu : l'installateur demande sa ROM (358/2 Days, Europe ou Amérique du Nord) et prépare le jeu à partir d'elle sur cet ordinateur. KINGDOM HEARTS HD 1.5+2.5 ReMIX et HD 2.8 Final Chapter Prologue sont facultatifs, pour les menus et vidéos HD.
+de.WelcomeLabel2=Dies installiert eine PC-Portierung von KINGDOM HEARTS 358/2 Days.%n%nDu brauchst deine eigene Kopie des Spiels: Das Installationsprogramm fragt nach ihrem ROM (358/2 Days, Europa oder Nordamerika) und bereitet das Spiel daraus auf diesem Computer vor. KINGDOM HEARTS HD 1.5+2.5 ReMIX und HD 2.8 Final Chapter Prologue sind optional, für die HD-Menüs und -Videos.
+it.WelcomeLabel2=Questo installa un port per PC di KINGDOM HEARTS 358/2 Days.%n%nServe la tua copia del gioco: l'installazione chiede la sua ROM (358/2 Days, Europa o Nord America) e prepara il gioco da essa su questo computer. KINGDOM HEARTS HD 1.5+2.5 ReMIX e HD 2.8 Final Chapter Prologue sono facoltativi, per i menu e i video HD.
 
 [CustomMessages]
 en.StartPort=Start the port
@@ -27,11 +27,11 @@ fr.RomPageDescription=Le portage est fait à partir de votre propre copie du jeu
 de.RomPageDescription=Die Portierung entsteht aus deiner eigenen Kopie des Spiels.
 it.RomPageDescription=Il port nasce dalla tua copia del gioco.
 
-en.RomPageText=Choose the ROM file of your KINGDOM HEARTS 358/2 Days cartridge (Europe). It is checked before going on, and read only.
-es.RomPageText=Elige el archivo ROM de tu cartucho de KINGDOM HEARTS 358/2 Days (Europa). Se comprueba antes de seguir y sólo se lee.
-fr.RomPageText=Choisissez le fichier ROM de votre cartouche KINGDOM HEARTS 358/2 Days (Europe). Il est vérifié avant de continuer, et seulement lu.
-de.RomPageText=Wähle die ROM-Datei deines Moduls KINGDOM HEARTS 358/2 Days (Europa). Sie wird vor dem Weitergehen geprüft und nur gelesen.
-it.RomPageText=Scegli il file ROM della tua cartuccia di KINGDOM HEARTS 358/2 Days (Europa). Viene controllato prima di proseguire, e solo letto.
+en.RomPageText=Choose the ROM file of your KINGDOM HEARTS 358/2 Days cartridge (Europe or North America). It is checked before going on, and read only.
+es.RomPageText=Elige el archivo ROM de tu cartucho de KINGDOM HEARTS 358/2 Days (Europa o Norteamérica). Se comprueba antes de seguir y sólo se lee.
+fr.RomPageText=Choisissez le fichier ROM de votre cartouche KINGDOM HEARTS 358/2 Days (Europe ou Amérique du Nord). Il est vérifié avant de continuer, et seulement lu.
+de.RomPageText=Wähle die ROM-Datei deines Moduls KINGDOM HEARTS 358/2 Days (Europa oder Nordamerika). Sie wird vor dem Weitergehen geprüft und nur gelesen.
+it.RomPageText=Scegli il file ROM della tua cartuccia di KINGDOM HEARTS 358/2 Days (Europa o Nord America). Viene controllato prima di proseguire, e solo letto.
 
 en.RomFileLabel=ROM file:
 es.RomFileLabel=Archivo ROM:
@@ -99,11 +99,11 @@ fr.HdPageDescription=Créés sur cet ordinateur à partir de vos propres collect
 de.HdPageDescription=Werden auf diesem Computer aus deinen eigenen Sammlungen erstellt.
 it.HdPageDescription=Creati su questo computer dalle tue raccolte.
 
-en.HdPageText=The HD menus and HUD need both collections; the HD videos need KINGDOM HEARTS HD 1.5+2.5 ReMIX. Leave a folder empty if you do not have that collection.
-es.HdPageText=Los menús y el HUD HD necesitan las dos colecciones; los vídeos HD necesitan KINGDOM HEARTS HD 1.5+2.5 ReMIX. Deja una carpeta vacía si no tienes esa colección.
-fr.HdPageText=Les menus et l'interface HD ont besoin des deux collections ; les vidéos HD ont besoin de KINGDOM HEARTS HD 1.5+2.5 ReMIX. Laissez un dossier vide si vous n'avez pas cette collection.
-de.HdPageText=Die HD-Menüs und das HD-HUD brauchen beide Sammlungen; die HD-Videos brauchen KINGDOM HEARTS HD 1.5+2.5 ReMIX. Lass einen Ordner leer, wenn du diese Sammlung nicht hast.
-it.HdPageText=I menu e l'HUD HD richiedono entrambe le raccolte; i video HD richiedono KINGDOM HEARTS HD 1.5+2.5 ReMIX. Lascia vuota una cartella se non hai quella raccolta.
+en.HdPageText=The HD menus and HUD need both collections; KH2's models, prizes, Dark Corridors and enemies and the HD videos need KINGDOM HEARTS HD 1.5+2.5 ReMIX. Leave a folder empty if you do not have that collection.
+es.HdPageText=Los menús y el HUD HD necesitan las dos colecciones; los modelos, premios, Pasillos Oscuros y enemigos de KH2 y los vídeos HD, KINGDOM HEARTS HD 1.5+2.5 ReMIX. Deja una carpeta vacía si no tienes esa colección.
+fr.HdPageText=Les menus et l'interface HD ont besoin des deux collections ; les modèles, prix, Couloirs des Ténèbres et ennemis de KH2 et les vidéos HD, de KINGDOM HEARTS HD 1.5+2.5 ReMIX. Laissez un dossier vide si vous n'avez pas cette collection.
+de.HdPageText=Die HD-Menüs und das HD-HUD brauchen beide Sammlungen; die Modelle, Preise, Korridore der Finsternis und Gegner aus KH2 und die HD-Videos brauchen KINGDOM HEARTS HD 1.5+2.5 ReMIX. Lass einen Ordner leer, wenn du diese Sammlung nicht hast.
+it.HdPageText=I menu e l'HUD HD richiedono entrambe le raccolte; i modelli, i premi, i Corridoi Oscuri e i nemici di KH2 e i video HD, KINGDOM HEARTS HD 1.5+2.5 ReMIX. Lascia vuota una cartella se non hai quella raccolta.
 
 en.Hd1525Label=KINGDOM HEARTS HD 1.5+2.5 ReMIX folder (optional):
 es.Hd1525Label=Carpeta de KINGDOM HEARTS HD 1.5+2.5 ReMIX (opcional):
@@ -117,11 +117,16 @@ fr.Hd28Label=Dossier de KINGDOM HEARTS HD 2.8 Final Chapter Prologue (facultatif
 de.Hd28Label=Ordner von KINGDOM HEARTS HD 2.8 Final Chapter Prologue (optional):
 it.Hd28Label=Cartella di KINGDOM HEARTS HD 2.8 Final Chapter Prologue (facoltativa):
 
-en.HdMenus=HD menus and HUD (needs both collections)
-es.HdMenus=Menús y HUD HD (necesita las dos colecciones)
-fr.HdMenus=Menus et interface HD (deux collections nécessaires)
-de.HdMenus=HD-Menüs und HD-HUD (braucht beide Sammlungen)
-it.HdMenus=Menu e HUD HD (servono entrambe le raccolte)
+en.HdMenus=HD menus and HUD with the Menu Overhaul (both collections)
+en.HdKh2=KH2's models, prizes, Dark Corridors and enemies, and the Walk (1.5+2.5)
+es.HdMenus=Menús y HUD HD con el Menu Overhaul (las dos colecciones)
+es.HdKh2=Modelos, premios, Pasillos Oscuros y enemigos de KH2, y Walk (1.5+2.5)
+fr.HdMenus=Menus et interface HD avec le Menu Overhaul (les deux collections)
+fr.HdKh2=Modèles, prix, Couloirs des Ténèbres et ennemis de KH2, et Walk (1.5+2.5)
+de.HdMenus=HD-Menüs und HD-HUD mit dem Menu Overhaul (beide Sammlungen)
+de.HdKh2=Modelle, Preise, Korridore der Finsternis und Gegner aus KH2, Walk (1.5+2.5)
+it.HdMenus=Menu e HUD HD con il Menu Overhaul (entrambe le raccolte)
+it.HdKh2=Modelli, premi, Corridoi Oscuri e nemici di KH2, e Walk (1.5+2.5)
 
 en.HdVideos=HD videos: movies and scenes with subtitles and music (needs 1.5+2.5, 6.5 GB)
 es.HdVideos=Vídeos HD: películas y escenas con subtítulos y música (necesita 1.5+2.5, 6,5 GB)
@@ -146,6 +151,18 @@ es.HdFailed=No se han podido hacer las piezas HD; el juego funciona con el aspec
 fr.HdFailed=Les éléments HD n'ont pas pu être créés ; le jeu fonctionne avec l'aspect DS. Relancez l'installateur pour réessayer.
 de.HdFailed=Die HD-Teile konnten nicht erstellt werden; das Spiel läuft im DS-Aussehen. Starte das Installationsprogramm erneut, um es noch einmal zu versuchen.
 it.HdFailed=Non è stato possibile creare i pezzi HD; il gioco funziona con l'aspetto DS. Esegui di nuovo l'installazione per riprovare.
+
+en.ModsMaking=Making the Menu Overhaul and Walk mods from your copies...
+es.ModsMaking=Haciendo los mods Menu Overhaul y Walk a partir de tus copias...
+fr.ModsMaking=Création des mods Menu Overhaul et Walk à partir de vos copies...
+de.ModsMaking=Die Mods Menu Overhaul und Walk werden aus deinen Kopien erstellt...
+it.ModsMaking=Creazione delle mod Menu Overhaul e Walk dalle tue copie...
+
+en.ModsFailed=The Menu Overhaul and Walk mods could not be made; the game plays with the HD menus without them. Run the installer again to try once more.
+es.ModsFailed=No se han podido hacer los mods Menu Overhaul y Walk; el juego funciona con los menús HD sin ellos. Vuelve a ejecutar el instalador para intentarlo otra vez.
+fr.ModsFailed=Les mods Menu Overhaul et Walk n'ont pas pu être créés ; le jeu fonctionne avec les menus HD sans eux. Relancez l'installateur pour réessayer.
+de.ModsFailed=Die Mods Menu Overhaul und Walk konnten nicht erstellt werden; das Spiel läuft mit den HD-Menüs ohne sie. Starte das Installationsprogramm erneut, um es noch einmal zu versuchen.
+it.ModsFailed=Non è stato possibile creare le mod Menu Overhaul e Walk; il gioco funziona con i menu HD senza di esse. Esegui di nuovo l'installazione per riprovare.
 
 en.SteamPageCaption=Add to Steam (optional)
 es.SteamPageCaption=Añadir a Steam (opcional)
@@ -200,11 +217,11 @@ es.SteamCancelled=El port no se ha añadido a Steam. Puedes añadirlo más tarde
 fr.SteamCancelled=Le portage n'a pas été ajouté à Steam. Vous pourrez l'ajouter plus tard en relançant l'installateur.
 de.SteamCancelled=Die Portierung wurde nicht zu Steam hinzugefügt. Du kannst sie später hinzufügen, indem du das Installationsprogramm erneut ausführst.
 it.SteamCancelled=Il port non è stato aggiunto a Steam. Puoi aggiungerlo più tardi eseguendo di nuovo l'installazione.
-en.StudioTask=Also install KH Studio (the mod authoring tool)
-es.StudioTask=Instalar también KH Studio (la herramienta para crear mods)
-fr.StudioTask=Installer aussi KH Studio (l'outil de création de mods)
-de.StudioTask=Auch KH Studio installieren (das Werkzeug zum Erstellen von Mods)
-it.StudioTask=Installa anche KH Studio (lo strumento per creare mod)
+en.StudioTask=Also install KH Studio (the mod authoring tool), with the native mod SDK and its examples
+es.StudioTask=Instalar también KH Studio (la herramienta para crear mods), con el SDK de mods nativos y sus ejemplos
+fr.StudioTask=Installer aussi KH Studio (l'outil de création de mods), avec le SDK de mods natifs et ses exemples
+de.StudioTask=Auch KH Studio installieren (das Werkzeug zum Erstellen von Mods), mit dem SDK für native Mods und seinen Beispielen
+it.StudioTask=Installa anche KH Studio (lo strumento per creare mod), con l'SDK per mod nativi e i suoi esempi
 
 en.SteamUnderProton=This installer is running under Proton or Wine (a Steam Deck, Linux), where it cannot reach this computer's Steam. After installing, add the game to Steam by hand from Desktop Mode: a non-Steam game pointing to khdays-native.exe in the install folder, with Proton forced in its Compatibility properties.
 es.SteamUnderProton=Este instalador se está ejecutando en Proton o Wine (Steam Deck, Linux), donde no llega al Steam de este equipo. Después de instalar, añade el juego a Steam a mano desde el Modo Escritorio: un juego ajeno a Steam que apunte a khdays-native.exe en la carpeta de instalación, con Proton forzado en sus propiedades de Compatibilidad.

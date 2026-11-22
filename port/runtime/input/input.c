@@ -8,16 +8,20 @@
 #include "../menus/camp.h"
 #include "../menus/charselect.h"
 #include "../menus/cinelist.h"
+#include "../menus/daycard.h"
 #include "../net/roomlist.h"
 #include "../net/net_session.h"
 #include "controls_hooks.h"
+#include "../camera/kh2_camera_hooks.h"
 #include "../movies/movie_hd.h"
 #include "../menus/newgame.h"
 #include "../menus/mission_start.h"
 #include "../menus/retry.h"
 #include "../menus/savelist.h"
+#include "../plugins/plugins.h"
 #include "../scripts/scripts.h"
 #include "../core/runtime.h"
+#include "../core/events.h"
 #include "sequencers.h"
 #include "../core/window.h"
 #include "../../host/app/host.h"
@@ -26,6 +30,8 @@
 #include <SDL3/SDL.h>
 #include <stdlib.h>
 #include <string.h>
+
+#define DIRECTIONS (KHDAYS_KEY_UP | KHDAYS_KEY_DOWN | KHDAYS_KEY_LEFT | KHDAYS_KEY_RIGHT)
 
 /* What a step's frame counts from: boot, or the first frame of a scene (sN)
  * or of an object update (uName). */
@@ -77,7 +83,7 @@ static u32 last_frame;
 /* The frame latch: what Pad_Sample reads this game frame. */
 static KhdaysInputSnapshot snapshot; /* the host's input, taken at the latch */
 static KhdaysInputSnapshot previous; /* the one taken at the latch before */
-static KhdaysMenuSequencer menu;     /* the command menu on the D-pad */
+static KhdaysMenuStepper menu;       /* the command menu on the D-pad */
 static KhdaysLockSequencer lock;     /* lock-on on its own buttons */
 static u16 latched;                  /* the DS buttons for this game frame */
 static int latched_unread;           /* Pad_Sample has not read KEYINPUT yet */
@@ -163,7 +169,7 @@ void khdays_input_init(void)
     const char *text = getenv("KHDAYS_INPUT");
     char *copy, *item, *rest = NULL;
     int anchor = -1;
-    khdays_menu_sequencer_reset(&menu);
+    khdays_menu_stepper_reset(&menu);
     khdays_lock_sequencer_reset(&lock);
     trace = getenv("KHDAYS_TRACE_INPUT") != NULL;
     trace_pad = getenv("KHDAYS_TRACE_PAD") != NULL;
@@ -298,41 +304,103 @@ static u16 pressed(void)
     return khdays_movie_hd_game_buttons((u16)(script_keys | khdays_host_buttons()));
 }
 
+/* The step of the command menu this game frame (KHDAYS_MENU_*, -1 none): the gamepad's D-pad's
+ * (sequencers.h), taken by Ov022_UpdateCommandInput (prepare.py) through khdays_controls_command_step. */
+static int menu_step = -1;
+
+int khdays_controls_command_step(void)
+{
+    const int step = menu_step;
+    menu_step = -1;
+    return step + 1; /* 1 up, 2 down, 3 left, 4 right; 0 none */
+}
+
+static int select_taken; /* first person has this frame's Select, a script's too */
+
 /* The player's DS buttons for this game frame. With the command menu on the D-pad, while the player
- * has field control the gamepad's D-pad becomes the presses that move the menu (sequencers.h) and
- * does not move Roxas. */
+ * has field control the gamepad's D-pad steps the menu (sequencers.h) and does not move Roxas. */
 static u16 player_buttons(void)
 {
     const KhdaysGameControls *game = khdays_controls_state();
     const int on = (snapshot.enhancements & KHDAYS_ENH_DPAD_COMMAND_MENU) != 0;
     const int field = on && pad_samples > 0 && game->command_input_frame == pad_samples;
-    const u16 dpad = KHDAYS_KEY_UP | KHDAYS_KEY_DOWN | KHDAYS_KEY_LEFT | KHDAYS_KEY_RIGHT;
     u16 buttons = field ? snapshot.ds_buttons_field : snapshot.ds_buttons;
+    /* The KH2 camera with lock-on on its own buttons: the player's own R (the right stick's click) centres the
+     * camera and does not reach the game, whose R is the lock-on's: two quick clicks would lock on. */
+    static int own_r_held;
+    const int own_r = (buttons & KHDAYS_KEY_R) != 0;
+    if ((snapshot.enhancements & KHDAYS_ENH_SEPARATE_LOCK_ON) != 0 && khdays_kh2_camera_active()) {
+        if (own_r && !own_r_held) {
+            khdays_kh2_camera_center();
+        }
+        buttons &= (u16)~KHDAYS_KEY_R;
+    }
+    own_r_held = own_r;
+    /* First person: Select is the camera's, so the game's look view, which holds the player still, never opens. */
+    static int own_select_held;
+    const int own_select = ((buttons | script_keys) & KHDAYS_KEY_SELECT) != 0;
+    select_taken = 0;
+    if ((snapshot.enhancements & KHDAYS_ENH_KH2_FIRST_PERSON) != 0 && khdays_kh2_camera_active()) {
+        if (own_select && !own_select_held) {
+            khdays_kh2_camera_toggle_first_person();
+        }
+        buttons &= (u16)~KHDAYS_KEY_SELECT;
+        select_taken = 1;
+    }
+    own_select_held = own_select;
     const uint32_t directions = ((snapshot.actions & KHDAYS_ACTION_MENU_UP) ? 1u << KHDAYS_MENU_UP : 0) |
                                 ((snapshot.actions & KHDAYS_ACTION_MENU_DOWN) ? 1u << KHDAYS_MENU_DOWN : 0) |
                                 ((snapshot.actions & KHDAYS_ACTION_MENU_LEFT) ? 1u << KHDAYS_MENU_LEFT : 0) |
                                 ((snapshot.actions & KHDAYS_ACTION_MENU_RIGHT) ? 1u << KHDAYS_MENU_RIGHT : 0);
-    const KhdaysMenuFrame step = khdays_menu_sequencer_frame(&menu, on ? directions : 0, field, game->command_scheme,
-                                                             game->lockon_scheme, (u16)(buttons | script_keys));
+    menu_step = khdays_menu_stepper_frame(&menu, on ? directions : 0, field, game->command_scheme);
+    if (trace_pad && (directions != 0 || menu_step >= 0)) {
+        fprintf(stderr, "pad: game frame %u, menu directions %x, on %d, field %d (command input at %u), step %d\n",
+                pad_samples, directions, on, field, game->command_input_frame, menu_step);
+    }
     /* Lock-on on its own buttons: while the game's lock-on logic takes the buttons (it did last frame),
      * their presses become the DS's R presses for them; anywhere else they are the DS's R and L. */
     const int lock_on = (snapshot.enhancements & KHDAYS_ENH_SEPARATE_LOCK_ON) != 0;
+    const int auto_lock = (snapshot.enhancements & KHDAYS_ENH_AUTO_LOCK) != 0;
     /* (with the 3D on both screens it runs on every other frame: the frame before counts too) */
-    const int lock_field = lock_on && pad_samples > 0 && pad_samples - game->selection_frame <= 1u &&
+    const int lock_field = (lock_on || auto_lock) && pad_samples > 0 && pad_samples - game->selection_frame <= 1u &&
                            pad_samples - game->selection_live_frame <= 1u;
-    const uint32_t lock_actions = ((snapshot.actions & KHDAYS_ACTION_LOCK_ON) ? 1u << KHDAYS_LOCK_ON : 0) |
-                                  ((snapshot.actions & KHDAYS_ACTION_TARGET_NEXT) ? 1u << KHDAYS_LOCK_NEXT : 0) |
-                                  ((snapshot.actions & KHDAYS_ACTION_TARGET_PREV) ? 1u << KHDAYS_LOCK_PREV : 0);
+    const uint32_t lock_actions =
+        lock_on ? ((snapshot.actions & KHDAYS_ACTION_LOCK_ON) ? 1u << KHDAYS_LOCK_ON : 0) |
+                      ((snapshot.actions & KHDAYS_ACTION_TARGET_NEXT) ? 1u << KHDAYS_LOCK_NEXT : 0) |
+                      ((snapshot.actions & KHDAYS_ACTION_TARGET_PREV) ? 1u << KHDAYS_LOCK_PREV : 0)
+                : 0;
     /* An R press counts as a single one for the game once its counter has
      * passed 0x9000 (9 frames) since the last R (Ov022_ReadSelectionInput). */
     const int r_free = game->r_repeat >= 0x9000 && !game->r_pressed;
-    const u16 lock_buttons =
-        khdays_lock_sequencer_frame(&lock, lock_on ? lock_actions : 0, lock_field, game->lock_active,
-                                    game->lockon_scheme, (u16)(buttons | script_keys), r_free);
-    if (step.dpad_own) {
-        buttons &= (u16)~dpad;
+    uint32_t auto_actions = 0;
+    {
+        /* Auto lock-on. The player letting go: the lock-on button's R that lets go (the sequencer's, last frame), or
+         * the player's own R or Select (Ov022_UpdateSelectionMarker) within the frames the game takes to act on it. */
+        static KhdaysLockAuto relock;
+        static u16 keys_before;
+        static uint32_t r_select_at;
+        const u16 keys = (u16)(buttons | script_keys), pressed = (u16)(keys & ~keys_before);
+        if ((pressed & (KHDAYS_KEY_R | KHDAYS_KEY_SELECT)) != 0) {
+            r_select_at = pad_samples;
+        }
+        keys_before = keys;
+        const int recent = r_select_at != 0 && pad_samples - r_select_at <= KHDAYS_LOCK_LET_GO_FRAMES;
+        if (auto_lock) {
+            auto_actions = khdays_lock_auto_frame(&relock, lock.let_go, recent, lock_field, game->lock_active,
+                                                  game->lock_candidate);
+        }
+        if (!auto_lock || (pressed & KHDAYS_KEY_SELECT) != 0) {
+            relock = (KhdaysLockAuto){0, 0, 0};
+            khdays_lock_sequencer_cancel(&lock, KHDAYS_LOCK_AUTO); /* off, or let go: none queued or under way */
+        }
     }
-    return (u16)(buttons | step.buttons | lock_buttons);
+    const u16 lock_buttons =
+        khdays_lock_sequencer_frame(&lock, lock_actions | auto_actions, lock_field, game->lock_active,
+                                    game->lockon_scheme, (u16)(buttons | script_keys), r_free);
+    if (lock.let_go) {
+        khdays_controls_lock_let_go();
+    }
+    return (u16)(buttons | lock_buttons);
 }
 
 /* The ARM7's word for a set of buttons: X and Y released unless held (active
@@ -355,8 +423,131 @@ static void share_stick(const KhdaysInputSnapshot *s)
     khdays_net_set_stick(&stick);
 }
 
+/* ---- KHDAYS_PRESS_PACE: a game frame started by a press ------------------------------------------
+ * At 30 game frames a second main works a frame out after a VBlank, waits out the next VBlank (its
+ * pace), presents, and starts the next frame at the VBlank after: a press while it waits is read a
+ * VBlank later than a game at 60 would. With the press pace a new press (a button down or let go, the
+ * movement stick started or stopped) ends that wait at once: the frame presents and the next starts at
+ * the coming VBlank, reading the press. The game is a VBlank ahead of its pace for it; the next frame with
+ * nothing new pressed waits a VBlank more to give it back -- a wait a press ends too -- so the game keeps
+ * 30 frames a second, its animations their speed. No more than PACE_OWED_MOST are owed, the rest let go
+ * (a press every frame). Tried before: the stick's turns counted too (an eighth, every few frames while
+ * steering), and a VBlank given back only after a third or half a second of nothing new -- owing 60, a
+ * stick turned in circles and then held straight ran the game at 20 frames a second for two; owing 3,
+ * real play (attacks, running, steering) seldom left that quiet and ran it faster than 30. One
+ * player alone (a session's machines keep the same frames), the field's 30 a second (mode 0), not over
+ * the settings menu. On by default; KHDAYS_PRESS_PACE=0 keeps the game's own pace.
+ * KHDAYS_TRACE_PRESS_PACE: each early start and each VBlank given back. */
+#define PACE_QUIET 1 /* game frames with nothing new before a VBlank is given back */
+#define PACE_OWED_MOST 3
+
+static int pace_on = -1, pace_trace;
+static u16 pace_buttons;  /* the buttons at the last Pad_Sample */
+static int pace_heading;  /* the movement stick then: 0 pushed, -1 let go */
+static int pace_owed;     /* VBlanks the game is ahead of its pace */
+static int pace_quiet;    /* game frames since something new was read */
+static int pace_paying;   /* this frame's pace has a VBlank more */
+static u32 pace_early, pace_paid;
+
+static int pace_active(void)
+{
+    if (pace_on < 0) {
+        const char *v = getenv("KHDAYS_PRESS_PACE");
+        pace_on = v == NULL || v[0] != '0'; /* on unless KHDAYS_PRESS_PACE=0 */
+        pace_trace = getenv("KHDAYS_TRACE_PRESS_PACE") != NULL;
+    }
+    return pace_on && FRAME_RATE_MODE == 0 && !khdays_net_in_session() && !snapshot.ui_open;
+}
+
+/* Whether the movement stick is pushed (0) or let go (-1, within a fifth of its range): its turns are not
+ * new presses (steering would start a frame early every few frames). */
+static int heading_of(int x, int y)
+{
+    return (long long)x * x + (long long)y * y < 6500LL * 6500LL ? -1 : 0;
+}
+
+static u16 pace_buttons_now(void)
+{
+    return (u16)(script_keys | khdays_host_buttons());
+}
+
+static int pace_heading_now(void)
+{
+    int x, y;
+    khdays_host_movement(&x, &y);
+    if (script_move[0] != 0 || script_move[1] != 0) {
+        x = script_move[0];
+        y = script_move[1];
+    }
+    return heading_of(x, y);
+}
+
+/* Something new since the game's last read of the pad. */
+static int pace_new_press(void)
+{
+    return pace_buttons_now() != pace_buttons || pace_heading_now() != pace_heading;
+}
+
+/* At Pad_Sample: what the game reads now, and whether it is new. */
+static void pace_sampled(void)
+{
+    const u16 buttons = pace_buttons_now();
+    const int heading = pace_heading_now();
+    pace_quiet = buttons != pace_buttons || heading != pace_heading ? 0 : pace_quiet + 1;
+    pace_buttons = buttons;
+    pace_heading = heading;
+}
+
+unsigned khdays_press_pace_target(unsigned target)
+{
+    pace_paying = 0;
+    if (pace_active() && pace_owed > 0 && pace_quiet >= PACE_QUIET) {
+        pace_paying = 1;
+        pace_quiet = 0; /* the next, if any, PACE_QUIET frames on */
+        --pace_owed;
+        ++pace_paid;
+        if (pace_trace) {
+            fprintf(stderr, "press pace: game frame %u waits a VBlank more (%d owed, %u early, %u given back)\n",
+                    pad_samples, pace_owed, pace_early, pace_paid);
+        }
+        return target + 1;
+    }
+    return target;
+}
+
+int khdays_press_pace_wait(unsigned (*count)(void), unsigned target)
+{
+    const unsigned start = count();
+    if (!pace_active()) {
+        return 0;
+    }
+    for (;;) {
+        if (count() != start) {
+            return 1; /* the VBlank came */
+        }
+        if (pace_new_press()) {
+            const int skipped = (int)(target - count());
+            pace_owed += skipped;
+            if (pace_owed > PACE_OWED_MOST) {
+                pace_owed = PACE_OWED_MOST;
+            }
+            if (pace_paying) {
+                --pace_paid; /* (counted when it was not yet given) */
+            }
+            ++pace_early;
+            if (pace_trace) {
+                fprintf(stderr, "press pace: game frame %u starts %d VBlank(s) early (%d owed)\n", pad_samples,
+                        skipped, pace_owed);
+            }
+            return 2;
+        }
+        khdays_runtime_wait_or(pace_new_press);
+    }
+}
+
 void khdays_input_pad_sample(void)
 {
+    pace_sampled();
     khdays_autosave_frame(); /* an owed autosave, before the save list maps the game's slots */
     khdays_language_frame(); /* a language the settings menu chose */
     if (trace_pad && pad_samples > 0) {
@@ -377,14 +568,21 @@ void khdays_input_pad_sample(void)
         snapshot.camera_x = (int16_t)script_camera[0];
         snapshot.camera_y = (int16_t)script_camera[1];
     }
+    if ((khdays_plugins_hidden_buttons() & DIRECTIONS) == DIRECTIONS) {
+        snapshot.move_x = snapshot.move_y = 0; /* a native plugin keeps the directions from the game: the stick too */
+    }
     share_stick(&snapshot);
     /* While the settings menu is open the player's input is not the
      * game's (the script's still is: headless runs have no screen). */
     latched = khdays_movie_hd_game_buttons(
         (u16)(khdays_press_edges_take(&script_edges, script_keys) | (snapshot.ui_open ? 0 : player_buttons())));
+    if (select_taken) {
+        latched &= (u16)~KHDAYS_KEY_SELECT;
+    }
     latched = khdays_newgame_buttons(latched);       /* the port's question in the new game takes them */
     latched = khdays_savelist_buttons(latched);      /* the port's save list takes the files' rows */
     khdays_cinelist_frame();                         /* MODO CINE's list, for the port to draw */
+    khdays_daycard_frame();                          /* the day's card, for the port to draw */
     latched = khdays_cinelist_buttons(latched);      /* the port's list of chapters takes all but B and START */
     latched = khdays_roomlist_buttons(latched);      /* the port's list of rooms takes the group list's */
     latched = khdays_charselect_buttons(latched);    /* the port's character select takes the directions */
@@ -392,8 +590,10 @@ void khdays_input_pad_sample(void)
     latched = khdays_retry_buttons(latched);         /* the pause's Retry line in Mission Mode takes the directions */
     latched = khdays_scripts_buttons(latched);       /* a mod's screen, the title's mods' prompt */
     latched = khdays_mission_start_buttons(latched); /* a mod's mission.start presses the camp's own way */
+    latched = (u16)khdays_plugins_buttons(latched);  /* the native plugins read them, and may hide some */
     latched_unread = 1;
     ++pad_samples;
+    khdays_host_latency_sampled(last_frame);
     /* Pad_Sample reads X and Y from here right after: the same moment as the
      * other buttons. */
     ARM7_XY = xy_word(latched);
@@ -427,6 +627,11 @@ u16 khdays_input_keyinput(void)
 u16 khdays_input_xy(void)
 {
     return xy_word(pressed());
+}
+
+u16 khdays_input_script_buttons(void)
+{
+    return script_keys;
 }
 
 int khdays_input_touch(int *x, int *y)

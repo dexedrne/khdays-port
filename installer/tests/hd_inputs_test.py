@@ -10,7 +10,7 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent))
 import setup_steps as s  # noqa: E402
 
-ARCHIVES = {"Mare", "SettingMenu", "kh2_first", "kh3d_first", "movies"}
+ARCHIVES = {"Mare", "SettingMenu", "kh2_first", "kh2_fifth", "kh2_sixth", "kh3d_first", "movies"}
 
 
 class Inputs(unittest.TestCase):
@@ -25,18 +25,47 @@ class Inputs(unittest.TestCase):
         )
 
     def test_lines(self):
-        entries = [
-            line for line in s.INPUTS_FILE.read_text(encoding="utf-8").splitlines() if line and not line.startswith("#")
-        ]
+        lines = s.INPUTS_FILE.read_text(encoding="utf-8").splitlines()
+        # each piece's section, in PIECES' order, before any entry
+        self.assertEqual([line[len("# piece ") :] for line in lines if line.startswith("# piece ")], list(s.PIECES))
+        first_piece = next(i for i, line in enumerate(lines) if line.startswith("# piece "))
+        self.assertFalse([line for line in lines[:first_piece] if line and not line.startswith("#")])
+        entries = [line for line in lines if line and not line.startswith("#")]
         self.assertTrue(entries)
         for line in entries:
             archive, _, path = line.partition(" ")
             self.assertIn(archive, ARCHIVES, line)
             self.assertTrue(path and not path.startswith("/"), line)
-        # the glove's sheet newgame_dialog takes from KH2
-        self.assertIn(f"kh2_first {s.HAND}", entries)
-        self.assertIn("kh2_first msg/us/fontinfo.bar", entries)
-        self.assertIn("kh2_first msg/us/fontimage.bar", entries)
+        menus, videos = s.hd_inputs(("menus",)), s.hd_inputs(("videos",))
+        # the glove's sheet newgame_dialog takes from KH2, and KH2's fonts: the menus'
+        for archive, entry in (
+            ("kh2_first", s.HAND),
+            ("kh2_first", "msg/us/fontinfo.bar"),
+            ("kh2_first", "msg/us/fontimage.bar"),
+            ("kh2_first", "radar.tm2"),
+        ):
+            self.assertIn(entry, menus.get(archive, []))
+        for region in ("us", "sp", "fr", "gr", "it"):
+            self.assertIn(f"field2d/{region}/zz0field.2dd", menus["kh2_fifth"])
+        # the videos read the theater's archive and the movies only (the Japanese collection gives them)
+        self.assertEqual(set(videos), {"Mare", "movies"})
+        self.assertTrue(videos["movies"])
+        self.assertNotIn("movies", menus)
+        # both together: every entry once
+        both = s.hd_inputs()
+        for archive in set(menus) | set(videos):
+            self.assertEqual(sorted(both[archive]), sorted(set(menus.get(archive, [])) | set(videos.get(archive, []))))
+
+    def test_minimap_generator_wiring(self):
+        self.assertIn(("minimap_icons.py", ["--settings", "{minimap_settings}", "--kh2", "{kh2}"]), s.HD_MENU_TOOLS)
+        self.assertIn("minimap_icons.py", s.DATA_TOOLS)
+        source = ast.parse((HERE.parent / "build_installer.py").read_text(encoding="utf-8"))
+        tools = next(
+            node.value
+            for node in source.body
+            if isinstance(node, ast.Assign) and any(isinstance(t, ast.Name) and t.id == "TOOLS" for t in node.targets)
+        )
+        self.assertIn("tools/hd/minimap_icons.py", ast.literal_eval(tools))
 
     def test_font_generator_wiring(self):
         self.assertIn(("kh2_fonts.py", ["{kh2}"]), s.HD_MENU_TOOLS)

@@ -1,6 +1,7 @@
 /* A mod's polygons into a list (khdays_g3d_mod_polygon): clipped at the near plane with their true
  * depth, sky layers behind everything in painting order, nothing lost at the far plane, vertex alpha
- * kept. The clip space is Days's field's: z = w - 0.2 (near plane at w 0.1, no far plane).
+ * kept; a KH2 effect's triangles drawn within a model's draw leave its polygons' keys as they were. The
+ * clip space is Days's field's: z = w - 0.2 (near plane at w 0.1, no far plane).
  *   ctest --test-dir build/port/obj-x64 -R khdays-mod-polygon --output-on-failure */
 #include "../gfx/g3d.h"
 
@@ -25,7 +26,141 @@ static KhdaysG3dClipVertex at(float x, float y, float w)
 
 static const uint32_t BOTH_SIDES = (31u << 16) | 0xc0u;
 
+static void sequence_hud_bounds(void)
+{
+    const KhdaysG3dClipVertex box[4] = {{-0.9f, 1.2f, -0.95f, 1, 63, 63, 63, 0, 0, 1},
+                                        {-0.5f, 1.2f, -0.95f, 1, 63, 63, 63, 128, 0, 1},
+                                        {-0.5f, 0.7f, -0.95f, 1, 63, 63, 63, 128, 128, 1},
+                                        {-0.9f, 0.7f, -0.95f, 1, 63, 63, 63, 0, 128, 1}};
+    for (int kind = 0; kind < 3; ++kind) {
+        khdays_g3d_reset();
+        khdays_g3d_set_hud(kind != 0);
+        if (kind == 2)
+            khdays_g3d_mod_polygon(box, 4, BOTH_SIDES, 0, 7, 1, 0);
+        else
+            khdays_g3d_sequence_polygon(box, 4, BOTH_SIDES, 7, 20);
+        const uint32_t swap = 0;
+        khdays_g3d_command(0x50, &swap);
+        khdays_g3d_vblank();
+        const KhdaysG3dList *list = khdays_g3d_shown();
+        CHECK(list->npolys == 1);
+        if (list->npolys == 1)
+            CHECK(kind == 1 ? list->polys[0].ymin < -19 : list->polys[0].ymin >= 0);
+        KhdaysG3dList replay = {0};
+        CHECK(khdays_g3d_finish(list, NULL, &replay));
+        CHECK(replay.npolys == 1);
+        if (replay.npolys == 1)
+            CHECK(kind == 1 ? replay.polys[0].ymin < -19 : replay.polys[0].ymin >= 0);
+        khdays_g3d_list_free(&replay);
+    }
+}
+
+static void native_triangle(unsigned alpha, unsigned id)
+{
+    const uint32_t attr = (alpha << 16) | (id << 24) | 0xc0u, begin = 0;
+    const uint32_t vertices[3][2] = {{0xf800f800u, 0}, {0xf8000800u, 0}, {0x08000000u, 0}};
+    khdays_g3d_command(0x29, &attr);
+    khdays_g3d_command(0x40, &begin);
+    for (int i = 0; i < 3; ++i)
+        khdays_g3d_command(0x23, vertices[i]);
+    khdays_g3d_command(0x41, NULL);
+}
+
+static void marker_order(void)
+{
+    khdays_g3d_reset();
+    khdays_g3d_set_marker(1);
+    native_triangle(31, 1);
+    khdays_g3d_set_marker(0);
+    native_triangle(16, 2);
+    khdays_g3d_set_marker(1);
+    const KhdaysG3dClipVertex v[3] = {at(-5, -5, 10), at(5, -5, 10), at(0, 5, 10)};
+    khdays_g3d_sequence_polygon(v, 3, BOTH_SIDES | (5u << 24), 7, 19);
+    khdays_g3d_set_marker(0);
+    native_triangle(31, 3);
+    const uint32_t swap = 0;
+    khdays_g3d_command(0x50, &swap);
+    khdays_g3d_vblank();
+    const KhdaysG3dList *shown = khdays_g3d_shown();
+    CHECK(shown->npolys == 4);
+    for (unsigned sort = 0; sort < 2; ++sort) {
+        KhdaysG3dList seed = *shown, replay = {0};
+        seed.swap_params = sort;
+        CHECK(khdays_g3d_finish(&seed, NULL, &replay));
+        CHECK(replay.npolys == 4);
+        for (int i = 0; i < replay.npolys; ++i) {
+            const KhdaysG3dPolygon *p = &replay.polys[i];
+            CHECK(((p->flags & KHDAYS_G3D_MARKER) != 0) == (i >= 2));
+            CHECK(!(p->flags & (KHDAYS_G3D_HUD | KHDAYS_G3D_OVER_2D)));
+        }
+        CHECK(((replay.polys[2].attr >> 24) & 63u) == 1);
+        CHECK(replay.polys[3].pltt == 19);
+        khdays_g3d_list_free(&replay);
+    }
+}
+
+/* A texture set apart from a model's draw carries its bank in PLTT_BASE above the DS's 13 bits
+ * (runtime/display/texture_banks.h): its polygon is drawn from the bank with the palette's own bits; the next
+ * texture, untagged, is the DS's VRAM's again. */
+static void banked_pltt(void)
+{
+    const uint32_t param = 0x20u | 4u << 26; /* 256 colours */
+    const uint32_t tagged = 0x2u | KHDAYS_G3D_PLTT_BANK_TAG | 3u << 16, plain = 0x2u, swap = 0;
+    khdays_g3d_reset();
+    khdays_g3d_command(0x2a, &param);
+    khdays_g3d_command(0x2b, &tagged);
+    native_triangle(31, 1);
+    khdays_g3d_command(0x2a, &param);
+    khdays_g3d_command(0x2b, &plain);
+    native_triangle(31, 2);
+    khdays_g3d_command(0x50, &swap);
+    khdays_g3d_vblank();
+    const KhdaysG3dList *l = khdays_g3d_shown();
+    CHECK(l->npolys == 2);
+    for (int i = 0; i < l->npolys; ++i) {
+        const KhdaysG3dPolygon *p = &l->polys[i];
+        const int banked = ((p->attr >> 24) & 63u) == 1;
+        CHECK(p->pltt == 2);
+        CHECK(p->replacement == (banked ? KHDAYS_G3D_BANK_REPLACEMENT(3) : -1));
+    }
+}
+
 /* The polygon `n` of the list shown: its nearest and farthest depth (z / w). */
+/* A KH2 enemy's effects are drawn with its model (in its model's draw), as many triangles as their tick has:
+ * the model's polygons keep their places in the draw whatever the effects' count, the effects' are keyed as
+ * loose ones -- the picture between two lists (g3d_interp.c) took a model's triangle for another as an
+ * effect grew, and Cerberus came apart in pieces as it landed. */
+static void effect_keys(void)
+{
+    static const int resource = 0;
+    const KhdaysG3dClipVertex model[3] = {at(-1, -1, 10), at(1, -1, 10), at(0, 1, 10)};
+    const KhdaysG3dClipVertex spark[3] = {at(-0.1f, 0, 5), at(0.1f, 0, 5), at(0, 0.2f, 5)};
+    for (int sparks = 1; sparks <= 3; sparks += 2) {
+        khdays_g3d_reset();
+        khdays_g3d_draw_begin(&resource);
+        khdays_g3d_mod_polygon(model, 3, BOTH_SIDES, 0, -1, 0, 0);
+        for (int k = 0; k < sparks; ++k)
+            khdays_g3d_effect_polygon(spark, 3, -1, 0x48, 0);
+        khdays_g3d_mod_polygon(model, 3, BOTH_SIDES, 0, -1, 0, 0);
+        khdays_g3d_draw_end();
+        const uint32_t swap = 0;
+        khdays_g3d_command(0x50, &swap);
+        khdays_g3d_vblank();
+        const KhdaysG3dList *l = khdays_g3d_shown();
+        CHECK(l != NULL && l->npre == 2 + sparks);
+        if (l == NULL || l->npre != 2 + sparks)
+            continue;
+        uint32_t ordinal = 0;
+        for (int32_t i = 0; i < l->npre; ++i) {
+            if (l->pre[i].flags & KHDAYS_G3D_EFFECT) {
+                CHECK(l->pre_info[i].draw == 0); /* none of the model's */
+            } else {
+                CHECK(l->pre_info[i].draw != 0 && l->pre_info[i].ordinal == ordinal++);
+            }
+        }
+    }
+}
+
 static int depths(const KhdaysG3dList *l, int n, float *nearest, float *farthest)
 {
     if (n >= l->npolys) {
@@ -39,6 +174,52 @@ static int depths(const KhdaysG3dList *l, int n, float *nearest, float *farthest
         *farthest = z > *farthest ? z : *farthest;
     }
     return 1;
+}
+
+/* A tint (khdays_g3d_set_tint: KH2's lights) multiplies the colours of the game's polygons and the mods' drawn while
+ * it is on, held to 63, never the HUD's nor KH2's effects'; reset leaves none. */
+static void tinted(void)
+{
+    const KhdaysG3dClipVertex v[3] = {at(-5, -5, 10), at(5, -5, 10), at(0, 5, 10)}; /* 31 each */
+    const uint32_t swap = 0, colour = 31u | 31u << 5 | 31u << 10;
+    khdays_g3d_reset();
+    khdays_g3d_set_tint(0.5f, 1.0f, 3.0f);
+    khdays_g3d_mod_polygon(v, 3, BOTH_SIDES, 0, -1, 0, 0);
+    khdays_g3d_command(0x20, &colour); /* a game polygon's colour: 31 (63 in 6 bits) */
+    native_triangle(31, 1);
+    khdays_g3d_set_hud(1);
+    khdays_g3d_mod_polygon(v, 3, BOTH_SIDES, 0, -1, 0, 0);
+    khdays_g3d_set_hud(0);
+    khdays_g3d_effect_polygon(v, 3, -1, 0x44, 0);
+    khdays_g3d_set_tint(1.0f, 1.0f, 1.0f);
+    khdays_g3d_mod_polygon(v, 3, BOTH_SIDES, 0, -1, 0, 0);
+    khdays_g3d_command(0x50, &swap);
+    khdays_g3d_vblank();
+    const KhdaysG3dList *l = khdays_g3d_shown();
+    CHECK(l->npolys == 5);
+    int tinted_mods = 0, plain = 0, games = 0;
+    for (int i = 0; i < l->npolys; ++i) {
+        const KhdaysG3dPolygon *p = &l->polys[i];
+        const KhdaysG3dVertex *o = &l->verts[p->first];
+        if (!(p->flags & KHDAYS_G3D_MOD)) {
+            ++games; /* 63 x 0.5 rounded; 63 x 3 held to 63 */
+            CHECK(o->r == 32.0f && o->g == 63.0f && o->b == 63.0f);
+        } else if (o->r > 15.4f && o->r < 15.6f) {
+            ++tinted_mods;
+            CHECK(!(p->flags & (KHDAYS_G3D_HUD | KHDAYS_G3D_EFFECT)) && o->g == 31.0f && o->b == 63.0f);
+        } else {
+            ++plain; /* the HUD's, the effect's and the one drawn after the tint ended */
+            CHECK(o->r == 31.0f && o->g == 31.0f && o->b == 31.0f);
+        }
+    }
+    CHECK(games == 1 && tinted_mods == 1 && plain == 3);
+    khdays_g3d_set_tint(0.0f, 0.0f, 0.0f);
+    khdays_g3d_reset();
+    khdays_g3d_mod_polygon(v, 3, BOTH_SIDES, 0, -1, 0, 0);
+    khdays_g3d_command(0x50, &swap);
+    khdays_g3d_vblank();
+    l = khdays_g3d_shown();
+    CHECK(l->npolys == 1 && l->verts[l->polys[0].first].r == 31.0f);
 }
 
 int main(void)
@@ -91,6 +272,22 @@ int main(void)
         }
         CHECK(cut == 2 && clear == 2 && whole == 0);
     }
+    khdays_g3d_reset();
+    khdays_g3d_sequence_polygon(glow, 3, BOTH_SIDES, 7, 19);
+    khdays_g3d_command(0x50, &swap);
+    khdays_g3d_vblank();
+    l = khdays_g3d_shown();
+    CHECK(l->npolys == 1 && (l->polys[0].flags & KHDAYS_G3D_SEQUENCE));
+    CHECK(l->polys[0].pltt == 19 && l->polys[0].replacement == 7);
+    KhdaysG3dList replay = {0};
+    CHECK(khdays_g3d_finish(l, NULL, &replay));
+    CHECK(replay.npolys == 1 && replay.polys[0].pltt == 19 && (replay.polys[0].flags & KHDAYS_G3D_SEQUENCE));
+    khdays_g3d_list_free(&replay);
+    marker_order();
+    sequence_hud_bounds();
+    effect_keys();
+    banked_pltt();
+    tinted();
     if (failures != 0) {
         fprintf(stderr, "%d checks failed\n", failures);
         return 1;

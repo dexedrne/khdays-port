@@ -1,10 +1,13 @@
 #import <Foundation/Foundation.h>
 #import <UIKit/UIKit.h>
 #import <QuartzCore/CAMetalLayer.h>
+#import <QuartzCore/CADisplayLink.h>
+#import <QuartzCore/CABase.h>
 #import <Metal/Metal.h>
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_main.h>
 #include <stdlib.h>
+#include <string.h>
 
 extern int khdays_game_main(int, char **);
 static SDL_AtomicInt game_done;
@@ -90,6 +93,45 @@ void khdays_ios_report(const char *when)
     }
 }
 
+/* The screen's refreshes for the game's clock (port/runtime/core/clock.h, the screen's lock): Windows asks
+ * its compositor; here a display link says how long a refresh lasts and when the last one was. It runs on
+ * the main run loop, which SDL_PumpEvents turns, and stops by itself in the background (the clock takes
+ * times older than half a second for none). KHDAYS_SCREEN_LOCK=off in khdays-env.txt keeps the lock off. */
+extern void khdays_clock_screen_timing(unsigned long long period_ns, unsigned long long refresh_at_ns);
+
+@interface KhdaysRefresh : NSObject
+- (void)refreshed:(CADisplayLink *)link;
+@end
+
+@implementation KhdaysRefresh
+- (void)refreshed:(CADisplayLink *)link
+{
+    static double said;
+    const double period = link.targetTimestamp - link.timestamp, ago = CACurrentMediaTime() - link.timestamp;
+    const Uint64 now = SDL_GetTicksNS();
+    if (period <= 0.0 || ago < 0.0 || ago > 0.5) return;
+    if (period < said * 0.98 || period > said * 1.02) {
+        said = period;
+        fprintf(stderr, "ios: the screen refreshes every %.2f ms (%.1f Hz); the clock's lock takes its times\n",
+                period * 1000.0, 1.0 / period);
+        fflush(stderr);
+    }
+    khdays_clock_screen_timing((unsigned long long)(period * 1e9), now - (Uint64)(ago * 1e9));
+}
+@end
+
+static void watch_refreshes(void)
+{
+    const char *lock = getenv("KHDAYS_SCREEN_LOCK");
+    if (lock != NULL && strcmp(lock, "off") == 0) {
+        fprintf(stderr, "ios: KHDAYS_SCREEN_LOCK=off: the screen's refreshes are not watched\n");
+        return;
+    }
+    KhdaysRefresh *target = [[KhdaysRefresh alloc] init]; /* kept for the app's life */
+    CADisplayLink *link = [CADisplayLink displayLinkWithTarget:target selector:@selector(refreshed:)];
+    [link addToRunLoop:NSRunLoop.mainRunLoop forMode:NSRunLoopCommonModes];
+}
+
 static int run_game(void *unused)
 {
     (void)unused;
@@ -108,6 +150,7 @@ int main(int argc, char **argv)
     SDL_SetHint(SDL_HINT_TOUCH_MOUSE_EVENTS, "0");
     SDL_SetHint(SDL_HINT_ORIENTATIONS, "LandscapeLeft LandscapeRight Portrait PortraitUpsideDown");
     if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_EVENTS)) return 1;
+    watch_refreshes();
     SDL_Thread *thread = SDL_CreateThread(run_game, "game", NULL);
     if (!thread) return 1;
     while (!SDL_GetAtomicInt(&game_done)) {

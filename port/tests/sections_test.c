@@ -6,6 +6,13 @@
 
 extern void khdays_data_init(int module);
 extern unsigned char *khdays_window;
+/* no overlay is loaded here: no function of one at any address (runtime/core/overlays.c) */
+int khdays_overlay_function_at(unsigned address, int *module)
+{
+    (void)address;
+    (void)module;
+    return 0;
+}
 void khdays_overlay_started(int module)
 {
     (void)module;

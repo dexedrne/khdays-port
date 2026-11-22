@@ -64,13 +64,18 @@ static void take_comment(Comments *c, const char *comment, size_t length)
     }
 }
 
-/* The loop: the file's own, else the original's scaled to the file's rate. */
+/* The loop: the file's own, else the original's scaled to the file's rate (the whole file for
+ * KHDAYS_WHOLE_FILE_LOOP). */
 static void set_loop(KhdaysReplacement *r, int64_t start, int64_t end, const KhdaysOriginalLoop *original)
 {
     if (start >= 0 && end > start && (uint64_t)start < r->frames) {
         r->looped = 1;
         r->loop_start = (uint64_t)start;
         r->loop_end = (uint64_t)end < r->frames ? (uint64_t)end : r->frames;
+    } else if (original != NULL && original->looped && original->rate == 0) {
+        r->looped = r->frames > 0;
+        r->loop_start = 0;
+        r->loop_end = r->frames;
     } else if (original != NULL && original->looped && original->rate != 0 && original->end > original->start) {
         const double scale = (double)r->rate / (double)original->rate;
         r->looped = 1;
@@ -339,8 +344,12 @@ static int load_ogg(KhdaysReplacement *r, const char *path, const KhdaysOriginal
 /* --- The replacement ----------------------------------------------------------------- */
 
 /* A file above the PC's usual output rate is brought down to it as it loads, through a sinc of this many zero
- * crossings each side under a Blackman window. */
+ * crossings each side under a Blackman window -- unless it is above it by less than TOP_RATE_SLACK: what it holds
+ * past half the output rate is then a few hundred hertz at 24 kHz at most, and the filter (some 30 ms a second of
+ * stereo) would be spent for nothing. KH2's recordings come at such rates (48008, 47996 ...): a KH2 enemy's sounds took
+ * two seconds of the field's start before. */
 #define TOP_RATE 48000u
+#define TOP_RATE_SLACK 1.01
 #define SINC_ZEROS 16
 #define SINC_PI 3.14159265358979323846
 
@@ -419,7 +428,7 @@ int khdays_replacement_load(KhdaysReplacement *replacement, const char *path, co
         say(why, why_size, "is not .wav, .flac or .ogg");
         return 0;
     }
-    if (loaded && replacement->rate > TOP_RATE && !bring_down(replacement)) {
+    if (loaded && replacement->rate > TOP_RATE * TOP_RATE_SLACK && !bring_down(replacement)) {
         khdays_replacement_free(replacement);
         say(why, why_size, "has no memory to be brought down to the PC's rate");
         return 0;

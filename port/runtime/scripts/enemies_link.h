@@ -35,6 +35,20 @@ int khdays_enemies_remove(unsigned actor);
 /* A standing enemy's kind, HP, level and place; 0 when it no longer stands. */
 int khdays_enemies_info(unsigned actor, KhdaysEnemyInfo *out);
 
+/* Every standing enemy of the area, a mod's or the mission's (ov107's actor manager: those set going and not yet
+ * defeated or sent away), for the native plugins' kh.actors: up to `room` actors into `out` (NULL to count), how
+ * many; whether `actor` is one of them, its state into `out` when not NULL. */
+int khdays_enemies_list(unsigned *out, int room);
+int khdays_enemies_state(unsigned actor, KhdaysEnemyInfo *out);
+
+/* A standing enemy hit by a player's actor `attacker` at seat `seat` as the players' attacks hit (the packet
+ * Ov022_SendSweepHit gives Ov107_AiState_ApplyHit): `damage` taken as it is, from `at`, with the kinds' bits
+ * `kinds` (a status's) at `chance` (0-100), without its flinch when `no_flinch`; whether it took it. A standing enemy
+ * moved to `at` (Ov107_MoveNodeAndRelayout); 0 when it no longer stands. */
+int khdays_enemies_hit(unsigned enemy, unsigned attacker, int seat, int damage, const float at[3], unsigned kinds,
+                       int chance, int no_flinch);
+int khdays_enemies_move(unsigned enemy, const float at[3]);
+
 /* The joins. */
 void khdays_enemies_marker_made(int source, int row, void *actor, int id); /* Ov002_CreateActorFromMarker */
 void khdays_enemies_class(int id);                                         /* Ov107_SpawnEntityClass */
@@ -43,11 +57,22 @@ void khdays_enemies_retired(void *actor);                                  /* Ov
 void khdays_enemies_defeated(void *actor);                                 /* Ov107_AiState_OnDefeat */
 void khdays_enemies_area_left(void);                                       /* Ov002_ReleaseResources */
 
+/* The mission's row a spawner's slot takes its enemy from, -1 none: Ov002_CreateSpawner gives the slot an owner tag,
+ * its spawner's place among the field's objects << 8 | its group in the spawner's record, and that group names the
+ * row (rows of one class share the slot's kinds entry, Ov107_AllocSortedEntry, so the slot's own id cannot tell). */
+int khdays_enemies_slot_row(unsigned spawner, int slot);
+
 /* While `on`, the mission's own spawners set none of their idle enemies going (their op 0 skipped): the
  * mission's areas then never end by their enemies. Those standing stay. */
 void khdays_enemies_hold_mission(int on);
 
 /* The frame point (scripts.c): the enemies sent away settled, the field left. */
 void khdays_enemies_frame(void);
+
+/* The actors' table by id (Ov107_Scene_BuildIdTable, prepare.py's joins): made for `count` ids, and how many
+ * ids `table` holds (0 for another): Ov107_FindMessageHandler reads it for those only and finds an actor made
+ * after it -- a later wave's, a mod's -- in the actors' list, as with no table. */
+void khdays_enemies_ids_built(const void *table, int count);
+int khdays_enemies_ids_room(const void *table);
 
 #endif

@@ -114,9 +114,17 @@ struct App {
     std::vector<std::string> dialog_sheet_folders;    // where every 2D sheet is exported
     std::vector<std::string> dialog_texture_exports;  // where a 3D texture is exported
     std::vector<std::string> dialog_texture_folders;  // where every 3D texture is exported
-    std::vector<std::string> dialog_collections;      // the 1.5+2.5 collection's folder (KH2's rooms)
+    std::vector<std::string> dialog_collections;      // the 1.5+2.5 collection's folder (KH1, KH2, Re:CoM rooms)
+    std::vector<std::string> dialog_collections_28;   // the 2.8 collection's folder (Dream Drop Distance's rooms)
+    std::vector<std::string> dialog_ports;            // the port's executable (the settings)
+    std::vector<std::string> dialog_maps_kept;        // where the collections' maps are kept (setting collections)
+    std::vector<std::string> dialog_characters;       // a character's model, clips, picture or sound
+    std::vector<std::string> dialog_room_music;       // a room's music (views/room_music_view.cpp)
 
     std::string status;
+    bool missions_asked = false;  // the Missions window to open (main.cpp), asked by a game mission's view
+    bool take_out_asked = false;  // the Take out every map window to open (main.cpp), asked by Settings or a map list
+    std::string take_out_game;    // with take_out_asked from a game's map list: that game's code, the only one chosen
 
     // What a person must see happened -- a save done or failed, work kept or
     // lost: shown over the window (main.cpp draw_notices) in green or red, a
@@ -129,6 +137,7 @@ struct App {
     };
     std::vector<Notice> notices;
     void tell(const std::string& text, bool ok);
+    bool quit_asked = false;  // the window's close waits for an answer about unsaved work
 };
 
 // The views (each draws into the current ImGui window).
@@ -153,8 +162,48 @@ void movie_view_leave();
 void room_export_to(App& app, const std::filesystem::path& file);
 // A mission: its scripts, step by step.
 void draw_mission_view(App& app, const Item& item);
+// Whether the mod's new missions have changes not saved; asked when the window closes (true: quit anyway).
+bool new_missions_unsaved();
+// The mod's new missions in a window of their own (views/mission_view.cpp), and a mission's places on its room's map
+// (views/mission_map.cpp): the mod's mission `key` played where `where` says (true the frame its places were saved);
+// its places changed, not saved.
+void draw_mod_missions(App& app, bool* open);
+struct CollectionGameInfo;
+struct CollectionMap;
+// A room of the mod's own added from a collection's map or the modder's model (views/room_adder.cpp): its window
+// asked open by the view `owner` with `map` of `game` chosen (the map view's lists), with the map to choose in it
+// (room_adder_open: a game, its world and the map, or the modder's model), or with the modder's model chosen in a file
+// dialog; drawn each frame by `owner`, true the frame a room was added, its world and key given.
+void room_adder_open_map(const std::string& owner, const CollectionGameInfo* game, const CollectionMap& map,
+                         const std::string& world);
+void room_adder_open(const std::string& owner, const std::string& world);
+void room_adder_choose_model(App& app, const std::string& owner, const std::string& world);
+bool room_adder_busy();
+bool draw_room_adder(App& app, const std::string& owner, std::string* world, std::string* key);
+
+// Where a new mission is played: its world (the game's code or the mod's own world's key), its room there (or one the
+// mod adds, by its key), and whether that differs from what the mod holds (saved with the places).
+struct MissionRoom {
+    std::string world;
+    int room = 0;
+    std::string room_key;
+    bool changed = false;
+};
+bool draw_mission_map(App& app, const Mod& m, const std::string& key, const MissionRoom& where);
+bool mission_map_unsaved();
+// The enemy classes a new mission's waves can use: those the game's missions have a row of (read once).
+const std::vector<int>& mission_enemy_classes();
+// The mod's characters (views/character_view.cpp): the window, a file dropped while the pointer is over it (true
+// when it took it), and its changes not saved.
+void draw_characters(App& app, bool* open);
+bool characters_take_drop(App& app, const std::filesystem::path& file);
+bool characters_unsaved();
+std::string characters_unsaved_key();
+bool draw_unsaved_quit(App& app);
 // The mods' console: the running game's mods' log as it grows, and their reloads.
 void draw_mods_console(App& app, bool* open);
+// The chosen mod's native plugin's parameters, as its mod describes them, and the values saved for the game.
+void draw_plugin_parameters(App& app, bool* open);
 
 // Points a mission puts in a room (its spawners), drawn by the map view
 // over that room when it is shown.
@@ -194,6 +243,11 @@ void choose_export(App& app);
 // Lets go of the model view's pictures before the graphics device goes.
 void model_view_shutdown();
 void draw_dump_panel(App& app);
+// The port's dumps (browser.cpp): whether one can be made now (the port found, none running), one of `kind`
+// ("graphics", "sounds") started into its folder of the settings, and the one running or done with its Reload.
+bool can_make_dump(const App& app);
+void start_dump(App& app, const char* kind);
+void draw_dump_job(App& app);
 void draw_bulk_export(App& app);  // its progress, in the browser (sheet_view.cpp)
 // The progress a bulk export's thread reports, and its end (sheet_view.cpp).
 std::function<bool(std::size_t, std::size_t, const std::string&)> bulk_progress(App::BulkExport* job);
@@ -204,6 +258,12 @@ void texture_export_to(App& app, const std::filesystem::path& file);
 void draw_candidate_controls(App& app, const Item& item);
 void draw_replacements(App& app, bool* open);
 void draw_settings(App& app, bool* open);
+// Every map of the collections taken out and made at once: where, how much space, its progress
+// (views/take_out_view.cpp).
+void draw_take_out_all(App& app, bool* open);
+// The folder the collections' maps are kept in (the setting collections): typed, or chosen in the system's dialog;
+// true when it changed (saved by the caller).
+bool collections_folder_field(App& app);
 void draw_themes(App& app, bool* open);  // the colour palette (theme.h)
 void stop_sounds();
 
@@ -213,6 +273,13 @@ std::string finding_text(const App& app, const Finding& finding);
 // Opens the system's file dialog for the shown item.
 void choose_file(App& app, const Item& item);
 
+// The music the mod gives a room (core/rooms/room_music.h): its field's and its battle's files, each chosen in the
+// system's dialog or removed, a notice for each (views/room_music_view.cpp). `id` tells it apart from another shown.
+struct RoomMusicPlace;
+void draw_room_music(App& app, const RoomMusicPlace& place, const char* id);
+// Each frame: a room's music the system's dialog chose, copied into the mod (the panel may be closed by then).
+void take_room_music(App& app);
+
 // Rows that wrap: the next item on the last one's line when its `width` fits
 // in what the window shows, else on the next line, so nothing is hidden past
 // the window's right edge.
@@ -220,5 +287,17 @@ void same_line_if_room(float width);
 // The width of a button, and of a checkbox or radio button, with `label`.
 float button_width(const char* label);
 float check_width(const char* label);
+// The width of a combo whose closed box shows the longest of `labels` whole (its arrow beside it).
+float combo_width(const std::vector<std::string>& labels);
+
+// Texts from here to the end of the scope wrap at the window's right edge, never cut there (a child window keeps
+// its own: each takes one of these).
+class WrappedTexts {
+public:
+    WrappedTexts();
+    ~WrappedTexts();
+    WrappedTexts(const WrappedTexts&) = delete;
+    WrappedTexts& operator=(const WrappedTexts&) = delete;
+};
 
 }  // namespace studio

@@ -10,6 +10,10 @@
 #include "../menus/camp.h"
 #include "../menus/charselect.h"
 #include "../menus/cinelist.h"
+#include "../menus/daycard.h"
+#include "../menus/shop.h"
+#include "../movies/scene_trace.h"
+#include "../display/field_wipe.h"
 #include "../net/roomlist.h"
 #include "../../ui/situation.h"
 #include "../input/input.h"
@@ -72,7 +76,21 @@ static void print_stack(HANDLE thread, CONTEXT *context)
         if (SymFromAddr(process, frame.AddrPC.Offset, &displacement, symbol)) {
             fprintf(stderr, "  #%-2d %08llx %s+0x%llx", depth, frame.AddrPC.Offset, symbol->Name, displacement);
         } else {
-            fprintf(stderr, "  #%-2d %08llx ?", depth, frame.AddrPC.Offset);
+            /* no symbol (a player's build carries no .pdb): its module and the offset in it, for the build's
+             * symbols to name later (llvm-symbolizer --obj=<exe> --relative-address) */
+            const DWORD64 base = SymGetModuleBase64(process, frame.AddrPC.Offset);
+            char path[MAX_PATH];
+            const char *name = "?";
+            if (base != 0 && GetModuleFileNameA((HMODULE)(size_t)base, path, (DWORD)sizeof(path)) > 0) {
+                const char *slash = strrchr(path, '\\');
+                name = slash != NULL ? slash + 1 : path;
+            }
+            if (base != 0) {
+                fprintf(stderr, "  #%-2d %08llx %s+0x%llx", depth, frame.AddrPC.Offset, name,
+                        frame.AddrPC.Offset - base);
+            } else {
+                fprintf(stderr, "  #%-2d %08llx ?", depth, frame.AddrPC.Offset);
+            }
         }
         if (SymGetLineFromAddr64(process, frame.AddrPC.Offset, &line_displacement, &line)) {
             fprintf(stderr, "  (%s:%lu)", line.FileName, line.LineNumber);
@@ -614,10 +632,7 @@ void khdays_trace_script(void *st, void *entry)
     const u32 cmd_reference = *(const u32 *)(e + 0x10); /* the game's pointer: a reference */
     const u8 *cmd = cmd_reference ? (const u8 *)KHDAYS_W(cmd_reference) : NULL;
     u32 now[8];
-    {
-        extern void khdays_scene_step(void *st); /* runtime/movies/scene_trace.c */
-        khdays_scene_step(st);
-    }
+    khdays_scene_step(st);
     if (enabled < 0) {
         enabled = getenv("KHDAYS_TRACE_SCRIPT") != NULL;
     }
@@ -683,9 +698,12 @@ static void check_update(intptr_t fn, intptr_t next)
 #endif
     khdays_input_update_ran((khdays_uptr)fn);
     khdays_cinelist_update_ran((khdays_uptr)fn);
+    khdays_daycard_update_ran((khdays_uptr)fn);
     khdays_roomlist_update_ran((khdays_uptr)fn);
     khdays_charselect_update_ran((khdays_uptr)fn);
     khdays_camp_update_ran((khdays_uptr)fn);
+    khdays_shop_update_ran((khdays_uptr)fn);
+    khdays_field_wipe_update_ran((uintptr_t)fn);
     khdays_situation_update_ran((uintptr_t)fn);
     if (trace < 0) {
         const char *setting = getenv("KHDAYS_TRACE_UPDATES");

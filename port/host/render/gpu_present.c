@@ -6,15 +6,19 @@
 #include "../app/devices.h"
 #include "../app/mobile_touch.h"
 #include "gfx_render.h"
+#include "gpu_hd.h"
 #include "gpu_raster3d.h"
 #include "../movies/movie_hd.h"
 #include "../movies/movie_subtitles.h"
 #include "../../runtime/menus/newgame.h"
 #include "onescreen.h"
 #include "png_io.h"
+#include "two_screens.h"
+#include "../screens/ds_select_pages.h"
 #include "../../ui/composition.h"
 #include "../screens/movie_pause.h"
 #include "../screens/ui_text.h"
+#include "../screens/shop_screen.h"
 #include "../../runtime/core/clock.h"
 #include "../../runtime/core/events.h"
 #include "../../runtime/display/frame_package.h"
@@ -42,8 +46,11 @@ static uint32_t shown[2 * W * H]; /* what it holds, to upload it again after a r
 static KhdaysVideo video;
 static KhdaysNotice notice;
 static int said_backend;
+static char card_line[320]; /* the graphics API, the card and its driver, for the session log */
+static int card_logged;     /* card_line written to it */
 
 /* The older HD path: engine A's screen at N x, and which screen it goes on. */
+static int vsync_now = 1;     /* the renderer's VSync (khdays_present_wait_for_refresh) */
 static int raster_ready;      /* gpu_raster3d.c opened on this device */
 static SDL_Texture *hd;       /* this frame's, or NULL to show the 1x picture as it is */
 static SDL_Texture *hd_movie; /* an HD video's picture, NV12 */
@@ -132,10 +139,22 @@ static struct {
     double hd_ms, hd_max_ms;
 } stats;
 
-/* KHDAYS_SHOTS_HD */
+/* KHDAYS_SHOTS_HD: each frame asked, taken at the first frame presented from it on (a frame showing what the last
+ * one did is not presented) */
+typedef struct {
+    uint32_t frame;
+    int taken;
+    int after; /* KHDAYS_SHOTS_BETWEEN: the pictures after it still to be taken */
+} Shot;
 static const char *shot_dir;
-static uint32_t shot_frames[64];
+static Shot *shots;
 static int shot_count;
+static SDL_AtomicInt shots_asked; /* pictures the game thread asked for since the last package (khdays_present_shot_soon) */
+/* KHDAYS_SHOTS_BETWEEN=1: of a frame asked, also the next five pictures, drawn from the same two game frames (no
+ * newer one taken meanwhile) at 0, a quarter, a half, three quarters and all but all of the way (picture_pace
+ * smooth), named frame_<n>_one_<k>_a<alpha x 1000>.png: the pictures the smoothing makes, whatever the timing */
+static int shots_between;
+static double picture_alpha; /* the picture being drawn's place between the two latest game frames (1: the newest) */
 
 /* Wine or Proton (a Steam Deck, Linux): its ntdll names its version. */
 static int under_wine(void)
@@ -150,6 +169,29 @@ static int under_wine(void)
     return wine;
 }
 
+/* A GPU device by `name` (NULL: the system's choice). KHDAYS_GPU_LOW_POWER=1 asks for the low-power card (a
+ * PC's integrated graphics beside its own card), to measure or look at the picture there. */
+static SDL_GPUDevice *make_device(int debug, const char *name)
+{
+    SDL_PropertiesID props;
+    SDL_GPUDevice *made;
+    if (SDL_getenv("KHDAYS_GPU_LOW_POWER") == NULL) {
+        return SDL_CreateGPUDevice(SHADER_FORMATS, debug, name);
+    }
+    props = SDL_CreateProperties();
+    SDL_SetBooleanProperty(props, SDL_PROP_GPU_DEVICE_CREATE_DEBUGMODE_BOOLEAN, debug != 0);
+    SDL_SetBooleanProperty(props, SDL_PROP_GPU_DEVICE_CREATE_PREFERLOWPOWER_BOOLEAN, true);
+    SDL_SetBooleanProperty(props, SDL_PROP_GPU_DEVICE_CREATE_SHADERS_DXIL_BOOLEAN, true); /* SHADER_FORMATS */
+    SDL_SetBooleanProperty(props, SDL_PROP_GPU_DEVICE_CREATE_SHADERS_SPIRV_BOOLEAN, true);
+    SDL_SetBooleanProperty(props, SDL_PROP_GPU_DEVICE_CREATE_SHADERS_MSL_BOOLEAN, true);
+    if (name != NULL) {
+        SDL_SetStringProperty(props, SDL_PROP_GPU_DEVICE_CREATE_NAME_STRING, name);
+    }
+    made = SDL_CreateGPUDeviceWithProperties(props);
+    SDL_DestroyProperties(props);
+    return made;
+}
+
 /* Makes a renderer on a new GPU device. Returns NULL with the reason in `why`. */
 static SDL_Renderer *gpu_renderer(char *why, size_t size)
 {
@@ -160,9 +202,9 @@ static SDL_Renderer *gpu_renderer(char *why, size_t size)
     SDL_Renderer *r;
     if (name == NULL && SDL_GetHint(SDL_HINT_GPU_DRIVER) == NULL && under_wine()) {
         /* Automatic under Wine: its Direct3D 12 is made of Vulkan (vkd3d), so Vulkan straight away */
-        made = SDL_CreateGPUDevice(SHADER_FORMATS, debug, "vulkan");
+        made = make_device(debug, "vulkan");
     }
-    device = made != NULL ? made : SDL_CreateGPUDevice(SHADER_FORMATS, debug, name);
+    device = made != NULL ? made : make_device(debug, name);
     if (device == NULL && name != NULL) {
         /* the graphics API asked for is not available: use the system's (the settings menu says so) */
         char text[480];
@@ -171,7 +213,7 @@ static SDL_Renderer *gpu_renderer(char *why, size_t size)
         if (notice != NULL) {
             notice(text);
         }
-        device = SDL_CreateGPUDevice(SHADER_FORMATS, debug, NULL);
+        device = make_device(debug, NULL);
     }
     if (device == NULL) {
         SDL_snprintf(why, size, "no GPU device: %s", SDL_GetError());
@@ -194,10 +236,15 @@ static SDL_Renderer *gpu_renderer(char *why, size_t size)
         static char said[32];
         const char *now = SDL_GetGPUDeviceDriver(device);
         if (!said_backend || SDL_strcmp(said, now) != 0) {
-            fprintf(stderr, "host: the picture goes through the graphics card (%s)\n", now);
-            if (said_backend) {
-                khdays_log("graphics: the picture goes through %s", now);
-            }
+            /* which card and driver (a laptop has two: the session log says which one plays, once it is open) */
+            const SDL_PropertiesID props = SDL_GetGPUDeviceProperties(device);
+            const char *driver = SDL_GetStringProperty(props, SDL_PROP_GPU_DEVICE_DRIVER_NAME_STRING, "");
+            SDL_snprintf(card_line, sizeof(card_line), "%s on %s (driver %s%s%s)", now,
+                         SDL_GetStringProperty(props, SDL_PROP_GPU_DEVICE_NAME_STRING, "an unnamed card"), driver,
+                         driver[0] != '\0' ? " " : "",
+                         SDL_GetStringProperty(props, SDL_PROP_GPU_DEVICE_DRIVER_VERSION_STRING, "of no version"));
+            card_logged = 0;
+            fprintf(stderr, "host: the picture goes through the graphics card: %s\n", card_line);
             SDL_strlcpy(said, now, sizeof(said));
             said_backend = 1;
         }
@@ -242,6 +289,7 @@ static int make_renderer(void)
         exit(1);
     }
     SDL_SetRenderVSync(renderer, 1);
+    vsync_now = 1; /* (khdays_present_wait_for_refresh) */
     layout();
     return make_texture();
 }
@@ -283,20 +331,36 @@ SDL_Renderer *khdays_present_open(SDL_Window *w, KhdaysNotice tell)
     window = w;
     notice = tell;
     profile = SDL_getenv("KHDAYS_PROFILE") != NULL;
+    khdays_gfx_render_set_keep(SDL_getenv("KHDAYS_KEEP_2D") == NULL || SDL_atoi(SDL_getenv("KHDAYS_KEEP_2D")) != 0);
+    khdays_gfx_render_set_once(SDL_getenv("KHDAYS_2D_ONCE") == NULL || SDL_atoi(SDL_getenv("KHDAYS_2D_ONCE")) != 0);
+    /* the screens whole on one screen too: asked for, or read back whole by the check (port2d_compare) */
+    khdays_gfx_render_set_parts(port2d_wanted() != 2 && (SDL_getenv("KHDAYS_PARTS_2D") == NULL ||
+                                                         SDL_atoi(SDL_getenv("KHDAYS_PARTS_2D")) != 0));
     shot_dir = SDL_getenv("KHDAYS_SHOTS_HD");
+    shots_between = SDL_getenv("KHDAYS_SHOTS_BETWEEN") != NULL;
+    SDL_free(shots);
+    shots = NULL;
     shot_count = 0;
     if (shot_dir != NULL && SDL_getenv("KHDAYS_SHOTS") != NULL) {
         const char *text = SDL_getenv("KHDAYS_SHOTS");
-        while (*text != '\0' && shot_count < (int)SDL_arraysize(shot_frames)) {
+        while (*text != '\0') {
             char *end;
             const unsigned long frame = SDL_strtoul(text, &end, 10);
             if (end == text) {
                 ++text;
                 continue;
             }
-            shot_frames[shot_count++] = (uint32_t)frame;
+            Shot *grown = (Shot *)SDL_realloc(shots, (size_t)(shot_count + 1) * sizeof(Shot));
+            if (grown == NULL)
+                break;
+            shots = grown;
+            shots[shot_count].frame = (uint32_t)frame;
+            shots[shot_count].after = 0;
+            shots[shot_count++].taken = 0;
             text = end;
         }
+    }
+    if (shot_dir != NULL) {
         SDL_CreateDirectory(shot_dir);
     }
     if (!make_renderer()) {
@@ -315,6 +379,12 @@ void khdays_present_close(void)
 int khdays_present_gpu(void)
 {
     return device != NULL;
+}
+
+/* Two screens side by side ([video] two_screens): each the DS's width, whatever the aspect. */
+static int side_by_side(void)
+{
+    return !video.one_screen && video.two_screens == KHDAYS_TWO_SIDE_BY_SIDE;
 }
 
 /* The part of the window the picture is laid out in, in pixels: the window; on the phone its safe area
@@ -399,7 +469,7 @@ static int view_below(int cols, SDL_FRect *at)
 static int columns_now(void)
 {
     int pw = 0, ph = 0, n;
-    if (device == NULL || !raster_ready) {
+    if (device == NULL || !raster_ready || side_by_side()) {
         return W;
     }
     switch (video.aspect) {
@@ -414,45 +484,49 @@ static int columns_now(void)
     }
 }
 
-/* The antialiasing: the picture made this many times larger, then shrunk
- * (gfx_render.c); never at the DS's own 1x, kept for comparing with the DS. */
-static int antialiasing_now(void)
-{
-    return video.internal_resolution != 1 && video.antialiasing > 1 ? video.antialiasing : 1;
-}
-
 /* The window's pixels a DS pixel the picture is shown at: the presentation
  * (the picture's columns, one screen's rows or two) fitted into the window. */
 static float shown_scale(void)
 {
     int pw = 0, ph = 0;
-    const int rows = video.one_screen ? H : 2 * H;
+    const KhdaysTwoScreensLayout two = khdays_two_screens_layout(side_by_side(), columns_now(), W, W);
+    const int across = video.one_screen ? columns_now() : two.width, rows = video.one_screen ? H : two.height;
     float sx, sy;
     picture_area(&pw, &ph);
-    sx = (float)pw / (float)columns_now();
+    sx = (float)pw / (float)across;
     sy = (float)ph / (float)rows;
     return sx < sy ? sx : sy;
 }
 
 /* The internal resolution now: the setting, or for "window" the window's own size (smooth scaling:
  * the whole multiple at least as large, shrunk on the card; sharp: the largest that fits with square
- * DS pixels), times the antialiasing. If the card could not make a scale (refused_scale) the next one
- * down is used. */
+ * DS pixels). If the card could not make a scale (refused_scale) the next one down is used. */
 static int scale_now(void)
 {
     int n = video.internal_resolution;
     if (n == KHDAYS_RESOLUTION_WINDOW) {
         const float s = shown_scale();
-        n = video.smooth_scaling ? (int)SDL_ceilf(s * (float)antialiasing_now() - 0.01f)
-                                 : (int)SDL_floorf(s) * antialiasing_now();
+        n = video.smooth_scaling ? (int)SDL_ceilf(s - 0.01f) : (int)SDL_floorf(s);
         n = n < 1 ? 1 : n;
-    } else {
-        n *= antialiasing_now();
     }
     if (refused_scale > 1 && n >= refused_scale) {
         n = refused_scale - 1;
     }
     return n;
+}
+
+/* The 2D's scale over a 3D at `n3d`: the window's own (smooth scaling: the whole multiple at least as large,
+ * shrunk on the card; sharp: the largest that fits), so the HUD, menus and text stay as sharp as the window
+ * whatever the internal resolution; the 3D's when that is finer (an internal resolution above the
+ * window's). The 2D check (KHDAYS_GFX=check) compares at the 3D's. */
+static int scale2d_now(int n3d)
+{
+    const float s = shown_scale();
+    int n = video.smooth_scaling ? (int)SDL_ceilf(s - 0.01f) : (int)SDL_floorf(s);
+    if (port2d_mode == 2 || n < n3d) {
+        n = n3d;
+    }
+    return n < 1 ? 1 : n;
 }
 
 /* Whether engine A's 3D is drawn on the graphics card: at an internal
@@ -484,22 +558,23 @@ int khdays_present_columns(void)
 
 int khdays_present_scale(void)
 {
-    return port2d_ready && device != NULL ? scale_now() : 1;
+    return port2d_ready && device != NULL ? scale2d_now(scale_now()) : 1;
 }
 
-/* Lays out the picture for its width now: the two screens one above the
- * other, the DS's 256 columns of each in the middle, fitted to the window. */
+/* Lays out the picture for its width now: the two screens one above the other or side by side
+ * (two_screens.h), the DS's 256 columns of each, fitted to the window. */
 static void present_size(int w, int h);
 
 static void lower_view_apply(void);
 
 static void layout(void)
 {
+    const KhdaysTwoScreensLayout two = khdays_two_screens_layout(side_by_side(), khdays_present_columns(), W, W);
     columns = khdays_present_columns();
     lower_view_apply(); /* (the phone turned: the view below the picture, or over it) */
     /* one screen: each frame sets what it shows (khdays_present_draw); until then, leave it */
     presented_w = presented_h = 0;
-    present_size(columns, video.one_screen ? H : 2 * H);
+    present_size(video.one_screen ? columns : two.width, video.one_screen ? H : two.height);
 }
 
 static void present_latest_again(void);
@@ -570,11 +645,56 @@ static SDL_FRect ds_columns(SDL_Texture *texture, int width)
     return part;
 }
 
-/* KHDAYS_SHOTS_HD: the screens of this frame, as presented. */
-static void save_shots(const KhdaysFramePackage *p)
+/* KHDAYS_SHOTS_HD: the screens of this frame, as presented, for each shot asked at it or before it not yet taken
+ * (`first`: the frame's first picture); with KHDAYS_SHOTS_BETWEEN, the one-screen picture drawn again between it and
+ * the next game frame too. */
+static void save_shots_now(const KhdaysFramePackage *p, int first);
+
+/* The game's time held while the pictures are read back and written (KHDAYS_HOLD_SHOT): a frame asked is never
+ * skipped by the game catching up after a slow write, so frames asked in a row make a smooth picture sequence. */
+static void save_shots(const KhdaysFramePackage *p, int first)
 {
+    /* the game thread's asks: this package's frame, as KHDAYS_SHOTS names one (more asks for it, the same picture) */
+    if (first && shot_dir != NULL && SDL_SetAtomicInt(&shots_asked, 0) > 0) {
+        Shot *grown = (Shot *)SDL_realloc(shots, (size_t)(shot_count + 1) * sizeof(Shot));
+        if (grown != NULL) {
+            shots = grown;
+            shots[shot_count].frame = p->frame;
+            shots[shot_count].after = 0;
+            shots[shot_count++].taken = 0;
+        }
+    }
+    if (shot_count == 0) {
+        return;
+    }
+    khdays_clock_hold(KHDAYS_HOLD_SHOT, 1);
+    save_shots_now(p, first);
+    khdays_clock_hold(KHDAYS_HOLD_SHOT, 0);
+}
+
+static void save_shots_now(const KhdaysFramePackage *p, int first)
+{
+    for (int n = 0; one_drawn && n < shot_count; ++n) {
+        int w = 0, h = 0;
+        uint32_t *pixels = shots[n].after > 0 ? khdays_gfx_render_read(2, &w, &h) : NULL;
+        if (pixels != NULL) {
+            char which[48];
+            SDL_snprintf(which, sizeof(which), "one_%02d_a%03d", 6 - shots[n].after,
+                         (int)SDL_lround(picture_alpha * 1000.0));
+            save_png(shots[n].frame, which, pixels, w, h);
+            SDL_free(pixels);
+            --shots[n].after;
+        }
+    }
+    if (!first) {
+        return;
+    }
     for (int n = 0; n < shot_count; ++n) {
-        if (shot_frames[n] == p->frame && one_drawn) {
+        if (shots[n].taken || shots[n].frame > p->frame)
+            continue;
+        shots[n].taken = 1;
+        shots[n].after = shots_between ? 5 : 0;
+        if (one_drawn) {
             /* the one-screen picture */
             int w = 0, h = 0;
             uint32_t *pixels = khdays_gfx_render_read(2, &w, &h);
@@ -582,7 +702,7 @@ static void save_shots(const KhdaysFramePackage *p)
                 save_png(p->frame, "one", pixels, w, h);
                 SDL_free(pixels);
             }
-        } else if (shot_frames[n] == p->frame && port2d_drawn) {
+        } else if (port2d_drawn) {
             /* the port's own screens, as they are presented */
             for (int e = 0; e < 2; ++e) {
                 int w = 0, h = 0;
@@ -592,7 +712,7 @@ static void save_shots(const KhdaysFramePackage *p)
                     SDL_free(pixels);
                 }
             }
-        } else if (shot_frames[n] == p->frame) {
+        } else {
             int w = 0, h = 0;
             uint32_t *a = hd != NULL ? khdays_raster3d_read(&w, &h) : NULL;
             const char *engine_a = p->upper == 0 ? "upper" : "lower";
@@ -625,6 +745,15 @@ static void count_frame(const KhdaysFramePackage *p, double hd_ms)
                 "prepared in %.2f ms on average, %.2f at most\n",
                 stats.not_drawn, stats.hd_frames, scale_now(), stats.hd_frames ? stats.hd_ms / stats.hd_frames : 0.0,
                 stats.hd_max_ms);
+        {
+            /* the screens kept from the picture before (gfx_render.c kept_screen), of the pictures drawn meanwhile */
+            static unsigned kept_before[2];
+            const unsigned kept_a = khdays_gfx_render_kept(0), kept_b = khdays_gfx_render_kept(1);
+            fprintf(stderr, "host: meanwhile engine A's screen was kept %u times and engine B's %u\n",
+                    kept_a - kept_before[0], kept_b - kept_before[1]);
+            kept_before[0] = kept_a;
+            kept_before[1] = kept_b;
+        }
         SDL_zero(stats);
     }
 }
@@ -701,15 +830,32 @@ static void port2d_compare(const KhdaysFramePackage *p)
 
 /* --- The 3D at the monitor's refresh rate ---------------- */
 
-/* The 3D lists of the two latest game frames (the older first), the VBlanks they were first shown at,
- * when the newer arrived, and whether a cut separates them. The picture moves from the older to the
- * newer over one game frame from the newer's arrival: at most one game frame behind the DS. */
-static KhdaysG3dList logic_list[2];
-static uint64_t logic_time[2];
-static uint64_t logic_arrival; /* the VBlank of the package that brought the newer list */
+/* The 3D lists of the latest game frames since a cut, up to three (the oldest first), when the game made each (its
+ * clock) and the screen each is on. A picture shows the game's time a steady while ago (`picture_delay`): a game
+ * frame and the longest the latest lists took to reach the window, so the next list is there before the picture
+ * reaches the newest -- placed between the two lists about that time. Placed from each list's arrival instead, it
+ * stood still for a refresh whenever a list reached the window later than the one before: a display not a multiple
+ * of the game's 30 pictures a second (144, 165 Hz) takes them 5 and 6 refreshes apart, so the camera stuttered some
+ * three times a second (seen 2026-11-06 at 165 Hz: 427 times in 157 s of play, none since; the picture 6.5 ms
+ * later). */
+#define KEPT_LISTS 3
+static KhdaysG3dList logic_list[KEPT_LISTS];
+static uint64_t logic_time[KEPT_LISTS];
+static uint8_t logic_upper[KEPT_LISTS];
+/* each kept list's native sequences (the lock-on marks, the heart counter, the prizes): a polygon of them names
+ * the program made with its own list, so a picture between two older lists is drawn with the newer one's, not
+ * with the latest package's -- its pieces were left out of such pictures. logic_programs[i] is the row of list i */
+static KhdaysSequenceImage program_rows[KEPT_LISTS][KSI_3D_PROGRAMS];
+static uint8_t logic_programs[KEPT_LISTS] = {0, 1, 2};
+_Static_assert(KEPT_LISTS == 3, "logic_programs names a row for each kept list");
 static uint32_t logic_serial = ~0u;
 static int logic_count, logic_cut;
-static uint8_t logic_upper;   /* the screen the newer list's 3D is on (the package's `upper`) */
+static int logic_pair = -1; /* the older of the two lists the last picture was placed between (-1 none) */
+static uint64_t logic_arrival; /* the VBlank of the package that brought the newest list (smooth_unblocked) */
+/* how long the latest lists took from being made to being taken by the window, for picture_delay */
+#define LATE_KEPT 32
+static uint64_t logic_late[LATE_KEPT];
+static int late_count, late_next;
 static KhdaysG3dList between; /* the list being drawn, interpolated */
 static KhdaysG3dInterp interp;
 static const KhdaysFramePackage *latest; /* the package shown now */
@@ -726,7 +872,102 @@ static float one_at_x, one_at_w;
 static float one_at_y, one_at_h; /* its top and height (the presentation's 192 rows, unless shown smaller) */
 static uint64_t last_refresh; /* the game's time of the last picture */
 
-static void fps_count(int picture); /* Video: Show FPS (below) */
+/* The field's room change (Ov002_UpdateSceneFrame): a quad of the world's shape growing or shrinking about the
+ * view's middle, and black rectangles round it over the DS's 256 columns only (a scaled W: widescreen neither
+ * stretches nor covers them). While the wipe runs (the package's `field_wipe`), the picture made from a list
+ * holding that quad -- its texture (A5I3 64 x 32, or its HD replacement), in screen space, its middle the
+ * view's, 4:3 -- is black outside it over the window's width (`wipe`, in DS dots of the view). */
+static struct {
+    int on;
+    float x0, y0, x1, y1;
+} wipe, wipe_next;
+
+static int wipe_polygon(const KhdaysG3dPolygon *p, const KhdaysG3dVertex *v)
+{
+    const char *name;
+    float x0, x1, y0, y1, w, h;
+    if (p->count < 3 || (p->flags & (KHDAYS_G3D_HUD | KHDAYS_G3D_MOD)) || ((p->tex >> 26) & 7u) != 6u ||
+        ((p->tex >> 20) & 7u) != 3u || ((p->tex >> 23) & 7u) != 2u) {
+        return 0; /* the shape: A5I3, 64 x 32 */
+    }
+    if (p->replacement >= 0) {
+        name = khdays_textures_name(p->replacement);
+        if (name == NULL || SDL_strstr(name, "ba/tr/") == NULL || SDL_strstr(name, "_wipe") == NULL) {
+            return 0;
+        }
+    }
+    x0 = x1 = v[0].x;
+    y0 = y1 = v[0].y;
+    for (int k = 0; k < p->count; ++k) {
+        if (SDL_fabsf(v[k].w - v[0].w) > 0.5f) {
+            return 0; /* not drawn in screen space */
+        }
+        x0 = SDL_min(x0, v[k].x);
+        x1 = SDL_max(x1, v[k].x);
+        y0 = SDL_min(y0, v[k].y);
+        y1 = SDL_max(y1, v[k].y);
+    }
+    w = x1 - x0;
+    h = y1 - y0;
+    if (w < 2.0f || h < 2.0f || SDL_fabsf((x0 + x1) / 2 - W / 2.0f) > 1.5f ||
+        SDL_fabsf((y0 + y1) / 2 - H / 2.0f) > 1.5f) {
+        return 0; /* the view's middle */
+    }
+    /* 4:3, unless cut at the top and bottom of the view (then wider than it, and centred) */
+    return SDL_fabsf(w / h - 4.0f / 3.0f) < 0.04f || (y0 <= 0.5f && y1 >= (float)H - 0.5f && w >= (float)W - 1.0f);
+}
+
+static void find_wipe(const KhdaysG3dList *list)
+{
+    SDL_zero(wipe_next);
+    if (list == NULL || list->polys == NULL || list->verts == NULL) {
+        return;
+    }
+    for (int i = 0; i < list->npolys; ++i) {
+        const KhdaysG3dPolygon *p = &list->polys[i];
+        const KhdaysG3dVertex *v = &list->verts[p->first];
+        if (p->first < 0 || p->first + p->count > list->nverts || !wipe_polygon(p, v)) {
+            continue;
+        }
+        for (int k = 0; k < p->count; ++k) {
+            if (!wipe_next.on) {
+                wipe_next.x0 = wipe_next.x1 = v[k].x;
+                wipe_next.y0 = wipe_next.y1 = v[k].y;
+                wipe_next.on = 1;
+            }
+            wipe_next.x0 = SDL_min(wipe_next.x0, v[k].x);
+            wipe_next.x1 = SDL_max(wipe_next.x1, v[k].x);
+            wipe_next.y0 = SDL_min(wipe_next.y0, v[k].y);
+            wipe_next.y1 = SDL_max(wipe_next.y1, v[k].y);
+        }
+        return; /* the game draws one */
+    }
+}
+
+/* Black outside the wipe's quad, the picture at `at` (logical units: DS dots), the DS's columns in its
+ * middle. Half a dot inside the quad's edge: its border texels are the cover's black anyway. */
+static void draw_wipe(const SDL_FRect *at, float k)
+{
+    /* (`k`: the picture's size there, 1 but on the phone for a picture made wider than it is shown now;
+     * the phone upright has the picture at the top of a taller presentation: the bands end at its foot) */
+    const float ds0 = at->x + (at->w - (float)W * k) / 2;
+    const float x0 = ds0 + (wipe.x0 + 0.5f) * k, x1 = ds0 + (wipe.x1 - 0.5f) * k;
+    const float y0 = at->y + (wipe.y0 + 0.5f) * k, y1 = at->y + (wipe.y1 - 0.5f) * k;
+    const float left = 0.0f, right = (float)columns, top = at->y, bottom = at->y + at->h;
+    const SDL_FRect bands[4] = {{left, top, right - left, SDL_max(y0 - top, 0.0f)},
+                                {left, y1, right - left, SDL_max(bottom - y1, 0.0f)},
+                                {left, y0, SDL_max(x0 - left, 0.0f), SDL_max(y1 - y0, 0.0f)},
+                                {x1, y0, SDL_max(right - x1, 0.0f), SDL_max(y1 - y0, 0.0f)}};
+    SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_NONE);
+    SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
+    for (int i = 0; i < 4; ++i) {
+        if (bands[i].w > 0.0f && bands[i].h > 0.0f) {
+            SDL_RenderFillRect(renderer, &bands[i]);
+        }
+    }
+}
+
+static void fps_count(void); /* Video: Show FPS (below) */
 
 /* How the camera went from list `a` to list `b` (their view matrices: a world point w is w R + t in
  * the camera's space, which looks down -z): the cosine of the angle it turned, how far its matrix's
@@ -737,6 +978,7 @@ typedef struct CameraStep {
 } CameraStep;
 
 static int camera_step(const KhdaysG3dList *a, const KhdaysG3dList *b, CameraStep *step);
+static int camera_cut(const KhdaysG3dList *a, const KhdaysG3dList *b);
 
 /* KHDAYS_FRAME_LOG=1 writes a line per picture to saves/logs/frames-<time>.log. */
 static FILE *frame_log;
@@ -758,7 +1000,9 @@ static void log_picture(const char *what, double alpha)
             frame_log = fopen(path, "w");
             if (frame_log != NULL) {
                 fprintf(frame_log, "# ms (the game's time), logic frame, alpha, polygons placed between / all, what, "
-                                   "the two lists' times, the camera's step, the newer list's flushes, a cut\n");
+                                   "the two lists' times, the camera's step, the newer list's flushes, a cut, the "
+                                   "polygons drawn where the newer list has them: the KH2 effects' and markers', "
+                                   "those moved too far\n");
             }
         }
     }
@@ -766,46 +1010,96 @@ static void log_picture(const char *what, double alpha)
         /* the camera's step between the two lists (camera_step): the degrees it turned, its move, and
          * the point it turned about */
         CameraStep step = {1.0, 0.0, 0.0, 0.0, 0.0};
-        if (logic_count == 2) {
-            camera_step(&logic_list[0], &logic_list[1], &step);
+        const int a = logic_pair >= 0 ? logic_pair : logic_count >= 2 ? logic_count - 2 : 0, b = a + 1;
+        if (logic_count >= 2) {
+            camera_step(&logic_list[a], &logic_list[b], &step);
         }
         fprintf(frame_log,
-                "%.3f %u %.3f %d/%d %s %.3f %.3f moved %.4f turned %.3f pivot %.3f drift %.4f depth %.3f %d %d\n",
+                "%.3f %u %.3f %d/%d %s %.3f %.3f moved %.4f turned %.3f pivot %.3f drift %.4f depth %.3f %d %d "
+                "effects %d jumped %d\n",
                 (double)khdays_clock_cycles() * 1000.0 / KHDAYS_CLOCK_HZ, logic_serial, alpha, interp.matched,
-                interp.polygons, what, (double)logic_time[0] * 1000.0 / KHDAYS_CLOCK_HZ,
-                (double)logic_time[1] * 1000.0 / KHDAYS_CLOCK_HZ, step.moved,
+                interp.polygons, what, (double)logic_time[a] * 1000.0 / KHDAYS_CLOCK_HZ,
+                (double)logic_time[b] * 1000.0 / KHDAYS_CLOCK_HZ, step.moved,
                 acos(step.cosine > 1.0    ? 1.0
                      : step.cosine < -1.0 ? -1.0
                                           : step.cosine) *
                     180.0 / 3.14159265358979,
-                step.pivot, step.drift, step.depth, logic_list[1].flushes, logic_cut);
+                step.pivot, step.drift, step.depth, logic_list[b].flushes, logic_cut, interp.effects, interp.jumped);
     }
 }
 
 /* Takes a package's 3D list as the newest game frame's, when its serial changed. */
 static void note_logic_frame(const KhdaysFramePackage *p)
 {
-    KhdaysG3dList older;
+    int at = logic_count;
     if (!(p->wants & KHDAYS_WANT_3D) || p->list3d_serial == logic_serial) {
         return;
     }
-    older = logic_list[0];
-    logic_list[0] = logic_list[1];
-    logic_list[1] = older; /* reuse its memory for the copy */
-    logic_time[0] = logic_time[1];
-    if (!khdays_g3d_list_copy(&logic_list[1], &p->list3d)) {
-        logic_count = 0; /* out of memory: no interpolation until there are two lists again */
-    } else if (logic_count < 2) {
-        ++logic_count;
+    for (int n = 0; n < shot_count; ++n) {
+        if (shots[n].after > 0) {
+            return; /* KHDAYS_SHOTS_BETWEEN: the same game frames until its pictures are taken */
+        }
     }
-    fps_count(0);
-    logic_time[1] = p->list3d_time;
-    logic_arrival = p->time; /* the VBlank of the package that brought it */
+    if (at == KEPT_LISTS) {
+        const KhdaysG3dList oldest = logic_list[0]; /* its memory reused for the copy */
+        const uint8_t oldest_programs = logic_programs[0];
+        for (int i = 0; i + 1 < KEPT_LISTS; ++i) {
+            logic_list[i] = logic_list[i + 1];
+            logic_time[i] = logic_time[i + 1];
+            logic_upper[i] = logic_upper[i + 1];
+            logic_programs[i] = logic_programs[i + 1];
+        }
+        logic_list[--at] = oldest;
+        logic_programs[at] = oldest_programs;
+    }
     logic_serial = p->list3d_serial;
-    /* nothing between two lists drawn on different screens either (the 3D on
-     * both screens: one VBlank the upper's, the next the lower's) */
-    logic_cut = p->list3d_cut || p->upper != logic_upper;
-    logic_upper = p->upper;
+    logic_arrival = p->time;
+    if (!khdays_g3d_list_copy(&logic_list[at], &p->list3d)) {
+        logic_count = 0; /* out of memory: no interpolation until there are two lists again */
+        return;
+    }
+    logic_time[at] = p->list3d_time;
+    logic_upper[at] = p->upper;
+    memcpy(program_rows[logic_programs[at]], p->sequence3d_images, sizeof(program_rows[0]));
+    /* a cut (the game's, the camera's, or the 3D on the other screen: the 3D on both screens, one VBlank the
+     * upper's, the next the lower's): nothing between it and the lists before, which are let go -- drawn after it,
+     * they would show what the screens had before it, their textures perhaps gone */
+    /* (two lists of one time: the clock held while a shot was written, KHDAYS_SHOTS_HD -- not a cut then) */
+    logic_cut = at > 0 && (p->list3d_cut || p->upper != logic_upper[at - 1] || logic_time[at] < logic_time[at - 1] ||
+                           (logic_time[at] == logic_time[at - 1] && shot_count == 0) ||
+                           camera_cut(&logic_list[at - 1], &logic_list[at]));
+    if (logic_cut) {
+        const KhdaysG3dList kept = logic_list[0];
+        const uint8_t kept_programs = logic_programs[0];
+        logic_list[0] = logic_list[at];
+        logic_list[at] = kept;
+        logic_programs[0] = logic_programs[at];
+        logic_programs[at] = kept_programs;
+        logic_time[0] = logic_time[at];
+        logic_upper[0] = logic_upper[at];
+        at = 0;
+    }
+    logic_count = at + 1;
+    if (khdays_clock_cycles() > p->list3d_time) {
+        /* (the game's time as the window takes it: the package waits for the window's next refresh) */
+        logic_late[late_next] = khdays_clock_cycles() - p->list3d_time;
+        late_next = (late_next + 1) % LATE_KEPT;
+        late_count += late_count < LATE_KEPT;
+    }
+}
+
+/* How long ago (the game's clock) a picture shows: the latest game frame's length and the longest the latest lists
+ * took to be taken (one more than two game frames late, a hitch, not counted). */
+static uint64_t picture_delay(void)
+{
+    const uint64_t period = logic_time[logic_count - 1] - logic_time[logic_count - 2];
+    uint64_t late = 0;
+    for (int i = 0; i < late_count; ++i) {
+        if (logic_late[i] <= 2 * period && logic_late[i] > late) {
+            late = logic_late[i];
+        }
+    }
+    return period + late;
 }
 
 static int camera_step(const KhdaysG3dList *a, const KhdaysG3dList *b, CameraStep *step)
@@ -860,29 +1154,80 @@ static int camera_cut(const KhdaysG3dList *a, const KhdaysG3dList *b)
     return step.moved > 1.0 && !(step.pivot > 0.0 && step.drift <= 1.0 && fabs(step.depth - step.pivot) <= 1.0);
 }
 
-/* The list to draw for a picture now: one interpolated between the two
- * latest game frames, or NULL to draw the package's own (at the DS's pace,
- * after a cut, without two lists yet, or once the newest is reached). */
+/* The smooth pace without VSync: while the screen's lock holds (clock.h: the game's VBlanks a few ms
+ * before the screen's refreshes, at 60, 120 or 240 Hz), each package is drawn as it comes, as at the DS's
+ * pace -- presented without waiting (MAILBOX), shown at the coming refresh -- and with more than one
+ * refresh a VBlank a picture is drawn at each refresh between packages (khdays_present_between_due_ms).
+ * With VSync the window's thread waited in each present for most of a refresh, the presses with it, and
+ * each picture was shown a refresh after it was drawn. The refreshes a VBlank, or 0 (the lock off: the
+ * screen at 75 or 144 Hz, a session, the time held; KHDAYS_SMOOTH_VSYNC=1) -- VSync then, as before. */
+static int smooth_unblocked(void)
+{
+    static int vsync = -1;
+    if (vsync < 0) {
+        const char *v = SDL_getenv("KHDAYS_SMOOTH_VSYNC");
+        vsync = v != NULL && v[0] != '\0' && v[0] != '0';
+    }
+    return vsync ? 0 : khdays_clock_screen_refreshes();
+}
+
+/* The list to draw for a picture now: one placed between the two kept game frames about the time it shows
+ * (picture_delay), or NULL to draw the package's own (at the DS's pace, without two lists since a cut, or once the
+ * newest is reached). */
 static const KhdaysG3dList *picture_list(const KhdaysFramePackage *p, double *alpha)
 {
-    uint64_t now, period;
+    uint64_t now, delay, at_time;
+    int forced = 0, a;
     *alpha = 1.0;
-    if (video.picture_ds || !(p->wants & KHDAYS_WANT_3D) || logic_count < 2 || logic_cut ||
-        p->list3d_serial != logic_serial || logic_time[1] <= logic_time[0]) {
-        return NULL;
+    logic_pair = -1;
+    for (int n = 0; n < shot_count; ++n) {
+        forced |= shots[n].after > 0; /* KHDAYS_SHOTS_BETWEEN: the game frames kept */
     }
-    if (camera_cut(&logic_list[0], &logic_list[1])) {
-        logic_cut = 1; /* until the next game frame */
+    if (video.picture_ds || !(p->wants & KHDAYS_WANT_3D) || logic_count < 2 ||
+        (p->list3d_serial != logic_serial && !forced)) {
         return NULL;
     }
     now = khdays_clock_cycles();
-    period = logic_time[1] - logic_time[0];
-    *alpha = now <= logic_arrival ? 0.0 : (double)(now - logic_arrival) / (double)period;
-    if (*alpha >= 1.0) {
-        *alpha = 1.0;
-        return NULL;
+    if (smooth_unblocked() > 0 && !forced) {
+        /* at the screen's refreshes (smooth_unblocked): between the two latest lists, the newer's share by
+         * the refreshes since its package came (each picture shown at the refresh after it, the same time
+         * on), a refresh's share already at the first -- at 60 Hz half, then the newer whole at the next
+         * package, evenly; with a new list each VBlank (a press's early frame), the newest at once */
+        const double refresh = (double)KHDAYS_CYCLES_PER_FRAME / smooth_unblocked();
+        const double since = (double)(now > logic_arrival ? now - logic_arrival : 0u);
+        const double period = (double)(logic_time[logic_count - 1] - logic_time[logic_count - 2]);
+        const double x = (floor(since / refresh + 0.5) + 1.0) * refresh / period;
+        if (x >= 0.999) {
+            return NULL; /* the newest reached */
+        }
+        a = logic_count - 2;
+        logic_pair = a;
+        *alpha = x;
+        khdays_g3d_interp_pair(&interp, logic_time[a], logic_time[a + 1]); /* else a pair named before is kept */
+        if (!khdays_g3d_interpolate(&interp, &logic_list[a], &logic_list[a + 1], (float)*alpha, &between)) {
+            return NULL;
+        }
+        return &between;
     }
-    if (!khdays_g3d_interpolate(&interp, &logic_list[0], &logic_list[1], (float)*alpha, &between)) {
+    delay = picture_delay();
+    at_time = forced ? logic_time[logic_count - 2] : now > delay ? now - delay : 0;
+    /* (KHDAYS_SHOTS_BETWEEN: the two latest, whatever their times -- the clock held while a shot is written can
+       give both the same time, and the pictures between were all the newest's) */
+    if (!forced && at_time >= logic_time[logic_count - 1]) {
+        return NULL; /* the newest reached */
+    }
+    for (a = logic_count - 2; !forced && a > 0 && at_time < logic_time[a]; --a) {
+    }
+    logic_pair = a;
+    *alpha = at_time <= logic_time[a] ? 0.0
+                                      : (double)(at_time - logic_time[a]) / (double)(logic_time[a + 1] - logic_time[a]);
+    for (int n = 0; n < shot_count; ++n) {
+        if (shots[n].after > 0) {
+            *alpha = shots[n].after > 1 ? (double)(5 - shots[n].after) * 0.25 : 0.999; /* KHDAYS_SHOTS_BETWEEN */
+        }
+    }
+    khdays_g3d_interp_pair(&interp, logic_time[a], logic_time[a + 1]); /* the same two again: their match kept */
+    if (!khdays_g3d_interpolate(&interp, &logic_list[a], &logic_list[a + 1], (float)*alpha, &between)) {
         return NULL;
     }
     return &between;
@@ -890,35 +1235,27 @@ static const KhdaysG3dList *picture_list(const KhdaysFramePackage *p, double *al
 
 static void present(const KhdaysFramePackage *p, int first);
 
-/* Video: Show FPS -- counts the pictures shown (khdays_present_draw) and the
- * game frames that arrived, over half a second at a time. */
-static unsigned fps_pictures, fps_frames;
-static int fps_shown[2];
+/* Video: Show FPS -- counts the pictures shown (khdays_present_draw), over half a second at a time. */
+static unsigned fps_pictures;
+static int fps_shown;
 static Uint64 fps_since;
 
-static void fps_count(int picture)
+static void fps_count(void)
 {
     const Uint64 now = SDL_GetTicksNS();
-    if (picture) {
-        ++fps_pictures;
-    } else {
-        ++fps_frames;
-    }
+    ++fps_pictures;
     if (fps_since == 0) {
         fps_since = now;
     } else if (now - fps_since >= 500000000u) {
-        const double seconds = (double)(now - fps_since) / 1e9;
-        fps_shown[0] = (int)(fps_pictures / seconds + 0.5);
-        fps_shown[1] = (int)(fps_frames / seconds + 0.5);
-        fps_pictures = fps_frames = 0;
+        fps_shown = (int)(fps_pictures / ((double)(now - fps_since) / 1e9) + 0.5);
+        fps_pictures = 0;
         fps_since = now;
     }
 }
 
-int khdays_present_fps(int *pictures, int *frames)
+int khdays_present_fps(int *pictures)
 {
-    *pictures = fps_shown[0];
-    *frames = fps_shown[1];
+    *pictures = fps_shown;
     return video.show_fps;
 }
 
@@ -983,6 +1320,77 @@ void khdays_present_set_lower_view(int on)
     present_latest_again(); /* the picture again, with or without it, even while the game stands still */
 }
 
+/* The Moogle Shop's timings, in the session log every 5 seconds while it shows: the game's pictures that
+ * reached the window and the VBlanks they cover, the pictures drawn (present: the one-screen picture's
+ * situation and composition, the card's 3D and 2D), the window's drawing over them and its presenting,
+ * and the shop's screens composed apart (onescreen.c). Each picture of the shop over 25 ms is noted too. */
+static struct {
+    Uint64 since;
+    unsigned packages, presents, redraws, slow;
+    uint32_t first_frame, last_frame;
+    Uint64 present_ns, present_most, drawing_ns, drawing_most, presenting_ns, presenting_most;
+} perf;
+static Uint64 package_ns; /* when the latest package came */
+static int between_drawn;  /* the pictures drawn since, at the refreshes between packages (smooth_unblocked) */
+
+static void perf_tick(void)
+{
+    const Uint64 now = SDL_GetTicksNS();
+    if (!khdays_shop_screen_shown()) {
+        if (perf.since != 0) {
+            unsigned jobs, alike;
+            double ms, most;
+            khdays_onescreen_shop_work(&jobs, &ms, &most, &alike); /* (forgotten) */
+        }
+        SDL_zero(perf);
+        return;
+    }
+    if (perf.since == 0) {
+        perf.since = now;
+        return;
+    }
+    if (now - perf.since >= 5000000000u) {
+        const double s = (double)(now - perf.since) / 1e9;
+        unsigned jobs, alike;
+        double ms, most;
+        khdays_onescreen_shop_work(&jobs, &ms, &most, &alike);
+        khdays_log("shop: timings over %.1f s: the game's pictures %.0f a second (its VBlanks %.0f), pictures drawn "
+                   "%.0f, window %.0f; a picture %.2f ms (most %.2f), the window's drawing %.2f ms (most %.2f), "
+                   "presenting %.2f ms (most %.2f); over 25 ms: %u; the DS's screens composed %u times, %.2f ms each "
+                   "(most %.2f), %u pictures alike",
+                   s, perf.packages / s, perf.packages ? (double)(perf.last_frame - perf.first_frame + 1u) / s : 0.0,
+                   perf.presents / s, perf.redraws / s, perf.presents ? perf.present_ns / 1e6 / perf.presents : 0.0,
+                   perf.present_most / 1e6, perf.redraws ? perf.drawing_ns / 1e6 / perf.redraws : 0.0,
+                   perf.drawing_most / 1e6, perf.redraws ? perf.presenting_ns / 1e6 / perf.redraws : 0.0,
+                   perf.presenting_most / 1e6, perf.slow, jobs, jobs ? ms / jobs : 0.0, most, alike);
+        SDL_zero(perf);
+        perf.since = now;
+    }
+}
+
+void khdays_present_redraw_took(uint64_t drawing_ns, uint64_t presenting_ns)
+{
+    if (perf.since == 0) {
+        return;
+    }
+    ++perf.redraws;
+    perf.drawing_ns += drawing_ns;
+    perf.presenting_ns += presenting_ns;
+    perf.drawing_most = drawing_ns > perf.drawing_most ? drawing_ns : perf.drawing_most;
+    perf.presenting_most = presenting_ns > perf.presenting_most ? presenting_ns : perf.presenting_most;
+    if (drawing_ns + presenting_ns > 25000000u) {
+        ++perf.slow;
+    }
+    perf_tick();
+}
+
+void khdays_present_shot_soon(void)
+{
+    if (shot_dir != NULL) {
+        SDL_AddAtomicInt(&shots_asked, 1);
+    }
+}
+
 void khdays_present_package(const KhdaysFramePackage *p)
 {
     if (!khdays_movie_hd_scene_paused()) {
@@ -990,12 +1398,20 @@ void khdays_present_package(const KhdaysFramePackage *p)
     }
     note_logic_frame(p);
     latest = p;
+    package_ns = SDL_GetTicksNS();
+    between_drawn = 0;
+    if (perf.since != 0) {
+        if (perf.packages++ == 0) {
+            perf.first_frame = p->frame;
+        }
+        perf.last_frame = p->frame;
+    }
     present(p, 1);
 }
 
 int khdays_present_smooth(void)
 {
-    return !video.picture_ds && latest != NULL && latest_drawn_by_card && logic_count == 2;
+    return !video.picture_ds && latest != NULL && latest_drawn_by_card && logic_count >= 2;
 }
 
 int khdays_present_settings_button(void)
@@ -1033,7 +1449,10 @@ int khdays_present_backdrop_moving(void)
 
 int khdays_present_refresh_backdrop(void)
 {
-    if (!khdays_present_backdrop_moving()) {
+    /* while the game's pictures keep coming (one at each of its VBlanks: within a VBlank and a half), each
+     * draws the backdrop as it is then: drawing it again between them only drew the whole picture -- its
+     * 3D, its 2D -- two and three times as often (a display faster than the game's 60) */
+    if (!khdays_present_backdrop_moving() || SDL_GetTicksNS() - package_ns < 25000000u) {
         return 0;
     }
     present(latest, 0);
@@ -1057,11 +1476,50 @@ int khdays_present_refresh_settling(void)
     return 1;
 }
 
+/* Without VSync at the smooth pace, when the next picture between packages is due (SDL's ns), at each
+ * of the screen's refreshes a VBlank but the package's own (120 Hz: one, 240: three); 0 for none. */
+static Uint64 between_due_ns(void)
+{
+    const int refreshes = smooth_unblocked();
+    if (refreshes < 2 || between_drawn + 1 >= refreshes || !khdays_present_smooth()) {
+        return 0;
+    }
+    return package_ns + (Uint64)((double)(between_drawn + 1) * (double)KHDAYS_CYCLES_PER_FRAME / KHDAYS_CLOCK_HZ *
+                                 1e9 / refreshes);
+}
+
+int khdays_present_smooth_unblocked(void)
+{
+    return khdays_present_smooth() && smooth_unblocked() > 0;
+}
+
+int khdays_present_between_due_ms(int most)
+{
+    const Uint64 due = between_due_ns(), now = SDL_GetTicksNS();
+    if (due == 0) {
+        return most;
+    }
+    if (due <= now) {
+        return 0;
+    }
+    {
+        const Uint64 ms = (due - now + 999999u) / 1000000u;
+        return ms < (Uint64)most ? (int)ms : most;
+    }
+}
+
 int khdays_present_refresh(void)
 {
     const uint64_t now = khdays_clock_cycles();
     if (!khdays_present_smooth() || now == last_refresh) {
         return 0; /* the game's time stands still (paused): keep the same picture */
+    }
+    if (smooth_unblocked() > 0) {
+        const Uint64 due = between_due_ns();
+        if (due == 0 || SDL_GetTicksNS() < due) {
+            return 0; /* the packages draw the rest */
+        }
+        ++between_drawn;
     }
     present(latest, 0);
     return 1;
@@ -1085,16 +1543,31 @@ static int has_hd_tiles(const KhdaysFramePackage *p)
     }
     return 0;
 }
+static void present_now(const KhdaysFramePackage *p, int first);
 
 /* Draws package `p`. `first` is set the first time (so its shots and profile
- * are counted only once). */
+ * are counted only once). Timed while the Moogle Shop shows (perf). */
 static void present(const KhdaysFramePackage *p, int first)
+{
+    const Uint64 start = SDL_GetTicksNS();
+    present_now(p, first);
+    if (perf.since != 0) {
+        const Uint64 took = SDL_GetTicksNS() - start;
+        ++perf.presents;
+        perf.present_ns += took;
+        perf.present_most = took > perf.present_most ? took : perf.present_most;
+    }
+    perf_tick();
+}
+
+static void present_now(const KhdaysFramePackage *p, int first)
 {
     const uint32_t full = KHDAYS_WANT_3D | KHDAYS_WANT_COMPOSITION;
     int scale;
     Uint64 start;
     double alpha;
     const KhdaysG3dList *list = picture_list(p, &alpha);
+    picture_alpha = alpha;
     {
         /* KHDAYS_TEST_GPU_LOST=FRAME: at that frame, pretend the card was lost, to check the port remakes its
          * renderer and carries on */
@@ -1112,7 +1585,8 @@ static void present(const KhdaysFramePackage *p, int first)
     }
     last_refresh = khdays_clock_cycles();
     log_picture(list != NULL ? "between" : logic_cut ? "cut" : "newest", alpha);
-    khdays_raster3d_use_list(list);
+    khdays_raster3d_use_list(list,
+                             list != NULL && logic_pair >= 0 ? program_rows[logic_programs[logic_pair + 1]] : NULL);
     latest_drawn_by_card = 0;
     port2d_drawn = 0;
     if (port2d_ready && (p->wants & KHDAYS_WANT_2D)) {
@@ -1131,6 +1605,7 @@ static void present(const KhdaysFramePackage *p, int first)
         SDL_zero(one);
         one_drawn = 0;
         backdrop_moving = 0;
+        khdays_shop_screen_wanted(video.one_screen); /* the shop's moogle turned to its menu on one screen */
         if (video.one_screen) {
             /* One screen: first the situation and its composition. A picture of the upper or lower screen is
              * made by the one-screen pass, as wide as the 3D list; "side by side" and "stacked" show the two
@@ -1166,7 +1641,7 @@ static void present(const KhdaysFramePackage *p, int first)
                 /* this VBlank's 3D is the other screen's: keep the previous picture */
                 one_drawn = 1;
                 port2d_drawn = 1;
-                khdays_raster3d_use_list(NULL);
+                khdays_raster3d_use_list(NULL, NULL);
                 return;
             }
         }
@@ -1176,12 +1651,41 @@ static void present(const KhdaysFramePackage *p, int first)
         khdays_raster3d_set_hud_shapes(picture ? composition.shapes3d : NULL, picture ? composition.shape3d_count : 0);
         /* a screen blend's frame: engine A shows a VRAM bank, drawn from its 3D at this resolution too */
         const int blend_frame = khdays_gfx_render_capture_frame(p);
-        const int raster = raster_ready && !(port2d_mode == 2 && n == 1 && columns_now() == W) && n != refused_scale &&
-                           (p->wants & KHDAYS_WANT_3D) && (p->info[0].is3d || blend_frame) &&
-                           khdays_raster3d_rasterize(p, n, video.texture_smoothing);
-        /* shrunk to the size the window shows it at (smooth scaling: its own pixels), or by the
-         * antialiasing (sharp: the DS's pixels kept square, then stretched by whole pixels) */
-        khdays_gfx_render_set_shown(video.smooth_scaling ? shown_scale() : (float)n / (float)antialiasing_now());
+        const int can_raster = raster_ready && !(port2d_mode == 2 && n == 1 && columns_now() == W) &&
+                               n != refused_scale && (p->wants & KHDAYS_WANT_3D) && (p->info[0].is3d || blend_frame);
+        const int n2d = scale2d_now(n);
+        khdays_gpu_hd_next_frame(); /* (what the last picture drew may leave the card) */
+        /* the 3D coarser than the 2D (an internal resolution below the window's): the HUD's polygons (the
+         * command menu) drawn apart at the 2D's scale, as sharp as the rest of the HUD */
+        khdays_raster3d_set_hud_apart(n2d > n);
+        if (can_raster && n2d > n && !khdays_raster3d_rasterize_hud(p, n2d, video.texture_smoothing)) {
+            static int told;
+            if (!told) {
+                told = 1;
+                khdays_log("graphics: the HUD's 3D could not be drawn apart at %dx (%s): drawn with the rest", n2d,
+                           SDL_GetError());
+            }
+            khdays_raster3d_set_hud_apart(0); /* drawn with the rest */
+        }
+        if (!card_logged && khdays_log_on()) {
+            khdays_log("graphics: the picture goes through %s", card_line);
+            card_logged = 1;
+        }
+        {
+            static int last_apart = -1;
+            const int apart = can_raster && n2d > n;
+            if (apart != last_apart) {
+                khdays_log("graphics: the 2D at %dx, the 3D at %dx%s", n2d, n,
+                           apart ? ", the HUD's 3D apart at the 2D's" : "");
+                last_apart = apart;
+            }
+        }
+        khdays_raster3d_set_fxaa(video.antialiasing > 1);
+        const int raster = can_raster && khdays_raster3d_rasterize(p, n, video.texture_smoothing);
+        /* shrunk to the size the window shows it at (smooth scaling: its own pixels; sharp: the DS's
+         * pixels kept square, then stretched by whole pixels) */
+        khdays_gfx_render_set_shown(video.smooth_scaling ? shown_scale() : n2d > n ? (float)n2d : (float)n);
+        khdays_gfx_render_set_smooth_3d(video.smooth_scaling);
         if (picture) {
             SDL_GPUTexture *c3d = NULL, *a3d = NULL;
             int raster_columns = one.columns;
@@ -1193,17 +1697,32 @@ static void present(const KhdaysFramePackage *p, int first)
             }
             /* at the DS's own size without 3D, but for a picture with a backdrop of its own (the
              * camp's Preferences page: an HD picture, no model) or a mod's tiles */
-            drawn = khdays_gfx_render_draw_one(p, raster || one.backdrop != NULL || hd_tiles ? n : 1, raster, &one);
+            drawn = khdays_gfx_render_draw_one(
+                p, raster || one.backdrop != NULL || hd_tiles || port2d_mode != 2 ? n2d : 1, n, raster, &one);
             one_drawn = drawn;
             one_made = one_made || drawn;
+            /* the room change's quad, in the list this picture was drawn from, when its 3D shows in it */
+            find_wipe(raster && p->field_wipe && one_kind == KHDAYS_SCREENS_UPPER && p->upper == 0
+                          ? (list != NULL ? list : &p->list3d)
+                          : NULL);
+            if (drawn) {
+                if (wipe_next.on && !wipe.on) {
+                    khdays_log("field wipe: the room change's quad found (%.0f-%.0f x %.0f-%.0f): the widescreen "
+                               "beside it made black",
+                               (double)wipe_next.x0, (double)wipe_next.x1, (double)wipe_next.y0, (double)wipe_next.y1);
+                } else if (!wipe_next.on && wipe.on) {
+                    khdays_log("field wipe: over");
+                }
+                wipe = wipe_next;
+            }
         } else {
-            drawn = khdays_gfx_render_draw(p, raster || hd_tiles ? n : 1, raster);
+            drawn = khdays_gfx_render_draw(p, raster || hd_tiles || port2d_mode != 2 ? n2d : 1, n, raster);
         }
         if (drawn) {
             port2d_drawn = 1;
             port2d_upper = p->upper;
             latest_drawn_by_card = raster;
-            khdays_raster3d_use_list(NULL);
+            khdays_raster3d_use_list(NULL, NULL);
             if (port2d_mode == 2 && !blend_frame) { /* a screen blend's frame is not the DS's picture */
                 if (raster) {
                     port2d_compare_hd(p, n);
@@ -1212,11 +1731,9 @@ static void present(const KhdaysFramePackage *p, int first)
                 }
             }
             hd = NULL;
-            if (first) {
-                save_shots(p);
-                if (profile) {
-                    count_frame(p, -1.0);
-                }
+            save_shots(p, first);
+            if (first && profile) {
+                count_frame(p, -1.0);
             }
             return;
         }
@@ -1234,9 +1751,9 @@ static void present(const KhdaysFramePackage *p, int first)
     hd = NULL;
     scale = scale_now();
     if (!drawing_3d() || (p->wants & full) != full || !p->info[0].is3d || scale == refused_scale) {
-        khdays_raster3d_use_list(NULL);
+        khdays_raster3d_use_list(NULL, NULL);
         if (first) {
-            save_shots(p); /* the 1x picture: no 3D this frame, or none was asked for */
+            save_shots(p, 1); /* the 1x picture: no 3D this frame, or none was asked for */
             if (profile) {
                 count_frame(p, -1.0);
             }
@@ -1252,7 +1769,7 @@ static void present(const KhdaysFramePackage *p, int first)
             return;
         }
     }
-    khdays_raster3d_use_list(NULL);
+    khdays_raster3d_use_list(NULL, NULL);
     latest_drawn_by_card = hd != NULL;
     if (profile && first) {
         count_frame(p, (double)(SDL_GetPerformanceCounter() - start) * 1000.0 / (double)SDL_GetPerformanceFrequency());
@@ -1270,7 +1787,7 @@ static void present(const KhdaysFramePackage *p, int first)
         SDL_SetTextureScaleMode(hd, video.smooth_scaling ? SDL_SCALEMODE_LINEAR : SDL_SCALEMODE_NEAREST);
     }
     if (first) {
-        save_shots(p);
+        save_shots(p, 1);
     }
 }
 
@@ -1306,14 +1823,17 @@ void khdays_present_set_video(const KhdaysVideo *v)
     KhdaysVideo mobile = *v;
     mobile_layout = khdays_ios_layout();
     mobile.one_screen = mobile_layout == 2;
+    /* (the phone's own choice of the two screens' arrangement: two_screens.h draws it) */
+    mobile.two_screens = mobile_layout == 1 ? KHDAYS_TWO_SIDE_BY_SIDE : KHDAYS_TWO_STACKED;
     v = &mobile;
 #endif
     graphics_flags =
         (v->hd_graphics ? KHDAYS_HOST_HD_GRAPHICS : 0) | (v->dump_graphics ? KHDAYS_HOST_DUMP_GRAPHICS : 0) |
         (v->movies == KHDAYS_MOVIES_DS ? KHDAYS_HOST_MOVIES_DS : 0) |
-        (v->movies == KHDAYS_MOVIES_HD ? KHDAYS_HOST_MOVIES_HD : 0) | (v->one_screen ? KHDAYS_HOST_ONE_SCREEN : 0);
+        (v->movies == KHDAYS_MOVIES_HD ? KHDAYS_HOST_MOVIES_HD : 0) | (v->one_screen ? KHDAYS_HOST_ONE_SCREEN : 0) |
+        (v->culling ? 0 : KHDAYS_HOST_NO_CULLING);
     khdays_subtitles_set(v->subtitles);
-    if (v->internal_resolution != video.internal_resolution || v->antialiasing != video.antialiasing) {
+    if (v->internal_resolution != video.internal_resolution) {
         refused_scale = 0; /* try the new choice */
     }
     if (v->backend != video.backend && renderer != NULL) {
@@ -1325,6 +1845,37 @@ void khdays_present_set_video(const KhdaysVideo *v)
         SDL_SetTextureScaleMode(screens, video.smooth_scaling ? SDL_SCALEMODE_LINEAR : SDL_SCALEMODE_NEAREST);
     }
     layout();
+}
+
+/* Whether a present waits for a free swapchain image (VSync) or hands its picture over at once, the newest
+ * shown at the next refresh in place of one not shown yet (SDL's renderer: MAILBOX where the card has it,
+ * no tearing). Waiting, the window's thread -- which also takes the keyboard's and the gamepads' events --
+ * sat in SDL_RenderPresent for most of a refresh at the DS's pace: a press waited 12 ms on average to reach
+ * the window, and a picture a refresh more to be presented (KHDAYS_TRACE_LATENCY, a 60 Hz screen). The
+ * window keeps VSync for what it draws on its own time (the smooth pace, a movie, a moving backdrop):
+ * without it those would be drawn as fast as the card goes. KHDAYS_VSYNC=always keeps it on throughout. */
+
+void khdays_present_wait_for_refresh(int wait)
+{
+    static int always = -1;
+    if (always < 0) {
+        const char *v = SDL_getenv("KHDAYS_VSYNC");
+        always = v != NULL && SDL_strcmp(v, "always") == 0;
+    }
+    wait = wait || always;
+    if (renderer != NULL && wait != vsync_now) {
+        /* without VSync three frames in flight, three swapchain images (SDL makes as many, two at the least):
+         * with two, where the picture goes to the screen without the compositor (a borderless window over
+         * it: Windows' independent flip), each present waited for the other image to come off the screen --
+         * 15 ms of each refresh on the window's thread, as with VSync (KHDAYS_TRACE_LATENCY: a press 87 ms
+         * to the picture, 52 with three, as in a window). SDL builds the swapchain anew at each change. */
+        if (device != NULL && !SDL_SetGPUAllowedFramesInFlight(device, wait ? 1 : 3)) {
+            fprintf(stderr, "host: frames in flight: %s\n", SDL_GetError());
+        }
+        if (SDL_SetRenderVSync(renderer, wait ? 1 : 0)) {
+            vsync_now = wait;
+        }
+    }
 }
 
 /* The logical presentation `w` x `h`, set when it changes. */
@@ -1484,9 +2035,17 @@ const char *khdays_present_note(void)
     return draw_note;
 }
 
+/* A screen's place as an SDL rectangle. */
+static SDL_FRect at_place(KhdaysScreenPlace p)
+{
+    const SDL_FRect r = {p.x, p.y, p.w, p.h};
+    return r;
+}
+
 static void draw_screens(void)
 {
-    const float left = (float)(columns - W) / 2;
+    const int beside = side_by_side();
+    KhdaysScreenPlace lower_place = {0.0f, 0.0f, 0.0f, 0.0f}; /* the two screens' lower one, where drawn */
 #ifdef KHDAYS_MOBILE
     SDL_zero(stylus_rect);
     SDL_zero(picture_at);
@@ -1498,7 +2057,7 @@ static void draw_screens(void)
     }
     draw_way = "nothing (no screens to draw)";
     lower_view_shown = 0;
-    fps_count(1);
+    fps_count();
     SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
     SDL_RenderClear(renderer);
     /* the game's pause over a scene's paused video: on one screen its panel over the video's picture
@@ -1561,6 +2120,9 @@ static void draw_screens(void)
             one_at_h = at.h;
             SDL_SetTextureScaleMode(picture, mode_for(picture, at.w, at.h));
             SDL_RenderTexture(renderer, picture, NULL, &at);
+            if (wipe.on) {
+                draw_wipe(&at, k);
+            }
 #ifdef KHDAYS_MOBILE
             {
                 /* upright with room below: the lower-screen view there, the lower screen as the DS has it
@@ -1584,16 +2146,12 @@ static void draw_screens(void)
             }
 #endif
         }
-    } else if (port2d_drawn && ((video.one_screen && one_kind == KHDAYS_SCREENS_SIDE_BY_SIDE
+    } else if (port2d_drawn && video.one_screen && one_kind == KHDAYS_SCREENS_SIDE_BY_SIDE
 #ifdef KHDAYS_MOBILE
-                                 /* (upright, the two screens whole are one above the other, as the DS's) */
-                                 && !khdays_mobile_portrait(window)
+               /* (upright, the two screens whole are one above the other, as the DS's) */
+               && !khdays_mobile_portrait(window)
 #endif
-                                 )
-#ifdef KHDAYS_MOBILE
-                               || mobile_layout == 1
-#endif
-                               )) {
+    ) {
         /* Both screens whole, side by side, each as the DS's 256 columns, touching: the upper on the left,
          * the lower at its right. Engine A drawn wider keeps only its middle 256 (its extra columns showed
          * as a band between the two). */
@@ -1615,39 +2173,39 @@ static void draw_screens(void)
             SDL_RenderTexture(renderer, lower, &lower_from, &lower_at);
         }
     } else if (port2d_drawn) {
-        /* stacked: the two-screen picture. Set each frame, as every picture sets its own: an HD video
-         * left its size behind (seen: after hd818's 1280 x 720, the two screens letterboxed into it at
-         * 0.4 of their size) */
-        present_size(columns, 2 * H);
-        /* the port's own screens, the DS's 256 columns in the middle (engine A as wide as it was drawn) */
+        /* the two-screen picture, stacked or side by side (two_screens.h). Set each frame, as every picture
+         * sets its own: an HD video left its size behind (seen: after hd818's 1280 x 720, the two screens
+         * letterboxed into it at 0.4 of their size) */
         int cu = 0, cl = 0;
         SDL_Texture *upper = screen_texture(port2d_upper, &cu);
         SDL_Texture *lower = screen_texture(!port2d_upper, &cl);
-        const float wu = (float)cu, wl = (float)cl;
-        const SDL_FRect upper_at = {((float)columns - wu) / 2, 0, wu, H},
-                        lower_at = {((float)columns - wl) / 2, H, wl, H};
-        draw_way = upper != NULL && lower != NULL ? "two screens stacked" : "nothing (a screen's texture is missing)";
+        const KhdaysTwoScreensLayout two = khdays_two_screens_layout(beside, columns, (float)cu, (float)cl);
+        const SDL_FRect upper_at = at_place(two.upper), lower_at = at_place(two.lower);
+        present_size(two.width, two.height);
+        lower_place = two.lower;
+        draw_way = upper == NULL || lower == NULL ? "nothing (a screen's texture is missing)"
+                   : beside                       ? "two screens side by side"
+                                                  : "two screens stacked";
         if (upper != NULL && lower != NULL) {
+            /* stacked: each as wide as it was drawn; side by side: its DS's 256 columns */
+            const SDL_FRect upper_from = ds_columns(upper, beside ? cu : W),
+                            lower_from = ds_columns(lower, beside ? cl : W);
 #ifdef KHDAYS_MOBILE
-            stylus_rect = (SDL_FRect){left, H, W, H};
+            /* (the lower screen's DS columns: a finger there is the stylus) */
+            stylus_rect = (SDL_FRect){lower_at.x + (lower_at.w - (float)W) / 2, lower_at.y, W, H};
 #endif
-            SDL_SetTextureScaleMode(upper, mode_for(upper, wu, H));
-            SDL_SetTextureScaleMode(lower, mode_for(lower, wl, H));
-            SDL_RenderTexture(renderer, upper, NULL, &upper_at);
-            SDL_RenderTexture(renderer, lower, NULL, &lower_at);
+            SDL_SetTextureScaleMode(upper, mode_for(upper, upper_at.w, H));
+            SDL_SetTextureScaleMode(lower, mode_for(lower, lower_at.w, H));
+            SDL_RenderTexture(renderer, upper, &upper_from, &upper_at);
+            SDL_RenderTexture(renderer, lower, &lower_from, &lower_at);
         }
     } else if (screens != NULL) {
-        /* the 1x screens, the DS's 256 columns in the middle */
+        /* the 1x screens, the DS's 256 columns of each */
+        const KhdaysTwoScreensLayout two = khdays_two_screens_layout(beside, columns, W, W);
         const SDL_FRect upper = {0, 0, W, H}, lower = {0, H, W, H};
-        SDL_FRect upper_at = {left, 0, W, H}, lower_at = {left, H, W, H};
-#ifdef KHDAYS_MOBILE
-        if (mobile_layout == 1) {
-            upper_at.x = 0;
-            lower_at = (SDL_FRect){W, 0, W, H};
-            present_size(2 * W, H);
-        } else
-#endif
-        present_size(columns, 2 * H);
+        const SDL_FRect upper_at = at_place(two.upper), lower_at = at_place(two.lower);
+        present_size(two.width, two.height);
+        lower_place = two.lower;
 #ifdef KHDAYS_MOBILE
         stylus_rect = lower_at;
 #endif
@@ -1655,15 +2213,19 @@ static void draw_screens(void)
         SDL_RenderTexture(renderer, screens, &upper, &upper_at);
         SDL_RenderTexture(renderer, screens, &lower, &lower_at);
     }
-    if (hd != NULL
-#ifdef KHDAYS_MOBILE
-        && mobile_layout != 1
-#endif
-        ) {
-        /* engine A drawn again, as wide as its list was made */
-        const SDL_FRect place = {(float)(columns - hd_columns) / 2, hd_upper ? 0.0f : (float)H, (float)hd_columns,
-                                 (float)H};
-        SDL_RenderTexture(renderer, hd, NULL, &place);
+    if (hd != NULL) {
+        /* engine A drawn again, as wide as its list was made, on its screen's place (side by side its DS's
+         * 256 columns) */
+        const KhdaysTwoScreensLayout two =
+            khdays_two_screens_layout(beside, columns, (float)hd_columns, (float)hd_columns);
+        const SDL_FRect place = at_place(hd_upper ? two.upper : two.lower);
+        const SDL_FRect from = ds_columns(hd, beside ? hd_columns : W);
+        SDL_RenderTexture(renderer, hd, &from, &place);
+    }
+    if (lower_place.w > 0.0f) {
+        /* the game's own character select on the mods' characters' pages, over its lower screen's DS columns */
+        khdays_ds_select_pages_draw(renderer, lower_place.x + (lower_place.w - (float)W) / 2.0f, lower_place.y, 1.0f,
+                                    1.0f);
     }
     /* around a scene's videos the game goes down to black and comes up from it */
     darken(1.0f - khdays_movie_hd_game_level());

@@ -1,0 +1,145 @@
+/* The native sequence image compute pass; existing UI images and the existing atlas store. */
+#include "kh2_sequence_gpu.h"
+#include "gpu_hd.h"
+#include "generated/kh2_sequence_cs.h"
+
+static SDL_GPUDevice *device;
+static SDL_GPUComputePipeline *pipeline;
+static SDL_GPUBuffer *commands;
+static SDL_GPUTransferBuffer *upload;
+/* The last image drawn into each output: its words' hash and the HD buffer's generation then. The same words
+ * into an untouched buffer draw the same picture, so it is not drawn again (the HUD's images change rarely). */
+enum { DRAWN_SLOTS = 32 };
+static struct {
+    uint32_t output, generation, bytes;
+    uint64_t hash;
+} drawn[DRAWN_SLOTS];
+static uint32_t drawn_count;
+static uint32_t draws; /* khdays_sequence_gpu_draws */
+
+static uint64_t hash_of(const void *data, uint32_t bytes)
+{
+    const uint8_t *b = (const uint8_t *)data;
+    uint64_t h = 1469598103934665603ull; /* FNV-1a */
+    for (uint32_t i = 0; i < bytes; ++i)
+        h = (h ^ b[i]) * 1099511628211ull;
+    return h;
+}
+
+void khdays_sequence_gpu_close(void)
+{
+    if (device) {
+        if (pipeline)
+            SDL_ReleaseGPUComputePipeline(device, pipeline);
+        if (commands)
+            SDL_ReleaseGPUBuffer(device, commands);
+        if (upload)
+            SDL_ReleaseGPUTransferBuffer(device, upload);
+    }
+    device = NULL;
+    drawn_count = 0;
+    pipeline = NULL;
+    commands = NULL;
+    upload = NULL;
+}
+
+void khdays_sequence_gpu_forget(void)
+{
+    drawn_count = 0;
+}
+
+uint32_t khdays_sequence_gpu_draws(void)
+{
+    return draws;
+}
+
+int khdays_sequence_gpu_open(SDL_GPUDevice *d)
+{
+    if (device == d && pipeline && commands && upload)
+        return 1;
+    khdays_sequence_gpu_close();
+    device = d;
+    SDL_GPUComputePipelineCreateInfo info;
+    SDL_zero(info);
+    const SDL_GPUShaderFormat formats = SDL_GetGPUShaderFormats(device);
+    if (formats & SDL_GPU_SHADERFORMAT_DXIL) {
+        info.code = kh2_sequence_cs_dxil;
+        info.code_size = kh2_sequence_cs_dxil_size;
+        info.format = SDL_GPU_SHADERFORMAT_DXIL;
+    } else if (formats & SDL_GPU_SHADERFORMAT_SPIRV) {
+        info.code = kh2_sequence_cs_spirv;
+        info.code_size = kh2_sequence_cs_spirv_size;
+        info.format = SDL_GPU_SHADERFORMAT_SPIRV;
+    } else if (formats & SDL_GPU_SHADERFORMAT_MSL) {
+        info.code = kh2_sequence_cs_msl;
+        info.code_size = kh2_sequence_cs_msl_size - 1;
+        info.format = SDL_GPU_SHADERFORMAT_MSL;
+    } else
+        return SDL_SetError("no supported shader format for native sequences");
+    info.entrypoint = KH2_SEQUENCE_CS_ENTRY;
+    info.num_readonly_storage_buffers = 1;
+    info.num_readwrite_storage_buffers = 1;
+    info.threadcount_x = info.threadcount_y = 8;
+    info.threadcount_z = 1;
+    pipeline = SDL_CreateGPUComputePipeline(device, &info);
+    SDL_GPUBufferCreateInfo buffer_info;
+    SDL_zero(buffer_info);
+    buffer_info.usage = SDL_GPU_BUFFERUSAGE_COMPUTE_STORAGE_READ;
+    buffer_info.size = sizeof(KhdaysSequenceImage);
+    commands = SDL_CreateGPUBuffer(device, &buffer_info);
+    SDL_GPUTransferBufferCreateInfo transfer_info;
+    SDL_zero(transfer_info);
+    transfer_info.usage = SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD;
+    transfer_info.size = sizeof(KhdaysSequenceImage);
+    upload = SDL_CreateGPUTransferBuffer(device, &transfer_info);
+    return pipeline && commands && upload;
+}
+
+int khdays_sequence_gpu_draw(SDL_GPUDevice *d, SDL_GPUCommandBuffer *cmd, const KhdaysSequenceImage *image)
+{
+    if (image->words[KSI_COUNT] == 0 && !image->words[KSI_CLEAR])
+        return 1;
+    /* its picture not on the card (no room for it yet): drawn there it would cover the pictures after the
+     * place its entry gives */
+    if (!khdays_gpu_hd_on_card(image->words[KSI_OUTPUT]))
+        return 1;
+    if (image->words[KSI_COUNT] > KSI_MAX_QUADS || !khdays_sequence_gpu_open(d))
+        return 0;
+    const Uint32 bytes = (KSI_HEADER + image->words[KSI_COUNT] * KSI_QUAD_WORDS) * 4u;
+    const uint32_t output = image->words[KSI_OUTPUT], generation = khdays_gpu_hd_generation();
+    const uint64_t hash = hash_of(image, bytes);
+    uint32_t slot = 0;
+    while (slot < drawn_count && drawn[slot].output != output)
+        ++slot;
+    if (slot < drawn_count && drawn[slot].generation == generation && drawn[slot].bytes == bytes &&
+        drawn[slot].hash == hash)
+        return 1; /* already there */
+    void *mapped = SDL_MapGPUTransferBuffer(device, upload, true);
+    if (!mapped)
+        return 0;
+    SDL_memcpy(mapped, image, bytes);
+    SDL_UnmapGPUTransferBuffer(device, upload);
+    SDL_GPUCopyPass *copy = SDL_BeginGPUCopyPass(cmd);
+    const SDL_GPUTransferBufferLocation from = {upload, 0};
+    const SDL_GPUBufferRegion to = {commands, 0, bytes};
+    SDL_UploadToGPUBuffer(copy, &from, &to, true);
+    SDL_EndGPUCopyPass(copy);
+    SDL_GPUStorageBufferReadWriteBinding target;
+    SDL_zero(target);
+    target.buffer = khdays_gpu_hd_buffer();
+    ++draws;
+    SDL_GPUComputePass *pass = SDL_BeginGPUComputePass(cmd, NULL, 0, &target, 1);
+    SDL_BindGPUComputePipeline(pass, pipeline);
+    SDL_BindGPUComputeStorageBuffers(pass, 0, &commands, 1);
+    SDL_DispatchGPUCompute(pass, (image->words[KSI_WIDTH] + 7u) / 8u, (image->words[KSI_HEIGHT] + 7u) / 8u, 1);
+    SDL_EndGPUComputePass(pass);
+    if (slot == drawn_count && drawn_count < DRAWN_SLOTS)
+        ++drawn_count;
+    if (slot < drawn_count) {
+        drawn[slot].output = output;
+        drawn[slot].generation = khdays_gpu_hd_generation();
+        drawn[slot].bytes = bytes;
+        drawn[slot].hash = hash;
+    }
+    return 1;
+}

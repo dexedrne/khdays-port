@@ -32,6 +32,7 @@ static void trace(const char *what, int pause)
 }
 void khdays_hd_pause(int pause) { trace("video", pause); }
 void khdays_hd_close(void) {}
+void khdays_hd_close_scene_end(void) {}
 void khdays_hd_set_gain(float gain) { (void)gain; }
 int khdays_hd_picture_begin(KhdaysHdPicture *picture) { (void)picture; return 0; }
 void khdays_hd_picture_done(void) {}
@@ -48,3 +49,10 @@ void khdays_hd_voice_play(const char *const *paths, int count)
 void khdays_hd_voice_stop(void) {}
 void khdays_hd_voice_pause(int pause) { trace("voice", pause); }
 void khdays_hd_voice_set_gain(float gain) { (void)gain; }
+/* No voice is ever heard here (khdays_hd_voice_play says so): no clock for its subtitles, never speaking. */
+int khdays_hd_voice_clock(char *name, size_t size, double *seconds)
+{
+    (void)name; (void)size; (void)seconds;
+    return 0;
+}
+int khdays_hd_voice_speaking(void) { return 0; }

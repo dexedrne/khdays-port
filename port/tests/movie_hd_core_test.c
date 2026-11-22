@@ -1068,9 +1068,47 @@ int main(void)
         events_clear();
         khdays_hd_voice_set_gain(0.75f);
         khdays_hd_voice_stop(); /* none heard: harmless */
+        /* the voice's clock for its subtitles, and whether it still speaks: neither with no voice */
+        char clock_name[32] = "untouched";
+        double clock_at = -1.0, last_a = -1.0, last_b = -1.0;
+        int clock_a = 0, clock_b = 0, clock_back = 0, clock_other = 0, spoke = 1;
+        CHECK(!khdays_hd_voice_clock(clock_name, sizeof(clock_name), &clock_at) && !khdays_hd_voice_speaking());
         khdays_hd_voice_play(two, 2);
         while (event_index("close sound voice-b") < 0 && seconds_since(start) < 4.0) {
+            if (khdays_hd_voice_clock(clock_name, sizeof(clock_name), &clock_at)) {
+                /* the file heard now, by its name, and how far into it: never backwards, never past its end */
+                if (strcmp(clock_name, "voice-a") == 0) {
+                    clock_back += clock_b > 0 || clock_at < last_a || clock_at > 0.45;
+                    last_a = clock_at;
+                    ++clock_a;
+                } else if (strcmp(clock_name, "voice-b") == 0) {
+                    clock_back += clock_at < last_b || clock_at > 0.45;
+                    last_b = clock_at;
+                    ++clock_b;
+                } else {
+                    ++clock_other;
+                }
+            }
+            spoke = spoke && khdays_hd_voice_speaking();
             SDL_Delay(5);
+        }
+        fprintf(stderr,
+                "movie_hd_core_test: voice clock: %d readings in voice-a (last %.3f s), %d in voice-b (last %.3f s), "
+                "%d out of order\n",
+                clock_a, last_a, clock_b, last_b, clock_back);
+        /* (as the next file begins, what is still queued of the one before is counted in the new file's format
+         * for a moment, on Windows too: a reading or two there may step back) */
+        CHECK(clock_a > 0 && clock_b > 0 && clock_back <= 2 && clock_other == 0 && last_a > 0.1 && spoke);
+        {
+            /* all of it read: it speaks on while its queued sound is heard and 0.7 s more, then no longer */
+            Uint64 read = SDL_GetPerformanceCounter();
+            CHECK(khdays_hd_voice_speaking());
+            while (khdays_hd_voice_speaking() && seconds_since(read) < 4.0) {
+                SDL_Delay(5);
+            }
+            fprintf(stderr, "movie_hd_core_test: voice: silent %.3f s after its last file was read\n", seconds_since(read));
+            CHECK(!khdays_hd_voice_speaking() && seconds_since(read) >= 0.65 && seconds_since(read) < 3.0);
+            CHECK(khdays_hd_voice_clock(clock_name, sizeof(clock_name), &clock_at) && strcmp(clock_name, "voice-b") == 0);
         }
         v = heard_now(1);
         fprintf(stderr, "movie_hd_core_test: voice: %lld frames in %d blocks after %.3f s\n", v.frames, v.blocks,
@@ -1098,6 +1136,7 @@ int main(void)
         CHECK(SDL_GetAudioStreamGain(stream_of(1)) == 0.5f);
         khdays_hd_voice_stop();
         CHECK(stream_of(1) == NULL && SDL_GetAtomicInt(&open_decoders) == 0);
+        CHECK(!khdays_hd_voice_clock(clock_name, sizeof(clock_name), &clock_at) && !khdays_hd_voice_speaking());
 
         /* paused before it begins: nothing is read until it is resumed; then stopped part-way */
         heard_clear(-1.0);

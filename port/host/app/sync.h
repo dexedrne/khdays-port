@@ -9,6 +9,13 @@
 #include <limits.h>
 #define MAX_PATH PATH_MAX
 #include <time.h>
+#include <string.h>
+#include <strings.h>
+
+/* The C library names the Windows sources use. */
+#define _strdup strdup
+#define _stricmp strcasecmp
+#define _strnicmp strncasecmp
 
 typedef int32_t LONG;
 typedef long long LONGLONG;
@@ -27,6 +34,18 @@ typedef pthread_rwlock_t SRWLOCK;
 
 #define InterlockedExchange(ptr, value) __atomic_exchange_n((ptr), (value), __ATOMIC_SEQ_CST)
 #define InterlockedIncrement(ptr) __atomic_add_fetch((ptr), 1, __ATOMIC_SEQ_CST)
+#define InterlockedDecrement(ptr) __atomic_sub_fetch((ptr), 1, __ATOMIC_SEQ_CST)
+/* As on Windows: Or and And return the value before, Add64 and Increment64 the value after. */
+#define InterlockedOr(ptr, value) __atomic_fetch_or((ptr), (value), __ATOMIC_SEQ_CST)
+#define InterlockedAnd(ptr, value) __atomic_fetch_and((ptr), (value), __ATOMIC_SEQ_CST)
+#define InterlockedExchange64(ptr, value) __atomic_exchange_n((ptr), (LONG64)(value), __ATOMIC_SEQ_CST)
+#define InterlockedIncrement64(ptr) __atomic_add_fetch((ptr), 1, __ATOMIC_SEQ_CST)
+#define InterlockedAdd64(ptr, value) __atomic_add_fetch((ptr), (LONG64)(value), __ATOMIC_SEQ_CST)
+static inline LONG64 InterlockedCompareExchange64(volatile LONG64 *ptr, LONG64 value, LONG64 expected)
+{
+    __atomic_compare_exchange_n(ptr, &expected, value, 0, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST);
+    return expected;
+}
 static inline LONG InterlockedCompareExchange(volatile LONG *ptr, LONG value, LONG expected)
 {
     __atomic_compare_exchange_n(ptr, &expected, value, 0, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST);

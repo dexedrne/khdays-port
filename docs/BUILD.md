@@ -165,6 +165,18 @@ A declaration from the port's own headers (`runtime/`, `host/`, `gfx/`,
 `sound/`, `compat/decomp_compat.h`) is the port's: its types keep host
 pointers, and the game's side converts at its uses.
 
+The game's own routines (`rewritten/src/`: not `libs/`, not the HAL) are
+emitted *routed* for the native plugins (`emit.py` `routed`): a routine's body
+becomes `khdays_impl_<name>`, a pointer `khdays_route_<name>` holds it, and
+`<name>` itself calls through that pointer, so every call -- the game's, a
+function reference's -- reaches whatever a plugin put there (kh.engine
+`replace`, `docs/MODDING_NATIVE.md`). A record of the three goes to section
+`.khrt$m`, which `runtime/plugins/engine.c` reads. Static routines, those taking
+a variable argument list or their arguments in a block, and those with an
+unnamed parameter stay as they were. The cost, measured with `KHDAYS_PROFILE`
+in a mission (2026-10-31): the game thread's running time per second went from
+30.8 to 31.5 ms (median), the menus' unchanged.
+
 ## Memory, linking and the ROM
 
 - **Game data at its DS address.** Every object a C file defines that the DS
@@ -281,8 +293,8 @@ never belong in the repository.
   composed by `gfx/compose.h` as the game's frames are.
 - `input_test.c`: the control profile and its presets, the bindings, the
   devices (SDL's virtual gamepads, no window), the settings menu, and the pure
-  parts of the enhancements (analog movement's arithmetic, the command-menu
-  sequencer). Each failing CHECK prints where and what.
+  parts of the enhancements (analog movement's arithmetic, the command menu's
+  steps on the D-pad). Each failing CHECK prints where and what.
 - `movie_hd_test.c`: the HD movies' course (`runtime/movies/movie_hd.c`)
   against a scripted game and video: the ids from the game's paths, the lookup,
   every transition, the buttons the game is given, the clock's pause reasons.
@@ -312,16 +324,31 @@ never belong in the repository.
   package as `display.c` hands it over after a 16-byte header. 1: each must be
   whole, and engine A composed again from its 3D and composition records must
   be the 2D engine's picture, pixel for pixel. 2: with a graphics card, engine A
-  is drawn by `gpu_raster3d.c` at 1x, 2x and 4x and compared with the
-  software's: where the 3D cannot show, every target pixel must be the 2D
-  engine's exactly; where it takes part each DS pixel is compared with the
-  average of its N x N (at 1x at most 0.01% of the pixels may differ; at N x a
-  channel by at most `MAX_MEAN_AT_NX` on average). 3: packages close together
+  is drawn by `gpu_raster3d.c` at 1x, 2x and 4x, by `raster3d.hlsl` and by the
+  card's own rasterizer, and compared with the software's: where the 3D cannot
+  show, every target pixel must be the 2D engine's exactly; where it takes part
+  each DS pixel is compared with the average of its N x N (at 1x at most 0.01% of
+  the pixels may differ by `raster3d.hlsl`, a channel by at most
+  `MAX_MEAN_NATIVE_AT_1X` on average by the card's rasterizer; at N x a channel by
+  at most `MAX_MEAN_AT_NX` on average). `KHDAYS_RENDER_TIMES=N` draws each package
+  N times more at `KHDAYS_RENDER_SCALE` (8) and says the time a picture took, by
+  the renderer `KHDAYS_3D` names. 3: packages close together
   whose lists differ are put through the interpolation at half way, and the
   matched polygons that moved more than a quarter of the view are reported by
   draw (said, not failed). `KHDAYS_RENDER_OUT=DIR` writes each frame the GPU
   drew. A package recorded wide is drawn as wide, with its polygons wholly
-  beside the DS's columns counted.
+  beside the DS's columns counted. 4: each package's 2D is drawn twice by
+  `gfx_render.c`: the second time the screens that read no 3D must be kept
+  (`docs/RENDERING.md`, "A screen kept") and hold the pixels composing them
+  anew gives, and a changed backdrop colour must compose the screen again;
+  and a one-screen picture of three made-up shapes (a corner, a strip turned
+  over and repeated past its rectangle, a piece shrunk) must be the same with
+  only the parts they read composed as with the screens whole, each time after
+  the screens were composed whole in other colours; and at 4x both screens,
+  a one-screen picture of the whole upper screen over the card's 3D, and that
+  picture with engine A showing its 3D's layer alone, must be the same
+  composed once a DS dot as at each pixel
+  (`docs/RENDERING.md`, "The 2D once a DS dot").
 - `save_test.c`: the save written so a crash cannot corrupt it: a child process
   writes two 64 KB images in turn as fast as it can and is stopped at a random
   moment, 100 times; the file must be one of the two, whole.
@@ -367,6 +394,12 @@ In `port/tools` (Python 3.11+ unless said):
   the parser; the type pass models what the game's C uses and stops, naming
   the file and line, on anything it cannot type (`TypeFailure`): nothing is
   rewritten by a guess. `references_test.py` checks each form it handles.
+  `prepare.py` itself stops at once when nothing it reads changed since its last
+  complete run into the same `--out` (the sizes and modification times of the
+  decomp, `port/tools`, `port/abi`, `port/compat`, `port/hal` and every header of
+  the port, kept in `prepare_inputs.json` with those of what it wrote); `--force`
+  prepares anyway. Neither this nor the references cache follows Visual Studio's
+  preprocessor: after changing Visual Studio, delete `--out` (`build/port/gen-x64`).
 - `build_shaders.py [name ...]`: compiles `port/shaders/<name>.hlsl`'s stages
   (`vs_main`, `ps_main`, `cs_main`) to DXIL (`dxc -T <stage>_6_0`), SPIR-V
   (`dxc -spirv`) and MSL (`spirv-cross --msl`), written as C arrays to

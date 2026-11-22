@@ -88,6 +88,22 @@ The mixers read the channels' current samples:
   32768. Seen: a walk's 148 seconds through the field peaked at the limiter's
   0.98 in 26 samples, none clipped.
 
+**The voices past the sixteen** (the PC's output only). On the DS a note that
+finds all its channels sounding takes the weakest of them (the driver's
+`snd7_channel_alloc`): a note still playing or dying away is cut. Measured
+2026-11-03 in the mission walk, 134 of 2000 notes took a channel still
+sounding. With the PC's mixer a wave's note (PCM, not PSG or noise) that finds
+none of its channels free takes one of the port's voices instead
+(`snd7_channel_alloc_wave`): a free one, or a new one, made with the hardware
+model's own (`khdays_sound_hw_add_voice`: channel 16 on, its registers past the
+DS's at `KHDAYS_SOUND_REG_SIZE + 16 v`), so no note cuts another. The voices are
+channels like the DS's -- envelope, LFO, sweep, the master pan and surround --
+heard only by the PC's mixer and a mod's waves; the game's ARM9 side never sees
+them (its channel masks, locks and status are the sixteen's). The DS's output
+keeps the DS's sixteen and its stealing. Seen: the run07 walk's field made 12
+voices (28 channels at the most) and played 167 of 864 starts on them.
+`KHDAYS_TRACE_SOUND` says each voice made.
+
 ## The categories
 
 The volume settings tell music, effects and voices apart by the sound
@@ -138,7 +154,11 @@ wanted, and what is wanted now goes before those. It plays at its own rate
 (below). A file above 48,000 Hz (the PC's usual rate) is brought down to it as
 it is decoded, through a low-pass filter (a sinc of 16 zero crossings each side
 under a Blackman window), so that what it holds above half that rate does not
-fold back as noise. The original goes on unheard (what the game reads back stays
+fold back as noise -- unless it is above it by less than 1%: what it holds past
+24 kHz is then a few hundred hertz at most, and the filter (some 30 ms a second
+of stereo) would be spent for nothing. KH2's recordings come at such rates
+(48008, 47996 ...): a mission with seven KH2 enemies stood still two seconds at
+its start while their sounds were brought down. The original goes on unheard (what the game reads back stays
 the original's):
 
 - a sequence or entry from when its ARM7 player starts, under that player's
@@ -155,18 +175,63 @@ original's rate, are they held as the channel holds its own. A file longer than
 its original plays on to its end, at the volume and pan it had, once the
 original ends by itself: a sequence whose player no stop reached
 (`KhdaysSnd7Driver.player_stops`, SND_StopSeq's count), a stream that reached
-its last block; stopped by the game, it stops with it. The voices' streams
+its last block, a wave whose one-shot sample ran to its end (the channel's
+`ended`; the rest plays apart from the channel, which the driver may give to
+another note, until the game stops the note's player); stopped by the game, it
+stops with it. Seen: a voice of 1.24 s over se_vex_WAVE's 0.69 s wave 1 was cut there;
+a 2 s tone over a 0.08 s menu click now plays its 2 s. The voices' streams
 (those of a voices' stream player, PLAYER_STRM_V01's lines) are decoded ahead
 with the sequence archives' entries.
 
+A mod's `sounds/switches.txt` ties some of its files to a setting: lines
+`<identifier or folder> <setting>` (`seqarc/EV_DARK_APPEAR kh2_corridors`; a
+key of `port/host/app/hud_settings.h`, the settings' Enhancements switches;
+`#` begins a comment), the first line naming a file or a folder of it counting.
+Those files are heard only while that setting is on, the originals otherwise,
+from the next time each sound starts (`khdays_sound_mods_switch`,
+`port/runtime/sound/sound_mods.c`; a key that is no setting's is told and the
+file heard always). The KH2 Prizes mod's Dark Corridor sounds follow KH2 Dark
+Corridors this way (RUNTIME_MAP.md, "The Dark Corridors").
+
+A mod's character gives its base's sounds files of its own (or silence) for its
+own actor only (CHARACTERS.md, `[sounds]`): the game names the actor whose
+sound it starts (its seat, from `Ov022_PlayEntityVoice` and
+`Ov022_SpawnVoiceCue`), and a sequence archive's entry it starts then plays the
+character's file instead of the original or a sound mod's; `none` plays nothing
+as long as the original lasts. Its files are decoded ahead with the others.
+
+## A room's music
+
+A mod gives a room music of its own (`port/runtime/sound/room_place.c`, `sound_mods.c`): a game room's in
+`mods/<Mod>/sounds/rooms/<world>/<room>.<wav|flac|ogg>` (the world's code, the room's index in its room table, as
+the studio numbers them) and `<room>_battle.<ext>`, a room a mod adds in its own folder (`rooms/<world>/<key>/`),
+`music.<ext>` and `music_battle.<ext>`. Each VBlank the port reads where the player is -- the field's link context
+holds the player's slot and each slot's room, the world being the archive its room table was read from (RUNTIME_MAP.md,
+section 27) -- and the game's own tracks keep their kinds (`data_02042124`): a field's track plays the room's field
+file; a battle's or a boss's its battle file, else the field's going on; any other track (an event's, the results', a
+menu's) the game's. While a track plays and the player goes into another room, the new room's file (or the mods' own
+for the track, or the game's) comes in over half a second, the game's own fade between its field and battle tracks,
+once it is decoded. A field's file the game cut for a battle's track goes on where it was when the field's track comes
+back, as the game takes its own field track up again; a track of another kind between them starts it from the top.
+A room's file with no loop of its own plays whole, round and round (not the original's loop, which is another
+piece's). Each machine plays its own player's room: nothing of it goes over the network.
+
+Seen 2026-11-13 with tones written for it: the play walk's Twilight Town room 0 its file and room 1 the game's
+(faded both ways); a mod's wave mission (DisneyBoss1, a boss's track) its room's battle file, a second's file heard
+round and round for 14 s; a field, battle and field again (a script's `music.play`/`music.stop`) the field's file
+taken up after 267,003 output samples on another ARM7 player; a room the mod adds (`eh` room 23) its folder's files.
+
 ## The originals, to make replacements from
 
-`khdays-native --dump-sounds [DIR]` writes every sound of the archive as WAV
+`khdays-native --dump-sounds [DIR [NAME...]]` writes every sound of the archive as WAV
 under the identifier a replacement takes, headless: `wave/<archive>/<index>.wav`
 (each wave an instrument plays, as the DS's channel decodes it),
 `strm/<name>.wav` (each stream, as NitroSystem's stream player makes it),
 `seq/<name>.wav` and `seqarc/<archive>/<entry>.wav` (each sequence and entry,
-played by the native driver and the PC's mixer at 48,000 Hz). Loops go in
+played by the native driver and the PC's mixer at 48,000 Hz); with names after the folder, those sounds alone
+(`seqarc/COMMON_SYS/se_sys_click`: the Menu Overhaul's menu cues, tools/mods/overhaul/menu_sounds.py). A
+sequence's note of length 0 plays its wave through (its track waits for it): the render takes that wait for no
+loop, up to 30 s. Loops go in
 `smpl`. The dump is the game's data: only under `saves/`, never in a
 repository.
 

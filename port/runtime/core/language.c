@@ -5,8 +5,9 @@
 
 #include "../../hal/hal.h"
 #include "events.h"
+#include "rom.h"
 #include "session_log.h"
-#include "window.h"
+#include "game_memory.h"
 
 #include "khdays_ds_symbols.h"
 
@@ -27,15 +28,10 @@ static int pending;             /* the language waiting for the scene's end (the
 static u32 (*switches)[2];
 static int switch_count, switches_read;
 
-static u32 rd32(u32 address)
-{
-    return *(const volatile u32 *)KHDAYS_W(address);
-}
-
 void khdays_language_request(int language)
 {
     if (language >= 1 && language <= 5) {
-        InterlockedExchange(&requested, language);
+        InterlockedExchange(&requested, khdays_rom_language(language));
     }
 }
 

@@ -5,6 +5,7 @@
 
 #include "core/rooms/room_change.h"
 #include "core/rooms/room_collision.h"
+#include "core/rooms/room_music.h"
 #include "core/rooms/worlds.h"
 
 #include "khdays/assets/gltf_export.h"
@@ -409,6 +410,32 @@ TEST(names_given_to_a_model_land_in_their_slots) {
     CHECK(why.find("triangle") != std::string::npos);
 }
 
+TEST(a_material_named_as_the_export_names_it_gives_its_surface_tags) {
+    const RoomCollision original = room();
+    CollisionSource s;
+    quad(&s, {-3, 0, -3}, {-3, 0, 3}, {3, 0, 3}, {3, 0, -3}, "ground nohit slide");  // both tags
+    quad(&s, {3, 0, -3}, {3, 0, 3}, {9, 0, 3}, {9, 0, -3}, "wall gate06 brick");    // neither a tag: none
+    quad(&s, {9, 0, -3}, {9, 0, 3}, {15, 0, 3}, {15, 0, -3}, "nohit");              // no list word: none
+    CollisionRules rules;
+    rules.drop_original = {"gate01"};  // (else the room's gate ground is copied in)
+    RoomCollision built;
+    CollisionReport report;
+    std::string why;
+    CHECK(build_collision(s, original, rules, &built, &report, &why));
+    CHECK(built.faces[kGround].size() == 3);  // the list still by its facing: "wall" names it, it faces up
+    // the room's own nohit (record 0) taken, slide added after its records
+    CHECK(built.named.size() == 3 && built.named[2].text() == "slide");
+    int tagged = 0, plain = 0;
+    for (const auto& f : built.faces[kGround]) {
+        if (f.slots[1] == 0 && f.slots[2] == 2)
+            ++tagged;
+        if (f.slots[1] == 0xff && f.slots[2] == 0xff)
+            ++plain;
+    }
+    CHECK(tagged == 1 && plain == 2);
+    CHECK(check_collision(built, original).empty());
+}
+
 TEST(a_wide_room_keeps_its_tree_within_the_walk) {
     // tiny grounds over 400 units: the tree stops at the eighth level
     CollisionSource s;
@@ -616,4 +643,36 @@ TEST(a_model_made_from_the_room_lines_up_with_it_again) {
     far.vertices.push_back(v);
     other.model.meshes.push_back(far);
     CHECK(align_with_room(room, other).verdict == RoomAlignment::unrelated);
+}
+
+// A room's music: a game room's in sounds/rooms/<world>/, an added room's in its folder; one file a field (or battle),
+// the one of another extension taken away when another is chosen; only WAV, FLAC and Ogg taken.
+TEST(room_music_kept_in_the_mod) {
+    namespace fs = std::filesystem;
+    const fs::path dir = studio_test::scratch("room_music");
+    const fs::path mod = dir / "mod";
+    std::error_code ec;
+    fs::remove_all(mod, ec);
+    const auto write = [&](const char* name) {
+        std::ofstream(dir / name, std::ios::binary) << "RIFF";
+        return dir / name;
+    };
+    const RoomMusicPlace game = game_room_music(mod, "tt", 3);
+    CHECK(game.folder == mod / "sounds" / "rooms" / "tt" && game.field == "3" && game.battle == "3_battle");
+    CHECK(room_music_file(game, false).empty());
+    std::string why;
+    CHECK(room_music_set(game, false, write("song.WAV"), &why));
+    CHECK(room_music_file(game, false) == game.folder / "3.wav");
+    CHECK(room_music_file(game, true).empty());
+    CHECK(room_music_set(game, false, write("song.ogg"), &why));
+    CHECK(room_music_file(game, false) == game.folder / "3.ogg" && !fs::exists(game.folder / "3.wav"));
+    CHECK(!room_music_set(game, true, write("song.mp3"), &why) && !why.empty());
+    CHECK(room_music_set(game, true, write("fight.flac"), &why));
+    CHECK(room_music_file(game, true) == game.folder / "3_battle.flac");
+    CHECK(room_music_remove(game, false, &why) && room_music_file(game, false).empty());
+    CHECK(room_music_file(game, true) == game.folder / "3_battle.flac");
+    const RoomMusicPlace added = added_room_music(mod / "rooms" / "tt" / "street");
+    CHECK(room_music_set(added, false, write("song.wav"), &why));
+    CHECK(room_music_file(added, false) == mod / "rooms" / "tt" / "street" / "music.wav");
+    CHECK(room_music_remove(added, true, &why));  // none there: no failure
 }

@@ -19,12 +19,43 @@ void khdays_clock_init(void);
 /* Cycles since the game started (not counting the time it was paused). */
 u64 khdays_clock_cycles(void);
 
+/* How fast the DS's time runs against the PC's: 1 but while the screen's lock holds it (below). The
+ * sound output plays the DS's sound at this rate. */
+double khdays_clock_rate(void);
+
+/* The screen's lock: at each VBlank (`vblank`, its cycle), the DS's time is run a little faster or
+ * slower -- by at most half a percent around the screen's own rate -- so that the VBlank comes a few
+ * milliseconds before the screen's refresh, where the picture made at it is shown at once: a press
+ * reaches the screen sooner and as soon each time, and no picture waits a refresh more every few
+ * seconds (the DS's 59.83 Hz against a 60 Hz screen). Only with a screen at a whole multiple of about
+ * the DS's rate (60, 120 Hz: 59.83 within 1%), as Windows' compositor reports it; the host turns it on
+ * while a window shows the game outside a multiplayer session (khdays_clock_lock_screen), and it
+ * stays off while the time is held. KHDAYS_SCREEN_LOCK=off turns it off; =HZ takes the screen for one
+ * at that rate (testing on another screen); KHDAYS_TRACE_LOCK says where the VBlanks fall. */
+void khdays_clock_lock_screen(int on);
+void khdays_clock_vblank(u64 vblank);
+
+/* While the screen's lock holds, the screen's refreshes a VBlank (1 at 60 Hz, 2 at 120); 0 while it does
+ * not (the screen at another rate, the lock off, the time held). Safe from any thread. */
+int khdays_clock_screen_refreshes(void);
+
+#ifndef _WIN32
+/* Where Windows' compositor is not there to ask (clock_sdl.c): the host says when the screen refreshes,
+ * as often as it knows (iOS: a display link, tools/ios/ios_main.m) -- how long a refresh lasts and when
+ * one was, both in SDL_GetTicksNS's nanoseconds. Times older than half a second count as none (the app
+ * in the background); with none the lock stays off, and the game's log says so once. Safe from any
+ * thread. */
+void khdays_clock_screen_timing(unsigned long long period_ns, unsigned long long refresh_at_ns);
+#endif
+
 /* The game is held by stopping its time: nothing comes due, and let go, time goes on from the same
  * cycle with nothing to catch up. The time stands still while any reason holds it (the settings
  * screen, the game waiting at a movie's end for its HD video). Safe from any thread. */
 enum {
     KHDAYS_HOLD_SETTINGS = 1u << 0,
     KHDAYS_HOLD_MOVIE = 1u << 1,
+    KHDAYS_HOLD_MOVIE_MENU = 1u << 2,
+    KHDAYS_HOLD_SHOT = 1u << 3, /* KHDAYS_SHOTS_HD's pictures read back and written: no frame of the game lost */
 };
 void khdays_clock_hold(unsigned reason, int on);
 

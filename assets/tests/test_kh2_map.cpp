@@ -371,15 +371,18 @@ Bytes collision() {
     const std::size_t tables = w.size();
     w.zeros(64);
     const std::size_t faces = w.size();
-    // A floor (a quad) and a wall (a triangle).
-    for (const auto& v : {std::array<int, 4>{0, 1, 2, 3}, std::array<int, 4>{0, 1, 4, -1}}) {
+    // A floor (a quad facing up) stopping the player, a wall (a triangle) stopping enemies, neither stopping attacks;
+    // a wall facing up stopping everyone; a floor stopping no one; a wall stopping attacks alone.
+    const std::array<std::array<int, 5>, 5> list{{
+        {0, 3, 2, 1, 0}, {0, 1, 4, -1, 1}, {0, 3, 1, -1, 2}, {1, 2, 4, -1, 3}, {0, 4, 3, -1, 4}}};
+    for (const auto& v : list) {
         w.u16(0);
-        for (const int i : v) {
-            w.u16(static_cast<unsigned>(i));
+        for (std::size_t i = 0; i < 4; ++i) {
+            w.u16(static_cast<unsigned>(v[i]));
         }
         w.u16(0);
         w.u16(0xFFFF);
-        w.u16(v[3] < 0 ? 1 : 0);
+        w.u16(static_cast<unsigned>(v[4]));
     }
     const std::size_t vertices = w.size();
     for (const auto& p :
@@ -391,16 +394,17 @@ Bytes collision() {
         w.f32(1.0F);
     }
     const std::size_t flags = w.size();
-    w.u32(0x31);
-    w.u32(0x20);
+    for (const std::uint32_t f : {0x31U, 0x20U, 0x1f2U, 0x401U, 0x82U}) {
+        w.u32(f);
+    }
     w.set_u32(tables + 0 * 8 + 0, 0);  // header
     w.set_u32(tables + 0 * 8 + 4, 0x50);
     w.set_u32(tables + 3 * 8 + 0, static_cast<std::uint32_t>(faces));
-    w.set_u32(tables + 3 * 8 + 4, 32);
+    w.set_u32(tables + 3 * 8 + 4, static_cast<std::uint32_t>(16 * list.size()));
     w.set_u32(tables + 4 * 8 + 0, static_cast<std::uint32_t>(vertices));
     w.set_u32(tables + 4 * 8 + 4, 80);
     w.set_u32(tables + 7 * 8 + 0, static_cast<std::uint32_t>(flags));
-    w.set_u32(tables + 7 * 8 + 4, 8);
+    w.set_u32(tables + 7 * 8 + 4, 20);
     return w.b;
 }
 
@@ -648,6 +652,24 @@ void test_map() {
     expect(f[1].kind == kh2::TextureFrame::Kind::Base && f[1].min_length == 20 && f[1].max_length == 30, "frame 1");
     expect(f[2].kind == kh2::TextureFrame::Kind::Jump && f[2].jump == -2, "frame 2");
     expect(textures.hd_pictures == std::vector<int>{0, 2} && a.hd_sheet == 1 && textures.hd_count == 3, "HD numbering");
+    {
+        // an entry of several containers (0xFFFFFFFF, their count, their offsets: the Thresholder's): its first read
+        const Bytes one = texture_container(true);
+        Bytes several(16, 0);
+        const std::uint32_t head[4] = {0xFFFFFFFFU, 2U, 16U, 16U + std::uint32_t(one.size())};
+        std::memcpy(several.data(), head, sizeof head);
+        several.insert(several.end(), one.begin(), one.end());
+        several.insert(several.end(), one.begin(), one.end());
+        const auto first = kh2::read_textures(several.data(), several.size(), 0);
+        expect(first.textures.size() == 2 && first.textures[0].width == 256 && first.scrolls.size() == 1,
+               "several containers: the first");
+        // each of them listed (Hades's two sets: the HD pictures of his PAX come after both sets'), one alone itself
+        expect(kh2::texture_containers(several.data(), several.size(), 0) ==
+                   std::vector<std::size_t>{16U, 16U + one.size()},
+               "several containers: each one's place");
+        expect(kh2::texture_containers(one.data(), one.size(), 0) == std::vector<std::size_t>{0U},
+               "one container: its own place");
+    }
 
     const auto background = kh2::read_model(file.data(), file.size(), e[0].offset);
     expect(background.kind == 2 && background.groups.size() == 2, "map model groups");
@@ -697,7 +719,7 @@ void test_map() {
     expect(near(kh2::evaluate(m.curves[1], 5.0F), 50.5F), "Hermite middle");
 
     const auto faces = kh2::read_collision(file.data(), file.size(), e[2].offset);
-    expect(faces.size() == 3, "quad split, triangle kept");
+    expect(faces.size() == 6 && faces[5].surface == 0x82, "quad split, triangles kept");
     expect(near(faces[0].corners[2][2], 100.0F) && faces[0].surface == 0x31, "floor in the model's axes");
     expect(near(faces[2].corners[2][1], 100.0F) && faces[2].surface == 0x20, "wall in the model's axes");
 
@@ -804,17 +826,104 @@ void test_room(const Bytes& file) {
 
     // the map's own floors and walls, as a scene in its units and axes
     const auto walls = kh2::collision_scene(file.data(), file.size(), "tt99");
-    expect(walls.meshes.size() == 1 && walls.meshes[0].primitives.size() == 1 && walls.materials[0].double_sided,
-           "collision scene");
-    const auto& cp = walls.meshes[0].primitives[0];
-    expect(cp.positions.size() == 9 && near(cp.positions[2][2], 100.0F) && near(cp.positions[8][1], 100.0F),
+    std::vector<std::string> names;
+    for (const auto& m : walls.materials)
+        names.push_back(m.name + (m.double_sided ? " (both sides)" : ""));
+    expect(names == std::vector<std::string>{"ground", "wall nohit (both sides)", "ground slide", "wall (both sides)"},
+           "collision materials: nohit on a wall attacks pass, a wall facing up slides, walls from both sides");
+    expect(walls.meshes.size() == 1 && walls.meshes[0].primitives.size() == 4, "a primitive per material");
+    const auto& cp = walls.meshes[0].primitives;
+    expect(cp[0].material == 0 && cp[0].positions.size() == 6 && near(cp[0].positions[2][2], 100.0F) &&
+               cp[1].positions.size() == 3 && near(cp[1].positions[2][1], 100.0F),
            "collision triangles in the model's axes");
+    expect(cp[2].positions.size() == 3 && cp[3].positions.size() == 3 && cp[3].material == 3,
+           "the floor stopping no one left out");
 
     const std::string gltf = khdays::assets::scene_to_gltf(scene);
     for (const char* part : {"\"khdays_frames\"", "\"khdays_scroll\"", "\"khdays_loop\":true", "\"skins\"",
                              "\"doubleSided\":true", "\"alphaMode\":\"MASK\"", "\"wrapS\":33071"}) {
         expect(gltf.find(part) != std::string::npos, std::string("glTF has ") + part);
     }
+}
+
+// A KH2 object (an .mdlx: its model and its textures) made into a scene: in a motion's first pose, turned, its light
+// group blended by its brightness, a picture given in place of its own.
+void test_object() {
+    const auto folder = std::filesystem::temp_directory_path() / "khdays-kh2-object-test";
+    std::filesystem::remove_all(folder);
+    std::filesystem::create_directories(folder);
+    auto write = [&](const std::string& name, const Bytes& bytes) {
+        std::ofstream out(folder / name, std::ios::binary);
+        out.write(reinterpret_cast<const char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
+    };
+    auto plain = [](std::uint8_t r, std::uint8_t g, std::uint8_t b) {
+        Bytes body;
+        for (unsigned i = 0; i < 16; ++i)
+            body.insert(body.end(), {b, g, r, 255});  // stored B, G, R, A (the masks dds() writes)
+        return dds(nullptr, 4, 4, body);
+    };
+    write("-0.dds", plain(10, 20, 30));
+    write("other.dds", plain(200, 100, 50));
+    const Bytes model = object_model();
+    const Bytes mdlx = bar(
+        {{kh2::kEntryModel, "f_ex", model}, {kh2::kEntryTextures, "tim_", texture_container(false)}, {23, "f_ex", {}}});
+    std::map<std::string, khdays::assets::DecodedTexture> pictures;
+    auto sink = [&](const std::string& name, const khdays::assets::DecodedTexture& picture) {
+        pictures[name] = picture;
+    };
+
+    kh2::ObjectOptions options;
+    options.turn = 180.0F;
+    options.pose = kh2::Motion{};
+    options.pose->pose.push_back({1, 6, 7.0F});  // bone 1's x where its rest has 10
+    const auto made = kh2::object_model(mdlx.data(), mdlx.size(), folder, "F_EX040_TEST", sink, options);
+    const auto& scene = made.scene;
+    expect(scene.nodes.size() == 3 && scene.nodes[0].name == "f_ex040_test" && scene.nodes[1].name == "j0" &&
+               scene.nodes[2].name == "j1",
+           "the object's node and a node per bone");
+    expect(near(scene.nodes[0].rotation[1], 1.0F) && near(scene.nodes[0].rotation[3], 0.0F), "turned half round");
+    expect(scene.nodes[1].parent == 0 && scene.nodes[2].parent == 1, "bones under their parents");
+    expect(near(scene.nodes[2].translation[0], 7.0F) && near(scene.nodes[1].translation[0], 0.0F), "the motion's pose");
+    expect(scene.meshes.size() == 1 && scene.meshes[0].joints == std::vector<int>{1, 2} &&
+               scene.meshes[0].primitives.size() == 1 &&
+               scene.meshes[0].primitives[0].joint_of == std::vector<int>{0, 0, 1},
+           "its mesh skinned to its bones");
+    expect(scene.materials.size() == 1, "one material");
+    expect(scene.materials[0].texture == "F_EX040_TEST_0.png", "its HD picture: " + scene.materials[0].texture);
+    expect(pictures.count("F_EX040_TEST_0.png") == 1 && pictures["F_EX040_TEST_0.png"].rgba[0] == 10,
+           "the picture handed over");
+
+    // its group as light added over the model (flag 0x400000), and a picture in place of -0.dds
+    Bytes glowing = model;
+    glowing[0x90 + 0x20 + 2] = 0x40;
+    const Bytes glowing_mdlx =
+        bar({{kh2::kEntryModel, "f_ex", glowing}, {kh2::kEntryTextures, "tim_", texture_container(false)}});
+    pictures.clear();
+    kh2::ObjectOptions other;
+    other.pictures[0] = folder / "other.dds";
+    const auto lit = kh2::object_model(glowing_mdlx.data(), glowing_mdlx.size(), folder, "F_EX040_TEST", sink, other);
+    std::filesystem::remove_all(folder);
+    expect(lit.scene.materials.size() == 1 &&
+               lit.scene.materials[0].alpha_mode == khdays::assets::NeutralMesh::AlphaMode::blend &&
+               lit.scene.materials[0].texture == "F_EX040_TEST_0_light.png",
+           "its light blended");
+    const auto& light = pictures["F_EX040_TEST_0_light.png"];
+    expect(light.rgba.size() == 64 && light.rgba[0] == 200 && light.rgba[3] == 200,
+           "the picture given, alpha its brightness");
+    expect(std::any_of(lit.report.begin(), lit.report.end(),
+                       [](const std::string& line) { return line.find("its light") != std::string::npos; }),
+           "the light reported");
+
+    // not an object: refused
+    const Bytes map_mdlx =
+        bar({{kh2::kEntryModel, "f_ex", map_model()}, {kh2::kEntryTextures, "tim_", texture_container(false)}});
+    bool refused = false;
+    try {
+        (void)kh2::object_model(map_mdlx.data(), map_mdlx.size(), folder, "F_EX040_TEST", sink);
+    } catch (const std::runtime_error&) {
+        refused = true;
+    }
+    expect(refused, "a map's model is not an object");
 }
 
 void test_refusals() {
@@ -841,6 +950,7 @@ int main() {
         test_dds();
         test_map();
         test_room(map_file());
+        test_object();
         test_refusals();
         std::cout << "KH2 map test passed\n";
         return 0;

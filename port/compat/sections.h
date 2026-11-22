@@ -4,14 +4,17 @@
 #if defined(_MSC_VER)
 #define KHDAYS_DATA_RECORD __declspec(allocate(".khdi$m"))
 #define KHDAYS_FUNCTION_RECORD __declspec(allocate(".khfr$m"))
+#define KHDAYS_ROUTE_RECORD __declspec(allocate(".khrt$m"))
 #elif defined(__APPLE__)
 #define KHDAYS_DATA_RECORD __attribute__((used, section("__DATA,khdi"), aligned(8)))
 #define KHDAYS_FUNCTION_RECORD __attribute__((used, section("__DATA,khfr"), aligned(8)))
+#define KHDAYS_ROUTE_RECORD __attribute__((used, section("__DATA,khrt"), aligned(8)))
 #define KHDAYS_SECTION_START(name) __asm("section$start$__DATA$" #name)
 #define KHDAYS_SECTION_END(name) __asm("section$end$__DATA$" #name)
 #else
 #define KHDAYS_DATA_RECORD __attribute__((used, section("khdi"), aligned(8)))
 #define KHDAYS_FUNCTION_RECORD __attribute__((used, section("khfr"), aligned(8)))
+#define KHDAYS_ROUTE_RECORD __attribute__((used, section("khrt"), aligned(8)))
 #define KHDAYS_SECTION_START(name) __asm("__start_" #name)
 #define KHDAYS_SECTION_END(name) __asm("__stop_" #name)
 #endif

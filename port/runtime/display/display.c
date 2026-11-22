@@ -4,6 +4,8 @@
 #include "display.h"
 #include "../core/events.h"
 #include "frame_package.h"
+#include "field_wipe.h"
+#include "../kh2_enemies/shell.h"
 #include "../../gfx/describe.h"
 #include "gfx_check.h"
 #include "../../gpu/gpu2d.h"
@@ -17,6 +19,22 @@
 #include "../../ui/elements.h"
 #include "../../ui/parts.h"
 #include "../../ui/hud.h"
+#include "../../ui/kh2_hp_hud.h"
+#include "../../ui/kh2_portrait_hud.h"
+#include "../../ui/kh2_party_hud.h"
+#include "../../ui/kh2_hud_labels.h"
+#include "../../ui/kh2_enemy_hud.h"
+#include "../../ui/kh2_mission_2d.h"
+#include "../../ui/kh2_reticles.h"
+#include "../../ui/kh2_pictures.h"
+#include "../../ui/heart_points.h"
+#include "../../ui/prize_effects.h"
+#include "../../ui/kh2_information.h"
+#include "../../ui/kh2_obtained.h"
+#include "../../ui/hud_options.h"
+#include "../../ui/kh2_mission_panel.h"
+#include "../../ui/reaction_command.h"
+#include "../../ui/minimap.h"
 #include "../../ui/pause.h"
 #include "../../ui/text.h"
 #include "../../ui/situation.h"
@@ -35,6 +53,12 @@
 #include <string.h>
 #include "../../host/app/sync.h"
 #include <SDL3/SDL.h>
+
+_Static_assert(
+    KSI_3D_PROGRAMS ==
+        KHDAYS_RETICLE_COUNT + KHDAYS_HEART_PROGRAMS + KHDAYS_PRIZE_PROGRAMS + KHDAYS_PICTURE_PROGRAMS + 1,
+    "3D sequence package capacity: the reticles, the heart counter, the prizes, a KH2 enemy's pictures, the "
+    "reaction command's mark");
 
 #define PIXELS (KHDAYS_SCREEN_W * KHDAYS_SCREEN_H)
 
@@ -573,20 +597,20 @@ static void capture_2d(KhdaysFramePackage *p, const KhdaysGpuInput *in)
         khdays_gfx_describe(in->io, in->palette, in->oam, e, &latch2d[e], p->desc2d[e]);
         khdays_video_subtitles_out(in->io, e, p->desc2d[e]);
     }
-    if (p->wants & KHDAYS_WANT_3D) {
-        /* a 3D list wider than the DS's view: engine A covers its columns, the HUD goes to the sides */
-        const int columns = (int)lroundf(p->list3d.widen * KHDAYS_SCREEN_W);
-        if (columns > KHDAYS_SCREEN_W && columns <= KHDAYS_GPU2D_MAX_COLUMNS) {
-            KhdaysGfxMemory memory;
-            memset(&memory, 0, sizeof(memory));
-            memory.vram = in->vram;
-            memory.palette = in->palette;
-            for (int bank = 0; bank < 4; ++bank) {
-                memory.bank[bank] = in->bank[bank];
-            }
-            memory.layer3d = in->layer3d;
-            khdays_gfx_describe_wide(p->desc2d[0], &memory, columns & ~1);
+    {
+        /* a 3D list wider than the DS's view: engine A covers its columns, the HUD goes to the sides. Told
+         * every frame, wide or not (0 columns), so that the pieces it remembers are forgotten in between */
+        const int columns = (p->wants & KHDAYS_WANT_3D) ? (int)lroundf(p->list3d.widen * KHDAYS_SCREEN_W) : 0;
+        KhdaysGfxMemory memory;
+        memset(&memory, 0, sizeof(memory));
+        memory.vram = in->vram;
+        memory.palette = in->palette;
+        for (int bank = 0; bank < 4; ++bank) {
+            memory.bank[bank] = in->bank[bank];
         }
+        memory.layer3d = in->layer3d;
+        khdays_gfx_describe_wide(p->desc2d[0], &memory,
+                                 columns > KHDAYS_SCREEN_W && columns <= KHDAYS_GPU2D_MAX_COLUMNS ? columns & ~1 : 0);
     }
     memcpy(p->palette2d, in->palette, sizeof(p->palette2d));
     for (size_t i = 0; i < sizeof(areas) / sizeof(areas[0]); ++i) {
@@ -661,6 +685,12 @@ static void capture_3d(KhdaysFramePackage *p)
         }
     }
     khdays_textures_mark(&p->list3d); /* the textures drawn instead (HD graphics) */
+    khdays_reticles_commands(&p->list3d, p->sequence3d_images);
+    khdays_heart_commands(&p->list3d, p->sequence3d_images + KHDAYS_RETICLE_COUNT);
+    khdays_prize_commands(&p->list3d, p->sequence3d_images + KHDAYS_RETICLE_COUNT + KHDAYS_HEART_PROGRAMS);
+    khdays_ui_kh2_pictures_commands(&p->list3d, p->sequence3d_images + KHDAYS_RETICLE_COUNT + KHDAYS_HEART_PROGRAMS +
+                                                    KHDAYS_PRIZE_PROGRAMS);
+    khdays_ui_reaction_mark_commands(&p->list3d, p->sequence3d_images + KSI_3D_PROGRAMS - 1);
     p->list3d_serial = list3d_serial;
     p->list3d_time = list3d_time;
     p->list3d_cut = (uint8_t)list3d_cut;
@@ -882,7 +912,32 @@ static void ui_frame(KhdaysFramePackage *p, const KhdaysGpuInput *in, int refere
 {
     /* widescreen moves the elements to the sides like the HUD's pieces; on one screen they stay at their
      * DS places and the composition places them */
+    khdays_ui_kh2_hp_reference(reference);
+    khdays_ui_kh2_portrait_reference(reference);
+    khdays_ui_kh2_party_reference(reference);
+    khdays_ui_kh2_labels_reference(reference);
+    p->hud_options = khdays_ui_hud_options();
+    if (!khdays_ui_information_keep_hud())
+        p->hud_options &= ~KHDAYS_HUD_KEEP_INFORMATION;
+    khdays_ui_kh2_enemy_reference(reference);
     khdays_ui_collect((p->wants & KHDAYS_WANT_SITUATION) ? 0 : (int)p->desc2d[0][KD_WIDE], p->upper);
+    khdays_ui_kh2_hp_commands(&p->sequence_image);
+    khdays_ui_kh2_portrait_commands(p->portrait_images);
+    khdays_ui_kh2_party_commands(p->party_images);
+    khdays_ui_kh2_labels_commands(p->label_images);
+    khdays_ui_kh2_enemy_commands(&p->enemy_image);
+    khdays_ui_information_commands(p->information_images);
+    khdays_ui_obtained_commands(&p->obtained_image);
+    khdays_ui_notification_commands(p->notification_images);
+    khdays_ui_mission_panel_commands(&p->mission_panel_image);
+    khdays_ui_reaction_command_commands(&p->reaction_command_image);
+    khdays_ui_command_image_commands(&p->command_image_image);
+    khdays_minimap_commands(p->minimap_images);
+    khdays_minimap_radar_commands(&p->radar_image);
+    p->mission_panel_state = khdays_ui_mission_panel_state();
+    p->mission_panel_backdrop = khdays_ui_mission_panel_backdrop();
+    p->information_hold_frames = khdays_ui_information_hold_frames();
+    p->information_state = khdays_ui_information_state();
     for (int e = 0; e < 2; ++e) {
         KhdaysFrameElements *fe = &p->elements[e];
         uint32_t n;
@@ -932,8 +987,8 @@ static void record_package(const KhdaysFramePackage *p)
 {
     char path[MAX_PATH];
     FILE *f;
-    /* version 14: a vertex has an alpha (ten words) */
-    const u32 header[4] = {0x474b5046u /* "FPKG" */, 14, (u32)KHDAYS_FRAME_RECORDED, p->frame};
+    /* version 15: a polygon names its character shadow's mask (version 14: a vertex has an alpha, ten words) */
+    const u32 header[4] = {0x474b5046u /* "FPKG" */, 15, (u32)KHDAYS_FRAME_RECORDED, p->frame};
     snprintf(path, sizeof(path), "%s/frame_%05u.pkg", record_dir, p->frame);
     if ((f = fopen(path, "wb")) == NULL) {
         fprintf(stderr, "display: cannot write %s\n", path);
@@ -1096,6 +1151,28 @@ static void begin_package(KhdaysFramePackage *p, u32 frame, int want, int captur
         p->wants = 0; /* no 3D captured for it */
     }
     p->frame = frame;
+    p->sequence_image.words[KSI_COUNT] = 0;
+    memset(p->information_images, 0, sizeof(p->information_images));
+    memset(&p->obtained_image, 0, sizeof(p->obtained_image));
+    memset(p->notification_images, 0, sizeof(p->notification_images));
+    memset(&p->mission_panel_image, 0, sizeof(p->mission_panel_image));
+    memset(&p->reaction_command_image, 0, sizeof(p->reaction_command_image));
+    memset(&p->command_image_image, 0, sizeof(p->command_image_image));
+    memset(p->minimap_images, 0, sizeof(p->minimap_images));
+    memset(&p->radar_image, 0, sizeof(p->radar_image));
+    p->mission_panel_state = 0;
+    p->mission_panel_backdrop = -1;
+    p->information_hold_frames = 0;
+    p->information_state = 0;
+    p->hud_options = 0;
+    p->enemy_image.words[KSI_COUNT] = p->enemy_image.words[KSI_CLEAR] = p->enemy_image.words[KSI_ANCHORED] = 0;
+    for (int i = 0; i < 4; ++i) {
+        p->portrait_images[i].words[KSI_COUNT] = p->portrait_images[i].words[KSI_CLEAR] = 0;
+    }
+    for (int i = 0; i < 3; ++i)
+        p->party_images[i].words[KSI_COUNT] = 0;
+    for (int i = 0; i < 5; ++i)
+        p->label_images[i].words[KSI_COUNT] = p->label_images[i].words[KSI_CLEAR] = 0;
     p->time = khdays_events_vblank_time();
     p->alike = last_drawn.alike;
     last_drawn.alike = 0;
@@ -1105,6 +1182,10 @@ static void begin_package(KhdaysFramePackage *p, u32 frame, int want, int captur
      * kept picture, at its own resolution (gfx_render.c) */
     p->capture = (uint8_t)capture;
     package_capture(p);
+    p->field_wipe = (uint32_t)khdays_field_wipe_running(frame);
+    if (!khdays_kh2_enemies_screen_trail(p->trail)) {
+        memset(p->trail, 0, sizeof(p->trail));
+    }
     if (want & KHDAYS_WANT_SITUATION) {
         /* the one-screen picture's inputs: a few of the game's bytes */
         khdays_situation_take(&p->situation, frame);
@@ -1173,6 +1254,31 @@ static void trace_2d_frame(const KhdaysFramePackage *p, KhdaysGpuInput *in, u32 
     khdays_gpu2d_describe(in, 1, stderr);
 }
 
+/* A brightness word (MASTER_BRIGHT's: the factor in bits 0-4, the mode in 14-15) made at least `factor` white. */
+static uint32_t whiter(uint32_t word, unsigned factor)
+{
+    const unsigned own = (word & 31u) > 16u ? 16u : (word & 31u);
+    return (((word >> 14) & 3u) != 1u || own < factor) ? (word & ~0xc01fu) | 0x4000u | factor : word;
+}
+
+/* A KH2 enemy's screen faded to white (khdays_kh2_enemies_screen_white: its script's 0:31 and 0:32) laid over this
+ * frame's picture as the master brightness toward white on both engines (MASTER_BRIGHT's mode 1), where it is whiter
+ * than the game's own: in what the host reads of the frame -- each engine's 2D description (KD_MASTER, the one-screen
+ * picture's brightness) and its information (the composition's). The game's registers are left alone: the game keeps
+ * what is written there. */
+static void whiten(KhdaysFramePackage *p)
+{
+    const float white = khdays_kh2_enemies_screen_white();
+    const unsigned factor = white > 0.0f ? (unsigned)lroundf(white * 16.0f) : 0u;
+    if (factor == 0) {
+        return;
+    }
+    for (int e = 0; e < 2; ++e) {
+        p->info[e].master_bright = (uint16_t)whiter(p->info[e].master_bright, factor);
+        p->desc2d[e][KD_MASTER] = whiter(p->desc2d[e][KD_MASTER], factor);
+    }
+}
+
 /* Draws this frame into a package and hands it to the host (or shows it
  * directly without a window). `t0`, `ta` and `t1` get the times the drawing
  * started, engine A was done, and the 2D was done. */
@@ -1192,6 +1298,7 @@ static void draw_frame(u32 frame, int want, int capture, KhdaysGpuInput *in, LAR
         fill_info(0, &p->info[0]);
         fill_info(1, &p->info[1]);
         capture_2d(p, in);
+        whiten(p);
         QueryPerformanceCounter(ta);
     } else {
         draw_reference_2d(p, in, frame, want, ta);
@@ -1382,6 +1489,7 @@ static void capture_source_a(u32 cnt, const KhdaysGpuInput *in, const KhdaysGpu2
     } else {
         KhdaysGpuInput with3d = *in;
         with3d.layer3d = shown3d;
+        with3d.left_out_cells = khdays_ui_captured_cell_bits(0);
         khdays_gpu2d_graphics(&with3d, window_a, capture_a);
         for (int i = 0; i < PIXELS; ++i) {
             capture_a[i] |= 0x8000u;
@@ -1471,7 +1579,7 @@ void khdays_display_vblank(u32 frame)
         /* the 3D on both screens: the game swaps engine A's screen (POWCNT1 bit 15) every VBlank,
          * skipping one now and then when its frame runs late */
         const int a_upper = (IO16(0x304) & 0x8000) != 0;
-        engine_swaps = khdays_situation_swaps(&swap_history, a_upper != engine_upper);
+        engine_swaps = khdays_situation_recent(&swap_history, a_upper != engine_upper);
         engine_upper = a_upper;
     }
     if (InterlockedExchange(&mark_requests, 0) != 0 && mark_frame == ~0u) {
@@ -1493,6 +1601,18 @@ void khdays_display_vblank(u32 frame)
         }
         khdays_g3d_set_widen(widen);
     }
+    khdays_ui_hud_settings_frame();
+    khdays_ui_kh2_hp_frame(frame);
+    khdays_ui_information_frame(frame);
+    khdays_ui_obtained_frame(frame);
+    khdays_ui_mission_panel_frame(frame);
+    khdays_minimap_frame(frame);
+    khdays_reticles_frame(frame);
+    khdays_ui_kh2_enemy_frame(frame);
+    khdays_ui_kh2_mission_2d_frame(frame);
+    khdays_ui_kh2_party_frame(frame);
+    khdays_ui_kh2_labels_frame(frame);
+    khdays_ui_kh2_portrait_frame(frame);
     if (!drawn(frame)) {
         gpu_input(&in);
         display_capture(&in, &window_a);

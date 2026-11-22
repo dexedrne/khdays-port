@@ -42,9 +42,14 @@ void khdays_input_pad_sample(void);
 const KhdaysInputSnapshot *khdays_input_snapshot(void);
 
 /* The snapshot taken at the khdays_input_pad_sample before: what the
- * actors read this frame, since their buttons come a game frame late (in
- * the control packet). */
+ * actors read this frame in the game's own order, their buttons a game frame
+ * late (in the control packet). */
 const KhdaysInputSnapshot *khdays_input_previous_snapshot(void);
+
+/* The snapshot the local player moves by (its stick for analog movement and the KH2 camera): this game
+ * frame's while the port builds the field's control packet before the characters read it (this frame
+ * or the last: controls_hooks.c, khdays_controls_send_early), else the one before. */
+const KhdaysInputSnapshot *khdays_input_movement_snapshot(void);
 
 /* How many times Pad_Sample has run: the game's own frames. */
 u32 khdays_input_game_frames(void);
@@ -57,6 +62,10 @@ u16 khdays_input_keyinput(void);
 /* What the ARM7 leaves at 0x027fffa8: X, Y and debug in bits 10, 11 and 13 (active low), the hinge in
  * bit 15 (0 open); 0x2c00 with nothing held. */
 u16 khdays_input_xy(void);
+
+/* The buttons an input script (regression walks: KHDAYS_INPUT) holds now, DS buttons: what the port's own presses
+ * read besides the player's (a KH2 enemy's reaction command, runtime/kh2_enemies). */
+u16 khdays_input_script_buttons(void);
 
 /* The stylus position on the lower screen, in pixels; 0 when not touching. */
 int khdays_input_touch(int *x, int *y);

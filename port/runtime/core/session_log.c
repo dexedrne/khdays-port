@@ -10,6 +10,7 @@
 #include "../../host/app/sync.h"
 #ifndef _WIN32
 #include <sys/stat.h>
+#include <unistd.h>
 #endif
 
 static FILE *file;
@@ -21,9 +22,38 @@ static u32 marks;
 static volatile LONG wanted;   /* the settings ask for it */
 static int opened_for_setting; /* this log was opened because they did */
 
+/* The port's own messages (stderr) when nothing takes them -- the game opened from its shortcut has no
+ * console, and a stop of the port's (an update returning no function, a register it does not model, the
+ * sound driver's) says why only there, the session log just ending -- go to stderr-<the log's time>.log
+ * beside it (buffered: exit(), which those stops call, writes the buffer out). Run from a console or with
+ * stderr redirected, they go where they went. 1 when they were sent to `path`. */
+static int keep_stderr(const char *path)
+{
+#ifdef _WIN32
+    static int done;
+    const HANDLE h = GetStdHandle(STD_ERROR_HANDLE);
+    if (done) {
+        return 0;
+    }
+    done = 1;
+    if (h != NULL && h != INVALID_HANDLE_VALUE && GetFileType(h) != FILE_TYPE_UNKNOWN) {
+        return 0;
+    }
+    if (freopen(path, "w", stderr) == NULL) {
+        return 0;
+    }
+    setvbuf(stderr, NULL, _IOFBF, 16384);
+    return 1;
+#else
+    /* stderr always goes somewhere here (the terminal, the phone's console): left where it goes */
+    (void)path;
+    return 0;
+#endif
+}
+
 static void open_now(void)
 {
-    char path[160];
+    char path[160], err_path[160];
     struct tm now;
     time_t stamp = time(NULL);
 #ifdef _WIN32
@@ -55,8 +85,38 @@ static void open_now(void)
     }
     QueryPerformanceFrequency(&frequency);
     QueryPerformanceCounter(&started);
+    {
+        char err_name[48];
+        if (!strftime(err_name, sizeof(err_name), "stderr-%Y%m%d-%H%M%S.log", &now)) {
+            err_name[0] = '\0';
+        }
+        snprintf(err_path, sizeof(err_path), "%s/logs/%s", folder, err_name);
+    }
+    const int kept = keep_stderr(err_path);
     fprintf(stderr, "log: this session's log is %s (F12 marks it)\n", path);
     fprintf(file, "khdays-native session log, %s\n", timestamp);
+#ifdef _WIN32
+    {
+        MEMORYSTATUSEX memory;
+        memory.dwLength = sizeof(memory);
+        if (GlobalMemoryStatusEx(&memory)) {
+            fprintf(file, "memory: the PC has %llu MB, %llu MB of them free\n",
+                    (unsigned long long)(memory.ullTotalPhys >> 20), (unsigned long long)(memory.ullAvailPhys >> 20));
+        }
+    }
+#else
+    {
+        /* what the device has; how much of it is free is not asked for here */
+        const long pages = sysconf(_SC_PHYS_PAGES), page = sysconf(_SC_PAGESIZE);
+        if (pages > 0 && page > 0) {
+            fprintf(file, "memory: the device has %llu MB\n",
+                    (unsigned long long)pages * (unsigned long long)page >> 20);
+        }
+    }
+#endif
+    if (kept) {
+        fprintf(file, "log: the port's messages (stderr, its stops' reasons among them) go to %s\n", err_path);
+    }
     fflush(file);
 }
 
@@ -148,6 +208,11 @@ void khdays_log_mark(void)
     fflush(file);
     ReleaseSRWLockExclusive(&lock);
     fprintf(stderr, "log: mark %u\n", marks);
+}
+
+u32 khdays_log_marks(void)
+{
+    return marks;
 }
 
 void khdays_log_close(void)

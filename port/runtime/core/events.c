@@ -9,15 +9,50 @@
 #include "../display/display.h"
 #include "../input/input.h"
 #include "session_log.h"
+#include "phases.h"
 #include "../movies/video.h"
 #include "../net/net_session.h"
 #include "../sound/sound_bridge.h"
+#include "../sound/room_place.h"
 #include "runtime.h"
 #include "../../gfx/g3d.h"
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#ifdef _WIN32
+#include <windows.h>
+#elif defined(__APPLE__)
+#include <TargetConditionals.h>
+#if TARGET_OS_IPHONE
+#include <os/proc.h>
+#endif
+#else
+#include <unistd.h>
+#endif
+
+/* The memory free now, in MB; 0 where the system does not say. (A PC short of it pages; a phone ends
+ * the app: os_proc_available_memory is what the app may still take before that.) */
+static unsigned long long memory_free_mb(void)
+{
+#ifdef _WIN32
+    MEMORYSTATUSEX memory;
+    memory.dwLength = sizeof(memory);
+    if (!GlobalMemoryStatusEx(&memory)) {
+        memory.ullAvailPhys = 0;
+    }
+    return (unsigned long long)(memory.ullAvailPhys >> 20);
+#elif defined(__APPLE__)
+#if TARGET_OS_IPHONE
+    return (unsigned long long)os_proc_available_memory() >> 20;
+#else
+    return 0;
+#endif
+#else
+    const long pages = sysconf(_SC_AVPHYS_PAGES), size = sysconf(_SC_PAGESIZE);
+    return pages > 0 && size > 0 ? (unsigned long long)pages * (unsigned long long)size >> 20 : 0;
+#endif
+}
 
 static u64 last_update;
 static u64 alarm_at; /* the cycle timer 1 would overflow at (khdays_alarm_set_after) */
@@ -174,6 +209,7 @@ void khdays_events_update(void)
             khdays_display_vblank(vblank_count);
         }
         khdays_input_frame(vblank_count + 1);
+        khdays_room_place_frame(); /* a room's music: where the player is */
         if (IO16(0x004) & 0x0008) { /* DISPSTAT: VBlank IRQ enabled */
             if (IO32(0x214) & 1u) {
                 ++timing_merged; /* the last VBlank's interrupt is not taken yet: one handler serves both */
@@ -190,6 +226,7 @@ void khdays_events_update(void)
             }
         }
         khdays_arm7_frame();
+        khdays_clock_vblank(next_vblank); /* the screen's lock */
         ++vblank_count;
         next_vblank += KHDAYS_CYCLES_PER_FRAME;
         if (vblank_count % 600 == 0 && khdays_timing_on()) {
@@ -239,8 +276,9 @@ static void profile_wait(u64 enter)
                 waits, busy * 1000.0 / KHDAYS_CLOCK_HZ, waited * 1000.0 / KHDAYS_CLOCK_HZ,
                 longest * 1000.0 / KHDAYS_CLOCK_HZ);
         busy = waited = waits = longest = 0;
-        khdays_files_second(); /* the file reads of that second */
-        khdays_video_second(); /* the movie frames of that second */
+        khdays_files_second();  /* the file reads of that second */
+        khdays_video_second();  /* the movie frames of that second */
+        khdays_phases_second(); /* the frame's phases in that second */
         report_at = enter + KHDAYS_CLOCK_HZ;
     }
 }
@@ -289,17 +327,32 @@ static void frame_pace(void)
 }
 
 /* The CPU halted until an interrupt (OS_Halt, SWI Halt, the RTC busy-wait): runs time forward to the
- * next event, presents finished frames, and returns once the interrupt line is up. */
+ * next event, presents finished frames, and returns once the interrupt line is up -- or, with `stop`,
+ * once it says so (another thread woke the wait: khdays_clock_wake). */
+static void wait_for_interrupt(int (*stop)(void));
+
 void khdays_runtime_wait(void)
+{
+    wait_for_interrupt(NULL);
+}
+
+void khdays_runtime_wait_or(int (*stop)(void))
+{
+    wait_for_interrupt(stop);
+}
+
+static void wait_for_interrupt(int (*stop)(void))
 {
     static u64 log_wait_end;
     const u64 enter = khdays_clock_cycles();
     profile_wait(enter);
     if (log_wait_end != 0 && enter - log_wait_end > KHDAYS_CLOCK_HZ / 20 && khdays_log_on()) {
         /* the session log: over 50 ms without a wait (so without a frame), and in which scene */
+        /* the memory free then: a PC short of it pages, and the game's thread waits on the disk */
         khdays_files_log_reads();
-        khdays_log("stall: %.0f ms without a wait, scene %u", (enter - log_wait_end) * 1000.0 / KHDAYS_CLOCK_HZ,
-                   *(const volatile u32 *)KHDAYS_W(0x0204bdb0));
+        khdays_log("stall: %.0f ms without a wait, scene %u, %llu MB of memory free",
+                   (enter - log_wait_end) * 1000.0 / KHDAYS_CLOCK_HZ, *(const volatile u32 *)KHDAYS_W(0x0204bdb0),
+                   memory_free_mb());
     }
     for (;;) {
         khdays_events_update();
@@ -315,6 +368,9 @@ void khdays_runtime_wait(void)
             }
             log_wait_end = khdays_clock_cycles();
             khdays_irq_deliver();
+            return;
+        }
+        if (stop != NULL && stop()) {
             return;
         }
         khdays_clock_sleep_until_or_woken(next_event());

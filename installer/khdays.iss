@@ -1,4 +1,4 @@
-﻿; The port's installer (README.md beside this file). Built by build_installer.py, which defines
+; The port's installer (README.md beside this file). Built by build_installer.py, which defines
 ; Version (VERSION, and the commit when not at its tag) and Stage (the folder of the files to install).
 ;
 ; The install has the repository's layout at its root (installer/, tools/ beside data/, mods/,
@@ -110,7 +110,7 @@ var
   HelperReady: Boolean;
   DataOk: Boolean;
   HdPage: TInputQueryWizardPage;
-  HdMenus, HdVideos: TNewCheckBox;
+  HdMenus, HdKh2, HdVideos: TNewCheckBox;
   HdStatus: TNewStaticText;
   SteamPage: TWizardPage;
   SteamAdd: TNewCheckBox;
@@ -286,14 +286,16 @@ begin
     RomStatus.Caption := CustomMessage('RomCheckFailed');
 end;
 
-{ ---- The HD collections: the HD menus and HUD (both), the HD videos (1.5+2.5) ---- }
+{ ---- The HD collections: the HD menus and HUD (both), KH2's models and mods, the HD videos (1.5+2.5) ---- }
 
 procedure HdChanged(Sender: TObject);
 begin
   { a choice whose collection is not given is unavailable; its caption says what it needs }
   HdMenus.Enabled := (Trim(HdPage.Values[0]) <> '') and (Trim(HdPage.Values[1]) <> '');
+  HdKh2.Enabled := Trim(HdPage.Values[0]) <> '';
   HdVideos.Enabled := Trim(HdPage.Values[0]) <> '';
   if not HdMenus.Enabled then HdMenus.Checked := False;
+  if not HdKh2.Enabled then HdKh2.Checked := False;
   if not HdVideos.Enabled then HdVideos.Checked := False;
 end;
 
@@ -307,7 +309,7 @@ begin
 end;
 
 { The Browse button beside a folder (its Tag says which): an empty one starts beside the other
-  collection (Steam's and the Epic Games Store's keep both in one library), else in Program Files }
+  collection (Steam's, the Epic Games Store's and the Xbox app's keep both in one library), else in Program Files }
 procedure HdBrowse(Sender: TObject);
 var
   Folder: String;
@@ -321,9 +323,17 @@ begin
     HdPage.Values[TNewButton(Sender).Tag] := Folder;
 end;
 
+{ Whether a folder still holds a collection: its Image, or the Xbox app's game folder's Content\Image (the
+  helper takes that Content, setup_steps.py collection_path) }
+function HoldsCollection(Folder: String): Boolean;
+begin
+  Folder := RemoveBackslashUnlessRoot(Trim(Folder));
+  Result := (Folder <> '') and (DirExists(Folder + '\Image') or DirExists(Folder + '\Content\Image'));
+end;
+
 procedure CreateHdPage;
 var
-  Json, F1525, F28, Wanted: String;
+  Json, F1525, F28, Found, Wanted: String;
   I: Integer;
   Browse: TNewButton;
 begin
@@ -351,12 +361,19 @@ begin
   HdMenus.Width := HdPage.SurfaceWidth;
   HdMenus.Height := ScaleY(20);
   HdMenus.Caption := CustomMessage('HdMenus');
+  HdKh2 := TNewCheckBox.Create(HdPage);
+  HdKh2.Parent := HdPage.Surface;
+  HdKh2.Top := HdMenus.Top + HdMenus.Height + ScaleY(6);
+  HdKh2.Width := HdPage.SurfaceWidth;
+  HdKh2.Height := ScaleY(20);
+  HdKh2.Caption := CustomMessage('HdKh2');
   HdVideos := TNewCheckBox.Create(HdPage);
   HdVideos.Parent := HdPage.Surface;
-  HdVideos.Top := HdMenus.Top + HdMenus.Height + ScaleY(6);
+  HdVideos.Top := HdKh2.Top + HdKh2.Height + ScaleY(6);
   HdVideos.Width := HdPage.SurfaceWidth;
   HdVideos.Height := ScaleY(20);
   HdVideos.Caption := CustomMessage('HdVideos');
+  HdMenus.OnClick := @HdChanged;
   HdStatus := TNewStaticText.Create(HdPage);
   HdStatus.Parent := HdPage.Surface;
   HdStatus.Top := HdVideos.Top + HdVideos.Height + ScaleY(10);
@@ -365,44 +382,57 @@ begin
   HdStatus.WordWrap := True;
   HdStatus.Height := ScaleY(48);
   HdStatus.Caption := '';
-  { given on the command line, else last time's, else what Steam has }
+  { given on the command line, else last time's while it still holds the collection, else the one Steam, the
+    Epic Games Store or the Xbox app has: found whole or not, so the player has nothing to choose }
   F1525 := ExpandConstant('{param:HD1525|}');
   F28 := ExpandConstant('{param:HD28|}');
   if (F1525 = '') and (F28 = '') then begin
     F1525 := GetPreviousData('Hd1525', '');
     F28 := GetPreviousData('Hd28', '');
+    if not HoldsCollection(F1525) then F1525 := '';
+    if not HoldsCollection(F28) then F28 := '';
   end;
-  if (F1525 = '') and (F28 = '') and (RunHelper('find-collections', Json) = 0) then begin
-    F1525 := JsonValue(Json, 'folder_1525');
-    F28 := JsonValue(Json, 'folder_28');
-    if F1525 = 'null' then F1525 := '';
-    if F28 = 'null' then F28 := '';
+  if ((F1525 = '') or (F28 = '')) and (RunHelper('find-collections', Json) = 0) then begin
+    Found := JsonValue(Json, 'folder_1525');
+    if (F1525 = '') and (Found <> 'null') then F1525 := Found;
+    Found := JsonValue(Json, 'folder_28');
+    if (F28 = '') and (Found <> 'null') then F28 := Found;
   end;
   HdPage.Values[0] := F1525;
   HdPage.Values[1] := F28;
   HdPage.Edits[0].OnChange := @HdChanged;
   HdPage.Edits[1].OnChange := @HdChanged;
   HdChanged(nil);
-  Wanted := ExpandConstant('{param:HD|menus,videos}');
+  Wanted := ExpandConstant('{param:HD|menus,kh2,videos}');
   HdMenus.Checked := HdMenus.Enabled and (Pos('menus', Wanted) > 0);
+  HdKh2.Checked := HdKh2.Enabled and (Pos('kh2', Wanted) > 0);
   HdVideos.Checked := HdVideos.Enabled and (Pos('videos', Wanted) > 0);
+  HdChanged(nil);
 end;
 
 function CheckHd: Boolean;
 var
-  Json: String;
+  Json, Pieces: String;
 begin
   Result := True;
   HdStatus.Caption := CustomMessage('HdChecking');
   WizardForm.Refresh;
-  if (HdFolder(0) <> '') and (HdMenus.Checked or HdVideos.Checked) then
-    if RunHelper('check-collection 1.5+2.5 "' + HdFolder(0) + '"', Json) <> 0 then begin
+  { each collection checked for what the chosen pieces read of it: the videos alone ask the 1.5+2.5 only
+    for the theater's archive and the movies }
+  Pieces := '';
+  if HdMenus.Checked then Pieces := 'menus';
+  if HdVideos.Checked then begin
+    if Pieces <> '' then Pieces := Pieces + ',';
+    Pieces := Pieces + 'videos';
+  end;
+  if (HdFolder(0) <> '') and (Pieces <> '') then
+    if RunHelper('check-collection 1.5+2.5 "' + HdFolder(0) + '" --pieces ' + Pieces, Json) <> 0 then begin
       HdStatus.Caption := JsonValue(Json, 'message');
       Result := False;
       Exit;
     end;
   if (HdFolder(1) <> '') and HdMenus.Checked then
-    if RunHelper('check-collection 2.8 "' + HdFolder(1) + '"', Json) <> 0 then begin
+    if RunHelper('check-collection 2.8 "' + HdFolder(1) + '" --pieces menus', Json) <> 0 then begin
       HdStatus.Caption := JsonValue(Json, 'message');
       Result := False;
       Exit;
@@ -554,12 +584,15 @@ begin
   Result := (PageID = SteamPage.ID) and not SteamFound and not UnderWine;
 end;
 
-{ When the Steam page is shown the folder is chosen, so re-check whether the port is already in
-  Steam (a repair or an update), with that folder. }
+{ When the HD page is shown the folder is chosen: the Menu Overhaul may be made from the HD menus
+  already there. When the Steam page is, re-check whether the port is already in Steam (a repair or
+  an update), with that folder. }
 procedure CurPageChanged(CurPageID: Integer);
 var
   Json: String;
 begin
+  if (HdPage <> nil) and (CurPageID = HdPage.ID) then
+    HdChanged(nil);
   if (SteamPage <> nil) and (CurPageID = SteamPage.ID) then begin
     if RunHelper('steam-status --install "' + WizardDirValue + '"', Json) = 0 then begin
       SteamPresent := JsonValue(Json, 'present') = 'true';
@@ -654,18 +687,34 @@ begin
                                 ExpandConstant('{app}') + '\data\extracted', 329000000, Json) = 0;
     if not DataOk then
       SuppressibleMsgBox(CustomMessage('DataFailed') + #13#10#13#10 + JsonValue(Json, 'message'), mbError, MB_OK, IDOK);
-    if DataOk and (HdMenus.Checked or HdVideos.Checked) then begin
+    if DataOk and (HdMenus.Checked or HdKh2.Checked or HdVideos.Checked) then begin
       WizardForm.StatusLabel.Caption := CustomMessage('HdMaking');
       WizardForm.Refresh;
       Args := 'build-hd "' + ExpandConstant('{app}') + '"';
       if HdMenus.Checked then Args := Args + ' --menus';
+      if HdKh2.Checked then Args := Args + ' --models';
       if HdVideos.Checked then Args := Args + ' --videos';
       if HdFolder(0) <> '' then Args := Args + ' --1525 "' + HdFolder(0) + '"';
-      if HdMenus.Checked then Args := Args + ' --28 "' + HdFolder(1) + '"';
+      if HdMenus.Checked and (HdFolder(1) <> '') then Args := Args + ' --28 "' + HdFolder(1) + '"';
       if RunHelperIn(ExpandConstant('{app}'), Args, Json) <> 0 then
         SuppressibleMsgBox(CustomMessage('HdFailed') + #13#10#13#10 + JsonValue(Json, 'message'), mbError, MB_OK, IDOK)
       else if JsonValue(Json, 'missing') <> '' then
         { made but for some screens (a tool that failed): said, with where its error was kept }
+        SuppressibleMsgBox(JsonValue(Json, 'message'), mbInformation, MB_OK, IDOK);
+    end;
+    { the port's own mods put inside the HD PACK after the HD pieces: the Menu Overhaul (made from the HD menus'
+      pieces) with the HD menus, KH2's prizes, Dark Corridors and enemies and the Walk with KH2's models }
+    if DataOk and (HdMenus.Checked or HdKh2.Checked) then begin
+      WizardForm.StatusLabel.Caption := CustomMessage('ModsMaking');
+      WizardForm.Refresh;
+      Args := 'build-mods "' + ExpandConstant('{app}') + '"';
+      if HdMenus.Checked then Args := Args + ' --menu-overhaul';
+      if HdKh2.Checked then Args := Args + ' --walk --kh2-prizes --kh2-enemies';
+      Args := Args + ' --1525 "' + HdFolder(0) + '"';
+      if RunHelperIn(ExpandConstant('{app}'), Args, Json) <> 0 then
+        SuppressibleMsgBox(CustomMessage('ModsFailed') + #13#10#13#10 + JsonValue(Json, 'message'), mbError, MB_OK, IDOK)
+      else if JsonValue(Json, 'missing') <> '' then
+        { made but for one left out (the Menu Overhaul without the HD menus it is made from): said }
         SuppressibleMsgBox(JsonValue(Json, 'message'), mbInformation, MB_OK, IDOK);
     end;
     { the starting settings, when the install has none yet (a player's own are kept on an update);
