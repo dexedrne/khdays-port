@@ -78,6 +78,7 @@ const KhdaysSceneMap *khdays_scenes_map(void)
 static double opened_from = -1.0, opened_until = -1.0; /* the part asked for by the last opening */
 static double next_in, next_out;                       /* the fades set for the next opening */
 static double opened_in = -1.0, opened_out = -1.0;     /* the last opening's */
+static double says_length;                             /* the length the player says its videos have; 0: it does not */
 
 void khdays_hd_fades(double in, double out)
 {
@@ -103,6 +104,7 @@ int khdays_hd_open(const char *path, KhdaysHdInfo *info, char *why, size_t size)
     info->fps = 60.0;
     info->channels = 2;
     info->rate = 48000;
+    info->duration = says_length;
     return 1;
 }
 int khdays_hd_open_part(const char *path, double from, double until, KhdaysHdInfo *info, char *why, size_t size)
@@ -182,6 +184,17 @@ static void touch(const char *path)
     FILE *f = fopen(path, "wb");
     if (f != NULL) {
         fclose(f);
+    }
+}
+
+/* The video plays on for `ms` with the window polling as it does (every few milliseconds). */
+static int pause_selected_, pause_lit_, pause_language_;
+static void plays_on(int ms)
+{
+    const Uint64 until = SDL_GetTicks() + (Uint64)ms;
+    while (SDL_GetTicks() < until) {
+        khdays_movie_hd_poll();
+        SDL_Delay(10);
     }
 }
 
@@ -646,6 +659,124 @@ int main(void)
         SDL_RemovePath("data/cutscenes/cinematics/hd833.mp4");
         SDL_RemovePath("data/cutscenes/cinematics/hd834.mp4");
         SDL_RemovePath("data/cutscenes/cinematics/hd848.mp4");
+    }
+
+    /* a player that says how long its videos are (Apple's): a scene skipped after its movie's video is
+     * skipped only when that video played on well past the game's movie -- the theater's long one, not
+     * a file that holds the game's movie alone */
+    {
+        touch("data/cutscenes/cinematics/hd830.mp4");
+        says_length = 43.4; /* the movie alone: it ends first */
+        khdays_movie_hd_stream(1, "/mv/830.mods", 0);
+        CHECK(khdays_movie_hd_showing() && !khdays_movie_hd_last_shown("hd830"));
+        status_now = 1;
+        khdays_movie_hd_poll();
+        khdays_movie_hd_stopped();
+        CHECK(!khdays_movie_hd_showing() && !khdays_movie_hd_last_shown("hd830"));
+        khdays_movie_hd_game_buttons(0);
+        khdays_movie_hd_game_buttons(0);
+        khdays_movie_hd_stream(1, "/mv/830.mods", 0); /* the game's movie ends first, the video a moment after */
+        khdays_movie_hd_stopped();
+        CHECK(held());
+        status_now = 1;
+        khdays_movie_hd_poll();
+        CHECK(!khdays_movie_hd_showing() && !held() && !khdays_movie_hd_last_shown("hd830"));
+        khdays_movie_hd_game_buttons(0);
+        khdays_movie_hd_game_buttons(0);
+        says_length = 194.6; /* the theater's: it plays on long after the game's movie */
+        khdays_movie_hd_stream(1, "/mv/830.mods", 0);
+        khdays_movie_hd_stopped();
+        CHECK(held() && !khdays_movie_hd_last_shown("hd830"));
+        plays_on(3100);
+        status_now = 1;
+        khdays_movie_hd_poll();
+        CHECK(!khdays_movie_hd_showing() && !held() && khdays_movie_hd_last_shown("hd830"));
+        khdays_movie_hd_game_buttons(0);
+        khdays_movie_hd_game_buttons(0);
+
+        /* what counts is the video playing on, not the time passing: half a second of it and three under
+         * the pause over it (no poll counts there) is a video that ended with the game's movie */
+        says_length = 43.9;
+        khdays_movie_hd_stream(1, "/mv/830.mods", 0);
+        khdays_movie_hd_flags(8); /* its movie says it can be skipped: START pauses */
+        khdays_movie_hd_stopped();
+        CHECK(held());
+        plays_on(500);
+        khdays_movie_hd_host_buttons(0);
+        khdays_movie_hd_host_buttons(KHDAYS_KEY_START);
+        CHECK(khdays_movie_hd_movie_pause(&pause_selected_, &pause_lit_, &pause_language_) && hd_paused);
+        khdays_movie_hd_host_buttons(0);
+        plays_on(3100); /* (the window polls on under the pause) */
+        khdays_movie_hd_host_buttons(KHDAYS_KEY_START); /* Continue */
+        CHECK(!khdays_movie_hd_movie_pause(&pause_selected_, &pause_lit_, &pause_language_) && held() && !hd_paused);
+        khdays_movie_hd_host_buttons(0);
+        plays_on(300);
+        status_now = 1;
+        khdays_movie_hd_poll();
+        CHECK(!khdays_movie_hd_showing() && !held() && !khdays_movie_hd_last_shown("hd830"));
+        khdays_movie_hd_game_buttons(0);
+        khdays_movie_hd_game_buttons(0);
+
+        /* nor the time the game waits under the settings menu or for a gamepad (the clock's settings
+         * hold), nor time the window did not poll at all (the phone's app suspended) */
+        khdays_movie_hd_stream(1, "/mv/830.mods", 0);
+        khdays_movie_hd_stopped();
+        plays_on(400);
+        khdays_clock_hold(KHDAYS_HOLD_SETTINGS, 1);
+        plays_on(1700);
+        khdays_clock_hold(KHDAYS_HOLD_SETTINGS, 0);
+        SDL_Delay(1700); /* no poll */
+        plays_on(400);
+        status_now = 1;
+        khdays_movie_hd_poll();
+        CHECK(!khdays_movie_hd_showing() && !khdays_movie_hd_last_shown("hd830"));
+        khdays_movie_hd_game_buttons(0);
+        khdays_movie_hd_game_buttons(0);
+
+        /* the theater's long one skipped while the game is held for it, three seconds on: it had played
+         * on past the game's movie, so the scene it went on into is skipped (as with a player that
+         * does not say its videos' length) */
+        says_length = 194.6;
+        khdays_movie_hd_stream(1, "/mv/830.mods", 0);
+        khdays_movie_hd_flags(8);
+        khdays_movie_hd_stopped();
+        CHECK(held() && !khdays_movie_hd_last_shown("hd830"));
+        plays_on(3100);
+        khdays_movie_hd_host_buttons(0);
+        khdays_movie_hd_host_buttons(KHDAYS_KEY_START);
+        khdays_movie_hd_host_buttons(0);
+        khdays_movie_hd_host_buttons(KHDAYS_KEY_DOWN);
+        khdays_movie_hd_host_buttons(0);
+        khdays_movie_hd_host_buttons(KHDAYS_KEY_A); /* the pause's Skip */
+        CHECK(!khdays_movie_hd_showing() && !held() && khdays_movie_hd_last_shown("hd830"));
+        khdays_movie_hd_host_buttons(0);
+        khdays_movie_hd_game_buttons(0);
+        khdays_movie_hd_game_buttons(0);
+        /* and skipped at once, it had not */
+        khdays_movie_hd_stream(1, "/mv/830.mods", 0);
+        khdays_movie_hd_flags(8);
+        khdays_movie_hd_stopped();
+        plays_on(300);
+        khdays_movie_hd_host_buttons(0);
+        khdays_movie_hd_host_buttons(KHDAYS_KEY_START);
+        khdays_movie_hd_host_buttons(0);
+        khdays_movie_hd_host_buttons(KHDAYS_KEY_DOWN);
+        khdays_movie_hd_host_buttons(0);
+        khdays_movie_hd_host_buttons(KHDAYS_KEY_A);
+        CHECK(!khdays_movie_hd_showing() && !khdays_movie_hd_last_shown("hd830"));
+        khdays_movie_hd_host_buttons(0);
+        khdays_movie_hd_game_buttons(0);
+        khdays_movie_hd_game_buttons(0);
+        says_length = 0.0; /* a player that does not say (Windows'): shown is shown, as before */
+        khdays_movie_hd_stream(1, "/mv/830.mods", 0);
+        CHECK(khdays_movie_hd_showing() && khdays_movie_hd_last_shown("hd830"));
+        status_now = 1;
+        khdays_movie_hd_poll();
+        khdays_movie_hd_stopped();
+        CHECK(!khdays_movie_hd_showing() && khdays_movie_hd_last_shown("hd830"));
+        khdays_movie_hd_game_buttons(0);
+        khdays_movie_hd_game_buttons(0);
+        SDL_RemovePath("data/cutscenes/cinematics/hd830.mp4");
     }
 
     /* failing to open: the game's movie, said once */

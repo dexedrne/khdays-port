@@ -287,6 +287,9 @@ static void take_mod_notices(void)
  * KHDAYS_PICTURE_LOG pictures; saved as PNGs to KHDAYS_SHOT_WINDOW (on the phone: saves/logs). */
 static unsigned picture_count;
 static int picture_report_due;
+#ifdef KHDAYS_MOBILE
+static int pad_lost; /* (the wait for a gamepad, below) */
+#endif
 static int title_menu_shown; /* the newest frame's situation: the title's menu shows (the pad script's anchor) */
 
 static void picture_report(SDL_Window *window, SDL_Renderer *renderer)
@@ -336,9 +339,12 @@ static void picture_report(SDL_Window *window, SDL_Renderer *renderer)
     }
 #endif
 #ifdef KHDAYS_MOBILE
-    fprintf(stderr, "picture %u: touch keys %s (settings %s, a controller %s)\n", n,
-            !khdays_settings_is_open() && !khdays_devices_gamepad() ? "drawn" : "not drawn",
-            khdays_settings_is_open() ? "open" : "closed", khdays_devices_gamepad() ? "connected" : "not connected");
+    fprintf(stderr, "picture %u: touch keys %s (settings %s, a controller %s), their top at y %.0f (window pixels)\n", n,
+            !khdays_settings_is_open() && !khdays_devices_gamepad() && !pad_lost ? "drawn" : "not drawn",
+            khdays_settings_is_open() ? "open" : "closed",
+            khdays_devices_gamepad() ? "connected" : pad_lost ? "not connected: the game waits for one" : "not connected",
+            (double)(khdays_mobile_keys_top(window) * SDL_GetWindowPixelDensity(window)));
+    fprintf(stderr, "picture %u: layout %s\n", n, khdays_present_layout_note());
 #endif
     SDL_GetRenderLogicalPresentation(renderer, &lw, &lh, &mode);
     SDL_SetRenderLogicalPresentation(renderer, 0, 0, SDL_LOGICAL_PRESENTATION_DISABLED);
@@ -430,6 +436,39 @@ static void toggle_lower_view(void)
  * play from then on). Not in a multiplayer session, whose other players' games go on. */
 static int pad_lost;
 static int pad_had; /* a gamepad was playing */
+static int settings_stopped;
+
+/* The phone's app in the background (the phone locked, another app in front: from "will enter
+ * background" until "did enter foreground"): an HD video and a monologue's voice wait there, as under
+ * the settings menu. iOS takes a hidden app's decoding session away, so a video left playing would
+ * read into failures until the app is suspended (host/movies/movie_hd_apple.m), and its clock would
+ * count the time away as played. They go on at the return unless something else still holds them: the
+ * settings menu, the wait for a gamepad, the video's own pause. */
+static int app_background;
+
+static void app_background_set(int away)
+{
+    if (away == app_background) {
+        return;
+    }
+    app_background = away;
+    if (away) {
+        khdays_hd_pause(1);
+        khdays_hd_voice_pause(1);
+    } else if (!settings_stopped && !pad_lost) {
+        if (!khdays_movie_hd_course_paused()) {
+            khdays_hd_pause(0);
+        }
+        khdays_hd_voice_pause(0);
+    }
+    fprintf(stderr, "window: the app is %s: an HD video and a voice %s\n", away ? "in the background" : "back in front",
+            away                             ? "wait"
+            : settings_stopped               ? "still wait under the settings menu"
+            : pad_lost                       ? "still wait for a gamepad"
+            : khdays_movie_hd_course_paused() ? "go on (a video under its own pause stays paused)"
+                                              : "go on");
+    fflush(stderr);
+}
 
 static void pad_lost_set(int lost)
 {
@@ -439,10 +478,10 @@ static void pad_lost_set(int lost)
     pad_lost = lost;
     khdays_clock_hold(KHDAYS_HOLD_SETTINGS, lost);
     khdays_sound_output_pause(lost);
-    if (lost || !khdays_movie_hd_course_paused()) {
-        khdays_hd_pause(lost); /* (not a video its course keeps paused) */
+    if (lost || (!khdays_movie_hd_course_paused() && !app_background)) {
+        khdays_hd_pause(lost); /* (not a video its course keeps paused, nor with the app in the background) */
     }
-    khdays_hd_voice_pause(lost);
+    khdays_hd_voice_pause(lost || app_background);
     fprintf(stderr, "host: %s at game frame %u\n",
             lost ? "the gamepad is gone: the game waits for one, or for a touch" : "the game goes on",
             khdays_events_vblank_count());
@@ -518,9 +557,64 @@ static void redraw(SDL_Window *window, SDL_Renderer *renderer)
     present_picture(renderer);
 }
 
+#ifdef KHDAYS_MOBILE
+/* The phone turned, folded or unfolded (its window's size, pixel size, safe area or the display's
+ * orientation changed): the picture is laid out anew at once, with nothing restarted -- the game, its
+ * sound and what is held on a gamepad or the touch keys go on. Upright, the game's picture goes across
+ * the safe area's width at its top and the lower-screen view below it; lying, it fills the height in
+ * the middle (host/render/gpu_present.c). The game's 3D gets its new width with its next frame. Each
+ * change is said on the console with the new layout; a picture report follows a few pictures later.
+ *
+ * `force`: laid out and drawn anew even with nothing changed since the last time -- the return to the
+ * foreground. A turn or fold made while the app was hidden may have been taken here already with both
+ * its pictures skipped (SDL presents nothing for a minimized window, and its backbuffer gets its new
+ * size only in a present), so the first picture after the return would go stretched into the old
+ * backbuffer and stay, the game standing still: two pictures again, whatever was noted. */
+static void relaid(SDL_Window *window, SDL_Renderer *renderer, const char *why, int force)
+{
+    static int had[8] = {-1, -1, -1, -1, -1, -1, -1, -1};
+    static unsigned turns;
+    int now[8] = {0, 0, 0, 0, 0, 0, 0, 0};
+    SDL_Rect safe = {0, 0, 0, 0};
+    SDL_GetWindowSize(window, &now[0], &now[1]);
+    SDL_GetWindowSizeInPixels(window, &now[2], &now[3]);
+    khdays_mobile_safe(window, &safe);
+    now[4] = safe.x;
+    now[5] = safe.y;
+    now[6] = safe.w;
+    now[7] = safe.h;
+    if (!force && memcmp(now, had, sizeof(now)) == 0) {
+        return; /* (a turn comes as several events: the size, the pixels, the safe area, the display) */
+    }
+    memcpy(had, now, sizeof(now));
+    khdays_present_resized();
+    tell_game();
+    if (force) {
+        picture_report_due = 2; /* the second of the two below: the one in the renewed backbuffer */
+    }
+    /* twice: the first picture after a change of size still goes to SDL's old backbuffer, and a game
+     * that stands still (the settings menu, the wait for a gamepad) sends no frame to draw another */
+    redraw(window, renderer);
+    redraw(window, renderer);
+    fprintf(stderr,
+            "window: orientation %s after %s (change %u, picture %u, game frame %u): window %dx%d, %dx%d pixels, "
+            "safe area %d,%d %dx%d; layout %s\n",
+            khdays_mobile_portrait(window) ? "portrait" : "landscape", why, ++turns, picture_count,
+            khdays_events_vblank_count(), now[0], now[1], now[2], now[3], safe.x, safe.y, safe.w, safe.h,
+            khdays_present_layout_note());
+    fflush(stderr);
+    if (!force) {
+        picture_report_due = 12; /* once the game's frames have the new width */
+    }
+}
+#endif
+
 /* Whether the open settings menu paused the game. In a multiplayer session
  * it does not, since the other players' games go on. */
 static int settings_stopped;
+#ifndef KHDAYS_MOBILE
+enum { app_background = 0 }; /* (the phone's: app_background_set) */
+#endif
 
 /* Keeps the subtitles the new game's question chose (runtime/menus/newgame.h): in the profile, the
  * picture's settings and the settings file. */
@@ -694,10 +788,10 @@ static void close_settings(void)
     if (settings_stopped) {
         khdays_clock_hold(KHDAYS_HOLD_SETTINGS, 0);
         khdays_sound_output_pause(0);
-        if (!khdays_movie_hd_course_paused()) {
-            khdays_hd_pause(0); /* not a video its course keeps paused (a pause over it) */
+        if (!khdays_movie_hd_course_paused() && !app_background) {
+            khdays_hd_pause(0); /* not a video its course keeps paused (a pause over it), nor in the background */
         }
-        khdays_hd_voice_pause(0);
+        khdays_hd_voice_pause(app_background);
         settings_stopped = 0;
     }
 }
@@ -858,9 +952,10 @@ static int host_thread(void *unused)
             /* the script's clock is the game's VBlanks, and while the game waits for a gamepad (its
              * time stopped) the wall's clock at 60 a second, so that a script can bring one back */
             static Uint64 waited_ms, waiting_since;
-            if (pad_lost && waiting_since == 0) {
+            const int stands = pad_lost || settings_stopped; /* (so too under the settings menu's pause) */
+            if (stands && waiting_since == 0) {
                 waiting_since = SDL_GetTicks();
-            } else if (!pad_lost && waiting_since != 0) {
+            } else if (!stands && waiting_since != 0) {
                 waited_ms += SDL_GetTicks() - waiting_since;
                 waiting_since = 0;
             }
@@ -868,6 +963,14 @@ static int host_thread(void *unused)
                                         (unsigned)((waited_ms + (waiting_since ? SDL_GetTicks() - waiting_since : 0)) *
                                                    60 / 1000),
                                     khdays_runtime_scene(), title_menu_shown);
+            if (khdays_pad_script_take_report()) {
+                /* the script's "!report": the next picture is reported -- drawn now, when the game stands
+                 * still and sends none */
+                picture_report_due = 1;
+                if (pad_lost || settings_stopped) {
+                    redraw(window, renderer);
+                }
+            }
         }
 #endif
         mouse_follow(window);
@@ -983,10 +1086,19 @@ static int host_thread(void *unused)
                     names[event.type - SDL_EVENT_TERMINATING], (unsigned long long)SDL_GetWindowFlags(window),
                     picture_count);
             fflush(stderr);
+#ifdef KHDAYS_MOBILE
+            if (event.type == SDL_EVENT_WILL_ENTER_BACKGROUND || event.type == SDL_EVENT_DID_ENTER_BACKGROUND) {
+                app_background_set(1);
+            } else if (event.type == SDL_EVENT_DID_ENTER_FOREGROUND) {
+                app_background_set(0);
+                relaid(window, renderer, "the return to the foreground", 1);
+            }
+#else
             if (event.type == SDL_EVENT_DID_ENTER_FOREGROUND) {
                 picture_report_due = 2;
                 redraw(window, renderer);
             }
+#endif
             continue;
         }
         if (event.type >= SDL_EVENT_WINDOW_FIRST && event.type <= SDL_EVENT_WINDOW_LAST &&
@@ -1000,14 +1112,36 @@ static int host_thread(void *unused)
                         (int)event.window.data1, (int)event.window.data2, picture_count);
                 fflush(stderr);
             }
+#ifndef KHDAYS_MOBILE /* (the phone's: after the picture is laid out anew, relaid) */
             if (event.type == SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED || event.type == SDL_EVENT_WINDOW_SAFE_AREA_CHANGED) {
                 picture_report_due = 2;
             }
+#endif
         }
+#ifdef KHDAYS_MOBILE
+        if (event.type == SDL_EVENT_DISPLAY_ORIENTATION) {
+            static const char *const names[] = {"unknown", "landscape", "landscape flipped", "portrait",
+                                                "portrait flipped"};
+            fprintf(stderr, "window: the display's orientation: %s (%d) after picture %u\n",
+                    event.display.data1 >= 0 && event.display.data1 < 5 ? names[event.display.data1] : "?",
+                    (int)event.display.data1, picture_count);
+            fflush(stderr);
+        }
+        if (event.type == SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED || event.type == SDL_EVENT_WINDOW_SAFE_AREA_CHANGED ||
+            event.type == SDL_EVENT_WINDOW_RESIZED || event.type == SDL_EVENT_DISPLAY_ORIENTATION) {
+            relaid(window, renderer,
+                   event.type == SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED  ? "a pixel-size change"
+                   : event.type == SDL_EVENT_WINDOW_SAFE_AREA_CHANGED ? "a safe-area change"
+                   : event.type == SDL_EVENT_WINDOW_RESIZED           ? "a size change"
+                                                                      : "a display turn",
+                   0);
+        }
+#else
         if (event.type == SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED) {
             khdays_present_resized(); /* settings set to "window" follow the new size */
             tell_game();
         }
+#endif
         if (event.type == SDL_EVENT_RENDER_DEVICE_RESET || event.type == SDL_EVENT_RENDER_DEVICE_LOST) {
             int renewed;
             khdays_ui_font_forget(); /* free its textures before their renderer goes */
@@ -1049,6 +1183,8 @@ static int host_thread(void *unused)
 #ifdef KHDAYS_MOBILE
             if (khdays_devices_take_pad_change()) {
                 pad_had = khdays_devices_gamepad() != NULL; /* under the menu's own pause: no wait for a gamepad */
+                khdays_present_resized(); /* (the touch keys come or go: where the lower-screen view fits) */
+                tell_game();
             }
 #endif
             if (khdays_settings_handle(&event, window)) {
@@ -1107,6 +1243,10 @@ static int host_thread(void *unused)
 #ifdef KHDAYS_MOBILE
             pad_lost_set(khdays_devices_gamepad() == NULL && pad_had && !khdays_net_in_session());
             pad_had = khdays_devices_gamepad() != NULL;
+            /* the touch keys come or go, and with them where the lower-screen view fits: played by touch
+             * it stays clear of them (host/render/gpu_present.c, view_below) */
+            khdays_present_resized();
+            tell_game();
 #endif
             redraw(window, renderer);
         }

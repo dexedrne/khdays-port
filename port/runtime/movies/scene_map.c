@@ -8,6 +8,7 @@
 #include "scene_map.h"
 
 #include <ctype.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -316,6 +317,34 @@ const KhdaysSceneEntry *khdays_scene_map_find(const KhdaysSceneMap *map, const c
         }
     }
     return NULL;
+}
+
+int khdays_scene_map_movie(const KhdaysSceneMap *map, const char *movie, int index, char *stem, size_t size,
+                           double *from, double *until)
+{
+    char key[80];
+    const KhdaysSceneEntry *e;
+    snprintf(key, sizeof(key), "mv#%s", movie);
+    e = khdays_scene_map_find(map, key);
+    *from = *until = 0.0;
+    if (size > 0) {
+        stem[0] = '\0';
+    }
+    if (e != NULL && e->off) {
+        return 0;
+    }
+    if (e == NULL || e->stem_count == 0) {
+        if (index == 0) {
+            snprintf(stem, size, "hd%s", movie);
+        }
+        return 1;
+    }
+    if (index >= 0 && index < e->stem_count) {
+        snprintf(stem, size, "%s", e->stems[index]);
+        *from = e->from != NULL ? e->from[index] : 0.0;
+        *until = e->until != NULL ? e->until[index] : 0.0;
+    }
+    return e->stem_count;
 }
 
 void khdays_scene_map_free(KhdaysSceneMap *map)

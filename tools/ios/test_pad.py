@@ -48,7 +48,8 @@ def play(exe, rom, script, size, seconds, extra=()):
     """Runs the game until the script is done (and a moment more); returns its log's lines."""
     env = dict(os.environ, KHDAYS_ROM=str(rom), SDL_AUDIODRIVER="dummy", SDL_VIDEODRIVER="offscreen",
                KHDAYS_TEST_WINDOW="1", KHDAYS_NET_SERVER="", KHDAYS_MOBILE_WINDOW=size, KHDAYS_MOBILE_LAYOUT="2",
-               VK_DRIVER_FILES=str(LAVAPIPE), KHDAYS_TRACE_SITUATION="1", KHDAYS_PAD_SCRIPT=script)
+               VK_DRIVER_FILES=str(LAVAPIPE), KHDAYS_TRACE_SITUATION="1", KHDAYS_PAD_SCRIPT=script,
+               KHDAYS_TRACE_MOVIE_HD="1")
     env.update(extra)
     for name in ("KHDAYS_HEADLESS", "KHDAYS_SETTINGS", "KHDAYS_INPUT"):
         env.pop(name, None)
@@ -115,8 +116,21 @@ def title_case(exe, rom):
     at = c.expect("a second gamepad connects without taking over", r"gamepad connected: .*type PS5[^;]*Share/Capture (?:yes|no)\); 2 connected", at)
     at = c.expect("picked up, it plays", r"gamepad now playing: .*type PS5", at)
     at = c.expect("its touch pad puts the view away", r"lower view: off", at)
-    at = c.expect("the app goes to the background", r"window: the app: did enter background", at)
-    at = c.expect("and comes back", r"window: the app: did enter foreground", at)
+    # the app sent to the background: an HD video and a monologue's voice are paused at once (this build
+    # has no player: its stand-in says what it is asked), and go on at the return
+    at = c.expect("the app goes to the background", r"window: the app: will enter background", at)
+    at = c.expect("an HD video is paused at once", r"movie hd \(no player in this build\): video pause asked", at)
+    at = c.expect("and a voice", r"movie hd \(no player in this build\): voice pause asked", at)
+    at = c.expect("and it is said", r"window: the app is in the background: an HD video and a voice wait", at)
+    away = c.expect("it is in the background", r"window: the app: did enter background", at)
+    at = c.expect("and comes back", r"window: the app: did enter foreground", away)
+    c.check("nothing resumes them while it is away",
+            not any("resume asked" in line for line in c.lines[away:at]))
+    at = c.expect("the HD video goes on at the return", r"movie hd \(no player in this build\): video resume asked", at)
+    at = c.expect("and the voice", r"movie hd \(no player in this build\): voice resume asked", at)
+    at = c.expect("and it is said", r"window: the app is back in front: an HD video and a voice go on", at)
+    c.check("the gamepad's loss paused them before, and its return let them go on",
+            c.index(r"video pause asked") < c.index(r"video resume asked") < away)
     at = c.expect("a picture is drawn and read back after the return", r"^picture \d+: \d+x\d+ read back, [\d.]+% lit", at)
     at = c.expect("Cross is DS A after that", r"gamepad button south \(a\) -> a$", at)
     # the title's trace: its page (bits 32-39) leaves 0 when NEW GAME is entered

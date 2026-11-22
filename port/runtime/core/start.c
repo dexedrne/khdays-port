@@ -6,6 +6,7 @@
 #include "events.h"
 #include "io.h"
 #include "../movies/movie_hd.h"
+#include "../movies/scenes.h"
 #include "../net/net_session.h"
 #include "rom.h"
 #include "runtime.h"
@@ -249,6 +250,15 @@ int main(int argc, char **argv)
     }
     khdays_log_open();
     khdays_log("%s", working_folder_note);
+#if defined(__APPLE__)
+    /* the phone's console is all there is to tell why a video did not show: which of the player's HD
+     * videos are there, said once at the start */
+    khdays_scenes_videos_report();
+#else
+    if (getenv("KHDAYS_HD_VIDEOS_REPORT") != NULL) {
+        khdays_scenes_videos_report();
+    }
+#endif
     khdays_log("the game's memory at %p (its references from there)", (void *)khdays_window);
     {
         /* The game runs on a context whose stack is in its memory (memory.c), so its locals are reached

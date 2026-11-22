@@ -410,6 +410,14 @@ else()
     set(native_host_sources host/movies/movie_hd_unavailable.c runtime/sound/dump_path_posix.cpp runtime/core/clock_sdl.c host/app/context_posix.c host/app/context_arm64.S
         host/app/files_posix.c host/app/cartridge.c host/net/net_posix.c)
 endif()
+if(APPLE)
+    # iOS and macOS play the player's HD videos: the shared player (host/movies/movie_hd_core.c) over
+    # AVFoundation's decoder (movie_hd_apple.m; no ARC, as tools/ios/ios_main.m is compiled).
+    enable_language(OBJC)
+    list(REMOVE_ITEM native_host_sources host/movies/movie_hd_unavailable.c)
+    list(APPEND native_host_sources host/movies/movie_hd_core.c host/movies/movie_hd_apple.m)
+    set_source_files_properties(host/movies/movie_hd_apple.m PROPERTIES COMPILE_OPTIONS "-fno-objc-arc")
+endif()
 add_executable(khdays-native
     ${native_host_sources}
     $<TARGET_OBJECTS:khdays-game>
@@ -584,6 +592,11 @@ else()
 endif()
 target_link_libraries(khdays-native PRIVATE khdays-lua)
 target_link_libraries(khdays-native PRIVATE khdays-gfx khdays-gpu khdays-sound khdays-host-input SDL3::SDL3)
+if(APPLE)
+    # AVFoundation's decoder of the HD videos (host/movies/movie_hd_apple.m)
+    target_link_libraries(khdays-native PRIVATE "-framework AVFoundation" "-framework CoreMedia" "-framework CoreVideo"
+                          "-framework CoreGraphics" "-framework Foundation")
+endif()
 if(WIN32)
 target_link_libraries(khdays-native PRIVATE dbghelp winmm delayimp
                       mfplat mfreadwrite mfuuid ole32 ws2_32 iphlpapi advapi32 winhttp)
@@ -616,6 +629,7 @@ if(KHDAYS_MOBILE_TEST)
     endif()
     target_sources(khdays-host-input PRIVATE host/app/mobile_touch.c host/app/pad_script.c)
     set_property(SOURCE host/app/mobile_touch.c host/app/devices.c host/app/window.c host/render/gpu_present.c
+                        host/app/pad_script.c
                  APPEND PROPERTY COMPILE_DEFINITIONS KHDAYS_MOBILE_TEST)
 endif()
 if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
@@ -684,11 +698,23 @@ if(NOT WIN32)
                     "${CMAKE_CURRENT_SOURCE_DIR}/../tools/ios/test_pad.py"
                     "$<TARGET_FILE:khdays-native>" "${KHDAYS_TEST_ROM}")
                 set_tests_properties(khdays-pad PROPERTIES TIMEOUT 1200 SKIP_RETURN_CODE 77 RUN_SERIAL TRUE)
+                # The same window turned while the game runs (the script's "!size=" and "!safe="): upright and
+                # lying, unfolded and folded, on the title and in the first field with the lower-screen view.
+                add_test(NAME khdays-rotate COMMAND "${Python3_EXECUTABLE}"
+                    "${CMAKE_CURRENT_SOURCE_DIR}/../tools/ios/test_rotate.py"
+                    "$<TARGET_FILE:khdays-native>" "${KHDAYS_TEST_ROM}")
+                set_tests_properties(khdays-rotate PROPERTIES TIMEOUT 2400 SKIP_RETURN_CODE 77 RUN_SERIAL TRUE)
             endif()
         endif()
         # The Metal shaders' buffers in SDL's order (uniforms first): numbered otherwise they draw nothing.
         add_test(NAME khdays-metal-shader-order COMMAND "${Python3_EXECUTABLE}"
             "${CMAKE_CURRENT_SOURCE_DIR}/../tools/ios/fix_msl_order.py" --check)
+        # The HD videos' shared player (Apple's: host/movies/movie_hd_core.c) against a made-up decoder, on
+        # SDL's dummy audio driver: the clock, parts, fades, pause, end, failures, the voice, the colours.
+        add_executable(khdays-movie-hd-core-test tests/movie_hd_core_test.c host/movies/movie_hd_core.c)
+        target_link_libraries(khdays-movie-hd-core-test PRIVATE SDL3::SDL3 m)
+        add_test(NAME khdays-movie-hd-core COMMAND khdays-movie-hd-core-test)
+        set_tests_properties(khdays-movie-hd-core PROPERTIES TIMEOUT 120 ENVIRONMENT "SDL_AUDIODRIVER=dummy")
     endif()
     return() # host tests have a standalone build in tools/ios
 endif()

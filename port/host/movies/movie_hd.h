@@ -15,6 +15,8 @@ typedef struct KhdaysHdInfo {
     int width, height;  /* the picture shown (the file's display area) */
     double fps;         /* the file's frame rate, 0 when it does not say */
     int channels, rate; /* its sound, 0 when it has none */
+    double duration;    /* how long the whole file lasts in seconds, 0 when the player does not say
+                           (Windows' does not) */
 } KhdaysHdInfo;
 
 /* Opens `path` and decodes its first picture. Returns 1, or 0 with the reason

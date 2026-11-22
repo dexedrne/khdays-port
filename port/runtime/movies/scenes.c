@@ -69,6 +69,126 @@ const KhdaysSceneMap *khdays_scenes_map(void)
     return &map;
 }
 
+/* --- The player's videos, said at the start ------------------------------------------------------- */
+
+/* Whether a video is there as the course looks for it (movie_hd.c): `movie`, a mod's own video of the
+ * whole movie (movies/<stem>.mp4, a mod's only); else a part's or a scene's, a mod's
+ * cutscenes/cinematics/<stem>.mp4 or the player's in the working folder. */
+static int video_there(const char *stem, int movie)
+{
+    char relative[128], path[1024];
+    FILE *f;
+    snprintf(relative, sizeof(relative), movie ? "movies/%s.mp4" : "cutscenes/cinematics/%s.mp4", stem);
+    if (khdays_mods_find(relative, path, (int)sizeof(path))) {
+        return 1; /* a mod's */
+    }
+    if (movie) {
+        return 0; /* (the player's own are looked for part by part, as the map says) */
+    }
+    snprintf(path, sizeof(path), "data/cutscenes/cinematics/%s.mp4", stem);
+    f = fopen(path, "rb");
+    if (f != NULL) {
+        fclose(f);
+    }
+    return f != NULL;
+}
+
+void khdays_scenes_videos_count(KhdaysVideosCount *count, char *missing, size_t missing_size)
+{
+    const KhdaysSceneMap *m = khdays_scenes_map();
+    const int files = khdays_rom_file_count();
+    char seen[128][16];
+    int movies = 0, movies_there = 0, movies_off = 0, scenes = 0, scenes_there = 0, voices = 0, voices_there = 0;
+    size_t used = 0;
+    if (missing != NULL && missing_size > 0) {
+        missing[0] = '\0';
+    }
+    for (int id = 0; id < files; ++id) {
+        char path[256], movie[16], stem[64];
+        u32 offset, bytes;
+        const char *name;
+        double from, until;
+        int parts, there = 1, known = 0;
+        size_t n = 0;
+        if (!khdays_rom_file_info(id, path, (int)sizeof(path), &offset, &bytes)) {
+            continue;
+        }
+        name = path[0] == '/' ? path + 1 : path;
+        if (strncmp(name, "mv/", 3) != 0 || strlen(name) < 8 || strcmp(name + strlen(name) - 5, ".mods") != 0) {
+            continue; /* not a movie (mv/dummy.dat) */
+        }
+        /* its id: the file's name before its first dot or underscore (mv/839_es.mods: 839) */
+        for (name += 3; name[n] != '\0' && name[n] != '.' && name[n] != '_' && n + 1 < sizeof(movie); ++n) {
+            movie[n] = name[n];
+        }
+        movie[n] = '\0';
+        for (int i = 0; i < movies && !known; ++i) {
+            known = strcmp(seen[i], movie) == 0;
+        }
+        if (n == 0 || known || movies >= 128) {
+            continue;
+        }
+        snprintf(seen[movies++], sizeof(seen[0]), "%s", movie);
+        parts = khdays_scene_map_movie(m, movie, 0, stem, sizeof(stem), &from, &until);
+        if (parts == 0) {
+            ++movies_off;
+            continue;
+        }
+        snprintf(stem, sizeof(stem), "hd%s", movie);
+        if (!video_there(stem, 1)) { /* a mod's own video of the movie first, else the map's */
+            for (int i = 0; i < parts && there; ++i) {
+                khdays_scene_map_movie(m, movie, i, stem, sizeof(stem), &from, &until);
+                there = video_there(stem, 0);
+            }
+        }
+        if (there) {
+            ++movies_there;
+        } else if (missing != NULL && used + strlen(movie) + 2 < missing_size) {
+            used += (size_t)snprintf(missing + used, missing_size - used, " %s", movie);
+        }
+    }
+    for (int i = 0; i < m->count; ++i) {
+        const KhdaysSceneEntry *e = &m->entries[i];
+        int there = e->stem_count > 0;
+        if (e->off || e->skip || strncmp(e->key, "mv#", 3) == 0) {
+            continue;
+        }
+        for (int s = 0; s < e->stem_count && there; ++s) {
+            there = video_there(e->stems[s], 0);
+        }
+        if (strncmp(e->key, "mnl#", 4) == 0) {
+            ++voices;
+            voices_there += there;
+        } else {
+            ++scenes;
+            scenes_there += there;
+        }
+    }
+    count->movies = movies;
+    count->movies_there = movies_there;
+    count->movies_off = movies_off;
+    count->scenes = scenes;
+    count->scenes_there = scenes_there;
+    count->voices = voices;
+    count->voices_there = voices_there;
+}
+
+void khdays_scenes_videos_report(void)
+{
+    KhdaysVideosCount c;
+    char missing[512], line[1024];
+    khdays_scenes_videos_count(&c, missing, sizeof(missing));
+    snprintf(line, sizeof(line),
+             "HD videos looked for in data/cutscenes/cinematics of the working folder: the game's movies with "
+             "theirs %d of %d (%d the game's own by the map)%s%s; the map's scenes with theirs %d of %d; its "
+             "monologues' voices %d of %d. They show with [video] movies = hd (the default); a movie or scene "
+             "without its video plays as the game's",
+             c.movies_there, c.movies - c.movies_off, c.movies_off, missing[0] ? "; none for" : "", missing,
+             c.scenes_there, c.scenes, c.voices_there, c.voices);
+    fprintf(stderr, "movies: %s\n", line);
+    khdays_log("movies: %s", line);
+}
+
 /* --- The event archives' entries ------------------------------------------------------------- */
 
 typedef struct Script {

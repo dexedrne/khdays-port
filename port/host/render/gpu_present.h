@@ -84,6 +84,11 @@ int khdays_present_lower_view(void);
 void khdays_present_draw(void);
 /* How the last picture was drawn (which way, sizes, viewport), for the picture report. */
 const char *khdays_present_note(void);
+#if defined(KHDAYS_IOS) || defined(KHDAYS_MOBILE_TEST)
+/* The phone: the orientation the last picture was laid out for and where it put the game's picture,
+ * the lower-screen view (below the picture upright, else over it) and the stylus, in window pixels. */
+const char *khdays_present_layout_note(void);
+#endif
 /* Whether the window shows the one-screen picture of the last frame made. */
 int khdays_present_one_picture(void);
 

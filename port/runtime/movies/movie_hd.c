@@ -68,6 +68,26 @@ static int course_credits;   /* the course is its movie's */
 /* The player's own HD video (its stem) shown for the last of the game's movies; "" when that movie
  * was the game's, or a mod's video. */
 static char shown[64];
+/* A player that says how long its videos are (KhdaysHdInfo.duration; Windows' does not) may hold the
+ * game's movie alone, no longer than it (38 such files, hd802 to hd848, are what other programs take),
+ * where the theater's video of the same name goes on into the scene after the movie. A scene the map
+ * skips after its movie's video (`skip`) is then skipped only when that video played on this long past
+ * the game's movie's end; a video that ends with the movie leaves the scene to the game.
+ *
+ * "Played on" is time the video really played with the game held for it, added up between the window's
+ * polls (khdays_movie_hd_poll, every few milliseconds while a movie's video runs): not the time under
+ * the pause over it (no poll counts there), under the settings menu or the wait for a gamepad (the
+ * clock's settings hold), nor time the window did not poll at all (the menu open, the phone's app
+ * suspended in the background) -- a pause three seconds long is not three seconds of video. A video
+ * skipped while the game is held for it counts as one that ended there: it had played on, or not. */
+#define SHOWN_PAST_SECONDS 3.0
+#define HELD_POLL_GAP 0.5    /* two polls further apart than this: the time between is not counted */
+static int shown_timed;      /* the player said the shown video's length */
+static int shown_outlasted;  /* it played on past the game's movie's end */
+static double held_played;   /* how long it has played on with the game held for it */
+static double held_polled;   /* when that was added to last */
+static double opened_length; /* the length of the video opened last, 0 when the player does not say */
+static double seconds_now(void);
 
 /* The ids already told about (no video, or one that cannot be played): once each. */
 static char (*told)[64];
@@ -149,6 +169,24 @@ void khdays_movie_hd_reset(void)
     ReleaseSRWLockExclusive(&lock);
 }
 
+/* Under the lock, Held: the game's movie has ended and the video plays on. Begins the count of how long. */
+static void held_begin(void)
+{
+    held_played = 0.0;
+    held_polled = seconds_now();
+}
+
+/* Under the lock: adds the time since the last count to what the video has played on, if it played. */
+static void held_count(void)
+{
+    const double now = seconds_now(), passed = now - held_polled;
+    held_polled = now;
+    if (state_now() == HELD && !course_credits && passed > 0.0 && passed <= HELD_POLL_GAP &&
+        !khdays_clock_held(KHDAYS_HOLD_SETTINGS)) {
+        held_played += passed;
+    }
+}
+
 static void scene_videos_over(const char *how);
 static int scene_chapter; /* the course is a Theater chapter's (no event: it ends with its videos) */
 static int scene_player_skip; /* the player took the game's pause's Skip (not the port, its videos over) */
@@ -181,6 +219,10 @@ static void movie_skip(void)
         break;
     case HELD:
         if (skippable != 0) {
+            held_count();
+            if (!course_credits && held_played >= SHOWN_PAST_SECONDS) {
+                shown_outlasted = 1; /* skipped past the game's movie's end: what it went on into is skipped too */
+            }
             finish("skipped");
         }
         break;
@@ -219,6 +261,7 @@ static void movie_pause_end(int skip)
     }
     game_last = 0xffff; /* the button that closed it is no press of the game's (it would open it again) */
     InterlockedExchange(&state, pause_from);
+    held_polled = seconds_now(); /* (Held: the time under the pause was none of the video's) */
     if (skip) {
         khdays_log("movie %s: the pause's Skip", id);
         movie_skip();
@@ -261,7 +304,7 @@ int khdays_movie_game_playing(void)
 
 int khdays_movie_hd_last_shown(const char *stem)
 {
-    return shown[0] != '\0' && strcmp(shown, stem) == 0;
+    return shown[0] != '\0' && strcmp(shown, stem) == 0 && (!shown_timed || shown_outlasted);
 }
 
 /* The HD videos played in a row in place of a movie: a mod's hd<id>, or the player's as the scene
@@ -322,6 +365,7 @@ static int movie_part_open(int index)
     const MoviePart *p = &parts[index];
     KhdaysHdInfo info;
     char why[320];
+    memset(&info, 0, sizeof(info));
     /* as a scene's: the first comes up from black and silence, the last goes down to them (a part cut
      * out of a longer video ends so, not mid-picture) */
     khdays_hd_fades(index == 0 ? FADE_SECONDS : 0.0, index == part_count - 1 ? FADE_SECONDS : 0.0);
@@ -341,12 +385,27 @@ static int movie_part_open(int index)
     }
     fprintf(stderr, "movies: %s shown instead from %s (%dx%d, %s)\n", id, p->file, info.width, info.height,
             info.channels > 0 ? "with its sound" : "no sound");
+    opened_length = info.duration;
+    if (info.duration > 0.0 && p->from >= info.duration) {
+        khdays_log("movie %s: %s is %.2f s long, shorter than the part asked of it (from %.2f s)", id, p->stem,
+                   info.duration, p->from);
+    }
     return 1;
 }
 
 /* Under the lock: the movie's last video has ended; the game goes on, or finishes its own movie first. */
 static void movie_videos_ended(const char *how)
 {
+    held_count();
+    if (state_now() == HELD && !course_credits && held_played >= SHOWN_PAST_SECONDS) {
+        shown_outlasted = 1;
+    }
+    if (shown_timed && !shown_outlasted && shown[0] != '\0') {
+        khdays_log("movie %s: %s ended with the game's movie (it holds no more than it): a scene after it is "
+                   "the game's, not skipped",
+                   id, shown);
+        fprintf(stderr, "movies: %s: %s ended with the game's movie: a scene after it is not skipped\n", id, shown);
+    }
     if (state_now() == HELD || course_credits) {
         finish(how);
     } else {
@@ -364,6 +423,8 @@ static void movie_part_start(void)
                                 khdays_language_wanted() != 0 ? khdays_language_wanted() : GetLanguage());
     khdays_hd_start();
     snprintf(shown, sizeof(shown), "%s", parts[part_next].stem);
+    shown_timed = opened_length > 0.0;
+    shown_outlasted = 0;
     ++part_next;
 }
 
@@ -373,6 +434,14 @@ void khdays_movie_hd_stream(int slot, const char *path, int replaced)
     (void)slot;
     InterlockedExchange(&game_movie, 1);
     shown[0] = '\0';
+    if (path != NULL && !replaced && !(khdays_host_graphics_flags() & KHDAYS_HOST_MOVIES_HD)) {
+        static int said;
+        if (!said) {
+            said = 1;
+            khdays_log("movies: [video] movies is not hd (or there is no window): the game's own movies play");
+            fprintf(stderr, "movies: [video] movies is not hd (or there is no window): the game's own movies play\n");
+        }
+    }
     if (path == NULL || replaced || state_now() != IDLE || !(khdays_host_graphics_flags() & KHDAYS_HOST_MOVIES_HD) ||
         !movie_id(path, movie, sizeof(movie)) || !movie_parts(movie)) {
         return;
@@ -381,6 +450,7 @@ void khdays_movie_hd_stream(int slot, const char *path, int replaced)
         if (!SDL_GetPathInfo(parts[i].file, NULL)) {
             if (tell_once(movie)) {
                 khdays_log("movie %s: no HD video (%s); the game's movie plays", movie, parts[i].file);
+                fprintf(stderr, "movies: %s: no HD video (%s); the game's movie plays\n", movie, parts[i].file);
             }
             return;
         }
@@ -418,6 +488,7 @@ void khdays_movie_hd_stopped(void)
     } else if (state_now() == PLAYING) {
         khdays_clock_hold(KHDAYS_HOLD_MOVIE, 1); /* the game stops at its next wait */
         InterlockedExchange(&state, HELD);
+        held_begin();
         khdays_log("movie %s: the game's movie ended; the game waits for the HD video", id);
         fprintf(stderr, "movies: %s: the game's movie ended; the game waits for the HD video\n", id);
     } else if (state_now() == FINISHING) {
@@ -426,6 +497,7 @@ void khdays_movie_hd_stopped(void)
         finish("skipped");
     } else if (state_now() == MOVIE_PAUSE && pause_from == PLAYING && !course_credits) {
         pause_from = HELD; /* it ended as the pause opened: held from now on, as at a movie's end */
+        held_begin();      /* (counted from the pause's Continue: movie_pause_end) */
         khdays_log("movie %s: the game's movie ended under the pause; the game waits for the HD video", id);
     }
     ReleaseSRWLockExclusive(&lock);
@@ -440,6 +512,7 @@ void khdays_movie_hd_credits(int phase)
         if (phase == 2 && state_now() == PLAYING) {
             khdays_clock_hold(KHDAYS_HOLD_MOVIE, 1);
             InterlockedExchange(&state, HELD);
+            held_begin();
             khdays_log("movie %s: the staff roll ended; the game waits for the HD video", id);
             fprintf(stderr, "movies: %s: the staff roll ended; the game waits for the HD video\n", id);
         } else if (phase == 0 || state_now() == SKIPPING) {
@@ -589,6 +662,7 @@ static int scene_open(int index)
     char file[1024], why[320];
     KhdaysHdInfo info;
     const double from = scene_parts[2 * index], until = scene_parts[2 * index + 1];
+    memset(&info, 0, sizeof(info));
     khdays_movie_hd_scene_file(scene_stems[index], file, sizeof(file));
     /* the first comes up from black and silence, the last goes down to them */
     khdays_hd_fades(index == 0 ? FADE_SECONDS : 0.0, index == scene_count - 1 ? FADE_SECONDS : 0.0);
@@ -916,6 +990,7 @@ void khdays_movie_hd_poll(void)
     AcquireSRWLockExclusive(&lock);
     {
         int open_next = 0;
+        held_count();
         if (state_now() == PLAYING || state_now() == HELD) {
             status = khdays_hd_status(why, sizeof(why));
             if (status == -1) {

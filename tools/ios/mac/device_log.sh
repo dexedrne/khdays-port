@@ -17,4 +17,4 @@ wait "$launch" 2>/dev/null || true
 nice -n 10 xcrun devicectl device copy from --device "$DEVICE_UDID" --domain-type appDataContainer \
     --domain-identifier beer.vyvanse.khdays --source Documents/saves/logs --destination "$out/logs" ||
     echo "The pictures could not be fetched; the console is in $out/console.txt" >&2
-grep -E '^(picture|ios:|window:|host:)' "$out/console.txt" | cut -c1-400 || true
+grep -E '^(picture|ios:|window:|host:|movies:|scenes:|lower view:)' "$out/console.txt" | cut -c1-400 || true

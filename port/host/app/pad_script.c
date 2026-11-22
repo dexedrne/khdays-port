@@ -5,6 +5,7 @@
 #include "pad_script.h"
 
 #include "devices.h"
+#include "mobile_touch.h"
 #include "profile.h"
 
 #include <stdio.h>
@@ -156,12 +157,40 @@ static void detach(int pad)
     }
 }
 
+static SDL_Window *script_window(void);
+
 static void window_event(Uint32 type)
 {
     SDL_Event event;
     SDL_zero(event);
     event.type = type;
+    if (type >= SDL_EVENT_WINDOW_FIRST && type <= SDL_EVENT_WINDOW_LAST) {
+        event.window.windowID = SDL_GetWindowID(script_window()); /* (SDL's renderer follows its own window's) */
+    }
     SDL_PushEvent(&event);
+}
+
+static int report_asked;
+
+int khdays_pad_script_take_report(void)
+{
+    const int asked = report_asked;
+    report_asked = 0;
+    return asked;
+}
+
+/* The script's window (the game has one). */
+static SDL_Window *script_window(void)
+{
+    int count = 0;
+    SDL_Window **all = SDL_GetWindows(&count);
+    SDL_Window *window = all != NULL && count > 0 ? all[0] : NULL;
+    SDL_free(all);
+    if (window == NULL) {
+        fprintf(stderr, "pad script: no window to change\n");
+        exit(2);
+    }
+    return window;
 }
 
 static void run(const Step *s)
@@ -172,15 +201,62 @@ static void run(const Step *s)
     case '/': detach(s->pad); return;
     case '!':
         /* the phone's app sent to the background (the phone asleep, another app) and back, as SDL
-         * tells it on iOS: the lifecycle events around the focus going and coming */
+         * tells it on iOS (SDL_OnApplicationWillEnterBackground and its fellows): the window minimized
+         * and its focus gone between the lifecycle events, restored and focused again at the return.
+         * SDL's renderer presents nothing between "minimized" and "restored", as on the phone. */
         if (SDL_strcmp(s->what, "background") == 0) {
-            window_event(SDL_EVENT_WILL_ENTER_BACKGROUND);
+            window_event(SDL_EVENT_WINDOW_MINIMIZED);
             window_event(SDL_EVENT_WINDOW_FOCUS_LOST);
+            window_event(SDL_EVENT_WILL_ENTER_BACKGROUND);
             window_event(SDL_EVENT_DID_ENTER_BACKGROUND);
         } else if (SDL_strcmp(s->what, "foreground") == 0) {
             window_event(SDL_EVENT_WILL_ENTER_FOREGROUND);
-            window_event(SDL_EVENT_DID_ENTER_FOREGROUND);
+            window_event(SDL_EVENT_WINDOW_RESTORED);
             window_event(SDL_EVENT_WINDOW_FOCUS_GAINED);
+            window_event(SDL_EVENT_DID_ENTER_FOREGROUND);
+        } else if (SDL_strncmp(s->what, "size=", 5) == 0) {
+            /* a turned phone: SDL sends the window's size and pixel-size events itself */
+            int w = 0, h = 0;
+            if (SDL_sscanf(s->what + 5, "%dx%d", &w, &h) != 2 || w <= 0 || h <= 0) {
+                bad(s->what);
+            }
+            if (!SDL_SetWindowSize(script_window(), w, h)) {
+                fprintf(stderr, "pad script: the window did not take %dx%d: %s\n", w, h, SDL_GetError());
+                exit(2);
+            }
+        } else if (SDL_strncmp(s->what, "safe=", 5) == 0) {
+            int l = 0, t = 0, r = 0, b = 0;
+            SDL_Event event;
+            if (SDL_sscanf(s->what + 5, "%d,%d,%d,%d", &l, &t, &r, &b) != 4) {
+                bad(s->what);
+            }
+            khdays_mobile_test_insets(l, t, r, b);
+            SDL_zero(event);
+            event.type = SDL_EVENT_WINDOW_SAFE_AREA_CHANGED;
+            event.window.windowID = SDL_GetWindowID(script_window());
+            SDL_PushEvent(&event);
+        } else if (SDL_strncmp(s->what, "touch=", 6) == 0) {
+            /* a finger put down at a place of the window (in its points) and lifted again: a tap */
+            int x = 0, y = 0, w = 0, h = 0;
+            SDL_Event event;
+            if (SDL_sscanf(s->what + 6, "%d,%d", &x, &y) != 2 || !SDL_GetWindowSize(script_window(), &w, &h) || w <= 0 ||
+                h <= 0) {
+                bad(s->what);
+            }
+            SDL_zero(event);
+            event.type = SDL_EVENT_FINGER_DOWN;
+            event.tfinger.windowID = SDL_GetWindowID(script_window());
+            event.tfinger.touchID = 1;
+            event.tfinger.fingerID = 1;
+            event.tfinger.x = (float)x / (float)w;
+            event.tfinger.y = (float)y / (float)h;
+            event.tfinger.pressure = 1.0f;
+            SDL_PushEvent(&event);
+            event.type = SDL_EVENT_FINGER_UP;
+            event.tfinger.pressure = 0.0f;
+            SDL_PushEvent(&event);
+        } else if (SDL_strcmp(s->what, "report") == 0) {
+            report_asked = 1;
         } else {
             bad(s->what);
         }

@@ -107,6 +107,12 @@ void khdays_sound_output_open(void)
     apply_gain(stream);
     SDL_ResumeAudioStreamDevice(stream);
     SDL_SetAtomicPointer(&audio, stream);
+    {
+        /* said each time: the stream is opened once a run (a turned phone or a resized window must not
+         * open it again) */
+        static int opened;
+        fprintf(stderr, "host: sound: stream opened (%d this run), device at %d Hz\n", ++opened, device_rate);
+    }
 }
 
 void khdays_sound_output_set(const KhdaysSound *settings)
@@ -137,6 +143,7 @@ void khdays_sound_output_close(void)
     SDL_AudioStream *stream = (SDL_AudioStream *)SDL_SetAtomicPointer(&audio, NULL);
     if (stream != NULL) {
         SDL_DestroyAudioStream(stream);
+        fprintf(stderr, "host: sound: stream closed\n");
     }
 }
 

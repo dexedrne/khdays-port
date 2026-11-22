@@ -1089,6 +1089,21 @@ float width_of(const char *s)
     return ImGui::CalcTextSize(s).x;
 }
 
+// Draws a text in the room up to `right`: at the font's size where it fits (as text_clipped then), else
+// smaller so that it fits whole, down to 0.62 of the size (below that it could not be read: cut off there
+// instead). In the middle of the line's height either way.
+void text_fitted(ImVec2 p, ImU32 colour, const char *s, float right)
+{
+    const float font = ImGui::GetFontSize(), wide = width_of(s), room = right - p.x;
+    float size = font;
+    if (wide > room && room > 0 && wide > 0) {
+        size = std::max(font * 0.62f, std::floor(font * room / wide * 8.0f) / 8.0f);
+    }
+    const ImVec4 clip(p.x, p.y - font, right, p.y + 2 * font);
+    ImGui::GetWindowDrawList()->AddText(ImGui::GetFont(), size, ImVec2(p.x, p.y + (font - size) / 2), colour, s, nullptr,
+                                        0.0f, &clip);
+}
+
 std::string value_text(const KhdaysRow &r)
 {
     char s[KHDAYS_SERVER_BYTES + 16];
@@ -1447,15 +1462,31 @@ int pad_parts(int family, PadPart *out)
 constexpr int kPadPartsMost = 19;
 
 // The height of the gamepad's rows: as many rows as the longer side has.
-float pad_height()
+// One row beside the gamepad's picture: an input's icon (or its name where there is no icon) and what
+// it does; for a stick, what moving it does, then what its click does.
+struct PadPiece {
+    SDL_Texture *icon;
+    std::string text;
+};
+struct PadLine {
+    PadPart part;
+    std::vector<PadPiece> pieces;
+    float width;
+};
+struct PadLines {
+    std::vector<PadLine> side[2]; // left of the picture, right of it; each top to bottom
+    float widest[2];              // each side's widest row
+    bool stacked;                 // no room for both beside a picture: one side under the other, no picture
+    float picture_room;           // beside each other: the width left for the picture between them
+};
+PadLines pad_lines(float w);
+
+float pad_height(float w)
 {
-    PadPart parts[kPadPartsMost];
-    const int n = pad_parts(pad_family(), parts);
-    int side[2] = {0, 0};
-    for (int i = 0; i < n; ++i) {
-        ++side[parts[i].side];
-    }
-    return (float)std::max(side[0], side[1]) * std::round(ImGui::GetFontSize() * 1.3f) + ImGui::GetFontSize();
+    const PadLines lines = pad_lines(w);
+    const size_t rows = lines.stacked ? lines.side[0].size() + lines.side[1].size()
+                                      : std::max(lines.side[0].size(), lines.side[1].size());
+    return (float)rows * std::round(ImGui::GetFontSize() * 1.3f) + ImGui::GetFontSize();
 }
 
 // What an input does: the actions it is bound to (and, while the D-pad
@@ -1496,8 +1527,7 @@ const char *controller_icon()
 
 void draw_pad(ImVec2 p, float w, float h)
 {
-    PadPart parts[kPadPartsMost];
-    const int n = pad_parts(pad_family(), parts);
+    const PadLines lines = pad_lines(w);
     const KhdaysDeviceState *state = khdays_devices_state();
     ImDrawList *dl = ImGui::GetWindowDrawList();
     const float font = ImGui::GetFontSize(), line = std::round(font * 1.3f);
@@ -1511,9 +1541,14 @@ void draw_pad(ImVec2 p, float w, float h)
                                                                 : "pad_xbox";
     float hd_w = 0, hd_h = 0;
     const bool hd = m.skin && khdays_skin_size(hd_pad, &hd_w, &hd_h);
-    const float tall = std::min(h - font, 256.0f);
-    const float picture = hd ? tall * hd_w / hd_h : tall; // its width, which the columns stand beside
-    if (hd) {
+    // its width, which the columns stand beside: as large as the row's height allows where there is room
+    // beside both columns, smaller in a narrower window (both columns whole first)
+    const float full = std::min(h - font, 256.0f) * (hd ? hd_w / hd_h : 1.0f);
+    const float picture = lines.stacked ? 0.0f : std::min(full, lines.picture_room);
+    const float tall = std::min(h - font, 256.0f) * (full > 0 ? picture / full : 0.0f);
+    if (lines.stacked) {
+        // no picture: the two columns one under the other
+    } else if (hd) {
         khdays_skin_piece(dl, hd_pad, "shown", ImVec2(centre.x - picture / 2, centre.y - tall / 2),
                           ImVec2(centre.x + picture / 2, centre.y + tall / 2));
     } else if (SDL_Texture *gamepad = icon(controller_icon())) {
@@ -1530,54 +1565,21 @@ void draw_pad(ImVec2 p, float w, float h)
         return state->pad[q.input] != 0;
     };
     for (int side = 0; side < 2; ++side) {
-        int order[kPadPartsMost], count = 0;
-        for (int i = 0; i < n; ++i) {
-            if (parts[i].side == side) {
-                order[count++] = i;
-            }
-        }
+        const std::vector<PadLine> &rows = lines.side[side];
+        const size_t before = lines.stacked && side == 1 ? lines.side[0].size() : 0;
+        const size_t count = lines.stacked ? lines.side[0].size() + lines.side[1].size() : rows.size();
         const float top = p.y + (h - (float)count * line) / 2;
-        for (int k = 0; k < count; ++k) {
-            const PadPart &q = parts[order[k]];
-            // the row's pieces: an icon (or the input's name if there is no
-            // icon) and what it does; for a stick, what moving it does, then
-            // what its click does
-            struct Piece {
-                SDL_Texture *icon;
-                std::string text;
-            };
-            std::vector<Piece> pieces;
-            auto add_input = [&](int input) {
-                const std::string does = pad_actions(input);
-                SDL_Texture *texture = icon(icon_name(input));
-                char name[96];
-                pad_input_label(input, name, sizeof(name));
-                pieces.push_back({texture, texture != nullptr
-                                               ? (does.empty() ? "-" : does)
-                                               : std::string(name) + ": " + (does.empty() ? "-" : does)});
-            };
-            if (q.stick >= 0) {
-                static const int roles[] = {TXT_NOTHING, TXT_DPAD_MOVE, TXT_CAMERA};
-                const int role = m.work.stick[q.stick].role;
-                const std::string moving = khdays_text(roles[role >= 0 && role <= 2 ? role : 0]);
-                SDL_Texture *texture = icon(stick_icon(q.stick));
-                pieces.push_back(
-                    {texture,
-                     texture != nullptr
-                         ? moving
-                         : std::string(khdays_text(q.stick == 0 ? TXT_LEFT_STICK : TXT_RIGHT_STICK)) + ": " + moving});
-            }
-            add_input(q.input);
-            float width = 0;
-            for (const Piece &piece : pieces) {
-                width += icon_size + space + width_of(piece.text.c_str()) + space * 2;
-            }
-            const float y = top + (float)k * line, mid = y + line / 2;
-            const bool now = held(q);
-            // the left column ends at the picture, the right one starts there
-            float x = side == 0 ? std::max(p.x, centre.x - picture / 2 - font - width) : centre.x + picture / 2 + font;
-            const float right_edge = side == 0 ? centre.x - picture / 2 - font : p.x + w;
-            for (const Piece &piece : pieces) {
+        for (size_t k = 0; k < rows.size(); ++k) {
+            const PadLine &row = rows[k];
+            const float y = top + (float)(before + k) * line, mid = y + line / 2;
+            const bool now = held(row.part);
+            // beside the picture: the left column ends at it, the right one starts there. One under the
+            // other (a narrow window, an upright phone): each row from the left, across the whole width
+            float x = lines.stacked ? p.x
+                      : side == 0   ? std::max(p.x, centre.x - picture / 2 - font - row.width)
+                                    : centre.x + picture / 2 + font;
+            const float right_edge = !lines.stacked && side == 0 ? centre.x - picture / 2 - font : p.x + w;
+            for (const PadPiece &piece : row.pieces) {
                 if (piece.icon != nullptr) {
                     if (now) {
                         dl->AddCircleFilled(ImVec2(x + icon_size / 2, mid), icon_size * 0.6f, lit, 32);
@@ -1585,11 +1587,59 @@ void draw_pad(ImVec2 p, float w, float h)
                     draw_icon(dl, piece.icon, ImVec2(x + icon_size / 2, mid), icon_size);
                 }
                 x += icon_size + space; // keep the space even without an icon, so the texts line up
-                text_clipped(ImVec2(x, mid - font / 2), now ? lit : kGrey, piece.text.c_str(), right_edge);
+                text_fitted(ImVec2(x, mid - font / 2), now ? lit : kGrey, piece.text.c_str(), right_edge);
                 x += width_of(piece.text.c_str()) + space * 2;
             }
         }
     }
+}
+
+// The rows of both sides for the gamepad connected now, with their widths, and how they are laid out in
+// a row `w` wide: beside the picture while both columns and a picture of some size fit (the picture
+// gives way first: it is as large as now only where there is room for all three), else one side under
+// the other without the picture -- so that no row is cut off in a narrow window or on an upright phone.
+PadLines pad_lines(float w)
+{
+    PadLines lines;
+    PadPart parts[kPadPartsMost];
+    const int n = pad_parts(pad_family(), parts);
+    const float font = ImGui::GetFontSize(), line = std::round(font * 1.3f);
+    const float icon_size = line * 0.95f, space = font * 0.4f;
+    lines.widest[0] = lines.widest[1] = 0;
+    for (int i = 0; i < n; ++i) {
+        const PadPart &q = parts[i];
+        PadLine row{q, {}, 0};
+        auto add_input = [&](int input) {
+            const std::string does = pad_actions(input);
+            SDL_Texture *texture = icon(icon_name(input));
+            char name[96];
+            pad_input_label(input, name, sizeof(name));
+            row.pieces.push_back({texture, texture != nullptr
+                                               ? (does.empty() ? "-" : does)
+                                               : std::string(name) + ": " + (does.empty() ? "-" : does)});
+        };
+        if (q.stick >= 0) {
+            static const int roles[] = {TXT_NOTHING, TXT_DPAD_MOVE, TXT_CAMERA};
+            const int role = m.work.stick[q.stick].role;
+            const std::string moving = khdays_text(roles[role >= 0 && role <= 2 ? role : 0]);
+            SDL_Texture *texture = icon(stick_icon(q.stick));
+            row.pieces.push_back(
+                {texture,
+                 texture != nullptr
+                     ? moving
+                     : std::string(khdays_text(q.stick == 0 ? TXT_LEFT_STICK : TXT_RIGHT_STICK)) + ": " + moving});
+        }
+        add_input(q.input);
+        for (const PadPiece &piece : row.pieces) {
+            row.width += icon_size + space + width_of(piece.text.c_str()) + space * 2;
+        }
+        lines.widest[q.side != 0] = std::max(lines.widest[q.side != 0], row.width);
+        lines.side[q.side != 0].push_back(row);
+    }
+    // (the last piece's closing space is no part of what must fit)
+    lines.picture_room = w - (lines.widest[0] - space * 2) - (lines.widest[1] - space * 2) - 2 * font;
+    lines.stacked = lines.picture_room < font * 5;
+    return lines;
 }
 
 // A row's value in the HD menu's pieces, from `at` (its place's left, the row's top) to the
@@ -1655,6 +1705,7 @@ void draw_rows(float row_h, float pad)
     const float w = ImGui::GetContentRegionAvail().x;
     const float gap = ImGui::GetFontSize();
     float label_w = 0, cell_w = 0;
+    float cell_x[KHDAYS_CELLS + 1] = {}; // each binding column's left, from the values' left; the last one's end
     bool bindings = false;
     for (int i = 0; i < m.count; ++i) {
         const KhdaysRow &r = m.rows[i];
@@ -1676,13 +1727,33 @@ void draw_rows(float row_h, float pad)
             cell_w = std::max(cell_w, width_of(head));
         }
         cell_w += gap;
-        // the window is too narrow for the table: the names and the cells share
-        // its width, each cut off at its end
+        for (int c = 0; c <= KHDAYS_CELLS; ++c) {
+            cell_x[c] = (float)c * cell_w; // every column as wide as the widest cell or heading
+        }
+        // the window is too narrow for that table (an upright phone, a small window): each column gets
+        // the width its own cells need, and if that is still too much the names and the columns shrink
+        // alike -- their texts are then drawn smaller to fit (text_fitted), and only cut off where they
+        // would be too small to read
         const float room = w - pad - gap;
         constexpr float cells = KHDAYS_CELLS;
         if (label_w + cells * cell_w > room) {
-            label_w = std::min(label_w, room * 0.3f);
-            cell_w = (room - label_w) / cells;
+            float need[KHDAYS_CELLS], total = label_w;
+            for (int c = 0; c < KHDAYS_CELLS; ++c) {
+                need[c] = width_of("-");
+                for (int i = 0; i < m.count; ++i) {
+                    if (m.rows[i].kind == KHDAYS_ROW_BINDING) {
+                        need[c] = std::max(need[c],
+                                           width_of(cell_text(m.rows[i], c).c_str()) + cell_icon_room(m.rows[i], c));
+                    }
+                }
+                need[c] += gap / 2;
+                total += need[c];
+            }
+            const float k = total > room ? room / total : 1.0f;
+            label_w *= k;
+            for (int c = 0; c < KHDAYS_CELLS; ++c) {
+                cell_x[c + 1] = cell_x[c] + need[c] * k;
+            }
         }
     }
     const float value_x = pad + label_w + gap;
@@ -1704,14 +1775,15 @@ void draw_rows(float row_h, float pad)
                 char head[64];
                 for (int s = 0; s < KHDAYS_INPUTS_PER_ACTION; ++s) {
                     SDL_snprintf(head, sizeof(head), "%s %d", khdays_text(d == 0 ? TXT_KEYBOARD : TXT_GAMEPAD), s + 1);
-                    text_at(ImVec2(p.x + value_x + (float)(d * KHDAYS_INPUTS_PER_ACTION + s) * cell_w, p.y),
-                            heading_colour(), head);
+                    const int c = d * KHDAYS_INPUTS_PER_ACTION + s;
+                    text_fitted(ImVec2(p.x + value_x + cell_x[c], p.y), heading_colour(), head,
+                                p.x + value_x + cell_x[c + 1] - gap / 4);
                 }
             }
             ImGui::Dummy(ImVec2(w, row_h));
         }
         const ImVec2 p = ImGui::GetCursorScreenPos();
-        const float h = r.kind == KHDAYS_ROW_STICKS ? row_h * 4.5f : r.kind == KHDAYS_ROW_PAD ? pad_height() : row_h;
+        const float h = r.kind == KHDAYS_ROW_STICKS ? row_h * 4.5f : r.kind == KHDAYS_ROW_PAD ? pad_height(w) : row_h;
         const ImVec2 q(p.x + w, p.y + h);
         const bool focus = m.in_rows && i == m.row && (m.mode == MODE_BROWSE || m.mode == MODE_TEXT);
         const float ty = p.y + (row_h - ImGui::GetFontSize()) / 2;
@@ -1748,10 +1820,10 @@ void draw_rows(float row_h, float pad)
         case KHDAYS_ROW_STICKS: draw_sticks(p, w, h); break;
         case KHDAYS_ROW_PAD: draw_pad(p, w, h); break;
         case KHDAYS_ROW_BINDING:
-            text_clipped(ImVec2(p.x + pad, ty), colour, r.label, p.x + value_x - gap / 2);
+            text_fitted(ImVec2(p.x + pad, ty), colour, r.label, p.x + value_x - gap / 2);
             for (int c = 0; c < KHDAYS_CELLS; ++c) {
-                const ImVec2 cp(p.x + value_x + (float)c * cell_w - gap / 4, p.y);
-                const ImVec2 cq(cp.x + cell_w - gap / 2, q.y);
+                const ImVec2 cp(p.x + value_x + cell_x[c] - gap / 4, p.y);
+                const ImVec2 cq(p.x + value_x + cell_x[c + 1] - gap * 3 / 4, q.y);
                 if (!(r.cells & (1u << c))) {
                     continue;
                 }
@@ -1767,7 +1839,7 @@ void draw_rows(float row_h, float pad)
                         draw_icon(dl, icon(cell_icon(r, c)), ImVec2(cp.x + gap / 4 + room * 0.45f, (cp.y + cq.y) / 2),
                                   room * 0.9f);
                     }
-                    text_clipped(ImVec2(cp.x + gap / 4 + room, ty), colour, cell_text(r, c).c_str(), cq.x);
+                    text_fitted(ImVec2(cp.x + gap / 4 + room, ty), colour, cell_text(r, c).c_str(), cq.x);
                 }
                 record(KHDAYS_PLACE_CELL, i * KHDAYS_CELLS + c, cp, cq);
             }

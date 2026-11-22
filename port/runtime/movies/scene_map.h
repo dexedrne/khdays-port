@@ -32,6 +32,13 @@ int khdays_scene_map_read(KhdaysSceneMap *map, const char *text, size_t size, co
 /* The entry of `key`, or NULL. */
 const KhdaysSceneEntry *khdays_scene_map_find(const KhdaysSceneMap *map, const char *key);
 
+/* The player's videos a game's movie `movie` ("833") is shown as, by the map's mv#<movie> (hd<movie>
+ * whole without an entry): returns how many (0: the game's own movie, the entry `off`) and, for part
+ * `index` of them, its stem and the seconds of it played (0 its own start or end). A mod's own video
+ * of the movie (movies/hd<movie>.mp4) comes before these and is not the map's to say. */
+int khdays_scene_map_movie(const KhdaysSceneMap *map, const char *movie, int index, char *stem, size_t size,
+                           double *from, double *until);
+
 void khdays_scene_map_free(KhdaysSceneMap *map);
 
 #endif

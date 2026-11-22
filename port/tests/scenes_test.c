@@ -128,6 +128,21 @@ int main(void)
     CHECK(khdays_scene_map_find(&map, "EV_S#9") == NULL && khdays_scene_map_find(&map, "mv#834") == NULL &&
           khdays_scene_map_find(&map, "mv#835") == NULL && khdays_scene_map_find(&map, "mnl#2") == NULL);
 
+    {
+        /* a game's movie's videos, as the map says them (khdays_scene_map_movie) */
+        char stem[64];
+        double from = -1.0, until = -1.0;
+        CHECK(khdays_scene_map_movie(&map, "833", 0, stem, sizeof(stem), &from, &until) == 1 &&
+              strcmp(stem, "hd833") == 0 && from == 0.0 && until == 128.4);
+        CHECK(khdays_scene_map_movie(&map, "848", 0, stem, sizeof(stem), &from, &until) == 2 &&
+              strcmp(stem, "hd833") == 0 && from == 173.2 && until == 0.0);
+        CHECK(khdays_scene_map_movie(&map, "848", 1, stem, sizeof(stem), &from, &until) == 2 &&
+              strcmp(stem, "hd848") == 0 && from == 0.0 && until == 0.0);
+        CHECK(khdays_scene_map_movie(&map, "802", 0, stem, sizeof(stem), &from, &until) == 0 && stem[0] == '\0');
+        CHECK(khdays_scene_map_movie(&map, "835", 0, stem, sizeof(stem), &from, &until) == 1 &&
+              strcmp(stem, "hd835") == 0 && from == 0.0 && until == 0.0); /* no entry: its own video, whole */
+    }
+
     khdays_scene_map_free(&map);
     CHECK(map.count == 0 && map.entries == NULL);
     if (failures == 0) {

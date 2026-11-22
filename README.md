@@ -27,7 +27,7 @@ AI-assisted coding tools were used to help make this possible.
 
 ## iPhone and iPad (work in progress)
 
-This branch adds an iOS build: SDL for iOS, one screen as on the PC, DualSense / Switch Pro / MFi controllers, and on-screen keys when no controller is connected. You still need your own European copy of the game; put it in the app's Documents folder as `Kh358.nds`. Build steps are in [tools/ios/MAC-STEPS.md](tools/ios/MAC-STEPS.md). The Linux tests play it with emulated controllers from the title into the first field; the phone checks still to do are listed in MAC-STEPS.md.
+This branch adds an iOS build: SDL for iOS, one screen as on the PC, DualSense / Switch Pro / MFi controllers, and on-screen keys when no controller is connected. You still need your own European copy of the game; put it in the app's Documents folder as `Kh358.nds`. Build steps are in [tools/ios/MAC-STEPS.md](tools/ios/MAC-STEPS.md). The picture follows the phone as it is turned, upright or lying, folded or unfolded: upright the game's picture is across the top and the lower-screen view below it. The Linux tests play it with emulated controllers from the title into the first field and turn the window while it runs; the phone checks still to do are listed in MAC-STEPS.md.
 
 **One screen.** The phone shows the port's one-screen picture (below, "The field on one screen"), as wide as its screen, folded or unfolded: the field with the game's HUD laid out over it (the map at the top right, the mission's panel at the top left, the command deck and the party at the bottom), each menu, tutorial and list as large as the picture allows. The DS's two screens stacked or side by side remain under Settings → Apps → 358/2 Days → Screen layout.
 

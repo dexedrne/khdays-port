@@ -13,6 +13,10 @@ static bool stylus_point(float x, float y, float *sx, float *sy)
     return true;
 }
 
+#ifdef KHDAYS_MOBILE_TEST
+static int test_insets[4], test_insets_set;
+#endif
+
 bool khdays_mobile_safe(SDL_Window *w, SDL_Rect *safe)
 {
     if (!SDL_GetWindowSafeArea(w, safe))
@@ -20,7 +24,13 @@ bool khdays_mobile_safe(SDL_Window *w, SDL_Rect *safe)
 #ifdef KHDAYS_MOBILE_TEST
     const char *insets = SDL_getenv("KHDAYS_MOBILE_INSETS");
     int l, t, r, b;
-    if (insets != NULL && SDL_sscanf(insets, "%d,%d,%d,%d", &l, &t, &r, &b) == 4) {
+    if (test_insets_set) {
+        /* the margins a test's script set while the game runs (a turned phone's: pad_script.h "safe=") */
+        safe->x += test_insets[0];
+        safe->y += test_insets[1];
+        safe->w -= test_insets[0] + test_insets[2];
+        safe->h -= test_insets[1] + test_insets[3];
+    } else if (insets != NULL && SDL_sscanf(insets, "%d,%d,%d,%d", &l, &t, &r, &b) == 4) {
         safe->x += l;
         safe->y += t;
         safe->w -= l + r;
@@ -28,6 +38,23 @@ bool khdays_mobile_safe(SDL_Window *w, SDL_Rect *safe)
     }
 #endif
     return true;
+}
+
+#ifdef KHDAYS_MOBILE_TEST
+void khdays_mobile_test_insets(int left, int top, int right, int bottom)
+{
+    test_insets[0] = left;
+    test_insets[1] = top;
+    test_insets[2] = right;
+    test_insets[3] = bottom;
+    test_insets_set = 1;
+}
+#endif
+
+bool khdays_mobile_portrait(SDL_Window *w)
+{
+    SDL_Rect safe;
+    return khdays_mobile_safe(w, &safe) && safe.w > 0 && safe.h > safe.w;
 }
 
 #ifdef KHDAYS_MOBILE_TEST
@@ -42,7 +69,36 @@ int khdays_ios_layout(void)
 static char view_note[160] = "safe-area fit not run";
 const char *khdays_mobile_view_note(void) { return view_note; }
 
+/* Portrait: the picture at the top of the safe area, at the largest size that fits it (as wide as the
+ * safe area when it is no taller than it), in the middle of its width. The free space is below it. */
+static void view_top(SDL_Renderer *renderer, SDL_Rect safe, int w, int h, float x0, float y0, float x1, float y1)
+{
+    /* A viewport is in whole units (the picture's own dots at this size), so its place is right to
+     * within one of them: its top is put at the first whole unit inside the safe area -- never under the
+     * notch -- and its height fitted with that unit to spare, so its foot is inside too. */
+    const float fit = SDL_min((x1 - x0) / w, (y1 - y0 - 1) / h);
+    float left, top;
+    if (fit <= 0)
+        return;
+    SDL_Rect viewport = {(int)SDL_roundf(((x0 + x1) / fit - w) / 2), (int)SDL_ceilf(y0 / fit - 0.01f), w, h};
+    SDL_SetRenderScale(renderer, fit, fit);
+    SDL_SetRenderViewport(renderer, &viewport);
+    /* never left of or above the window itself (the rounding, with no margin there) */
+    if (SDL_RenderCoordinatesToWindow(renderer, 0, 0, &left, &top) && (left < 0 || top < 0)) {
+        viewport.x += left < 0;
+        viewport.y += top < 0;
+        SDL_SetRenderViewport(renderer, &viewport);
+    }
+    SDL_snprintf(view_note, sizeof(view_note), "safe area %d,%d %dx%d: at its top, fit %.3f, viewport %d,%d %dx%d",
+                 safe.x, safe.y, safe.w, safe.h, (double)fit, viewport.x, viewport.y, viewport.w, viewport.h);
+}
+
 void khdays_mobile_view(SDL_Renderer *renderer, SDL_Rect safe, int w, int h)
+{
+    khdays_mobile_view_at(renderer, safe, w, h, false);
+}
+
+void khdays_mobile_view_at(SDL_Renderer *renderer, SDL_Rect safe, int w, int h, bool top)
 {
     float x0, x1, y0, y1;
     SDL_snprintf(view_note, sizeof(view_note), "safe area %d,%d %dx%d: no fit needed", safe.x, safe.y, safe.w, safe.h);
@@ -51,6 +107,10 @@ void khdays_mobile_view(SDL_Renderer *renderer, SDL_Rect safe, int w, int h)
     if (!SDL_RenderCoordinatesFromWindow(renderer, safe.x, safe.y, &x0, &y0) ||
         !SDL_RenderCoordinatesFromWindow(renderer, safe.x + safe.w, safe.y + safe.h, &x1, &y1))
         return;
+    if (top) {
+        view_top(renderer, safe, w, h, x0, y0, x1, y1);
+        return;
+    }
     x0 = SDL_max(0, x0);
     y0 = SDL_max(0, y0);
     x1 = SDL_min(w, x1);
@@ -63,6 +123,11 @@ void khdays_mobile_view(SDL_Renderer *renderer, SDL_Rect safe, int w, int h)
     SDL_SetRenderViewport(renderer, &viewport);
     SDL_snprintf(view_note, sizeof(view_note), "safe area %d,%d %dx%d: fit %.3f, viewport %d,%d %dx%d", safe.x, safe.y,
                  safe.w, safe.h, (double)fit, viewport.x, viewport.y, viewport.w, viewport.h);
+}
+
+void khdays_mobile_stylus_window(SDL_FRect *at)
+{
+    *at = window_stylus;
 }
 
 void khdays_mobile_stylus_rect(SDL_Renderer *renderer, SDL_FRect stylus_rect)
@@ -94,6 +159,7 @@ static struct Finger {
     SDL_FingerID id;
     int control;
     float x, y, home_x, home_y;
+    bool rehome; /* the stick's: the window was laid out anew, its home follows the finger's next place */
 } fingers[10];
 static float size;
 
@@ -109,6 +175,24 @@ static bool geometry(SDL_Window *w, SDL_Rect *safe)
         return false;
     size = SDL_min(55, SDL_min(safe->w / 8.f, safe->h / 7.f));
     return true;
+}
+
+/* The stick's zone: where a finger that comes down on no key is the stick. */
+static SDL_FRect stick_zone(const SDL_Rect *safe)
+{
+    return (SDL_FRect){(float)safe->x, safe->y + safe->h - 2.8f * size, 2.8f * size, 2.8f * size};
+}
+
+float khdays_mobile_keys_top(SDL_Window *w)
+{
+    SDL_Rect safe;
+    float top;
+    if (!geometry(w, &safe))
+        return -1;
+    top = stick_zone(&safe).y;
+    for (int i = 0; i < (int)SDL_arraysize(buttons); ++i)
+        top = SDL_min(top, safe.y + safe.h - (buttons[i].y + 1) * size); /* (the key's whole cell) */
+    return top;
 }
 
 static void draw_key(SDL_Renderer *r, SDL_FRect rect, const char *label)
@@ -156,7 +240,7 @@ void khdays_mobile_draw(SDL_Renderer *r)
         draw_key(r, button_rect(&safe, i), buttons[i].label);
     SDL_FRect stick = {safe.x + size / 2, safe.y + safe.h - 2 * size, size * 1.5f, size * 1.5f};
     for (int i = 0; i < 10; ++i) {
-        if (fingers[i].held && fingers[i].control == STICK) {
+        if (fingers[i].held && fingers[i].control == STICK && !fingers[i].rehome) {
             stick.x = fingers[i].home_x - stick.w / 2;
             stick.y = fingers[i].home_y - stick.h / 2;
         }
@@ -170,6 +254,25 @@ void khdays_mobile_draw(SDL_Renderer *r)
 void khdays_mobile_reset(void)
 {
     SDL_zero(fingers);
+}
+
+void khdays_mobile_relaid(void)
+{
+    for (int i = 0; i < 10; ++i) {
+        struct Finger *f = &fingers[i];
+        if (!f->held)
+            continue;
+        if (f->control == STYLUS) {
+            f->held = false; /* what was under it has moved */
+        } else if (f->control == STICK && !f->rehome) {
+            /* the direction it holds stays held: kept as the finger's offset from a home that is found
+             * again at the finger's next place, which comes in the new window's coordinates */
+            f->x -= f->home_x;
+            f->y -= f->home_y;
+            f->home_x = f->home_y = 0;
+            f->rehome = true;
+        }
+    }
 }
 
 void khdays_mobile_finger(const SDL_Event *e, SDL_Renderer *r, bool controller)
@@ -201,8 +304,8 @@ void khdays_mobile_finger(const SDL_Event *e, SDL_Renderer *r, bool controller)
                     break;
                 }
             }
-            if (control == STYLUS && p.x >= safe.x && p.x < safe.x + 2.8f * size &&
-                p.y >= safe.y + safe.h - 2.8f * size && p.y < safe.y + safe.h)
+            const SDL_FRect zone = stick_zone(&safe);
+            if (control == STYLUS && SDL_PointInRectFloat(&p, &zone))
                 control = STICK;
         }
         *f = (struct Finger){true, e->tfinger.fingerID, control, p.x, p.y, p.x, p.y};
@@ -214,6 +317,11 @@ void khdays_mobile_finger(const SDL_Event *e, SDL_Renderer *r, bool controller)
     if (e->type == SDL_EVENT_FINGER_UP || e->type == SDL_EVENT_FINGER_CANCELED) {
         f->held = false;
         return;
+    }
+    if (f->rehome) {
+        f->home_x = p.x - f->x;
+        f->home_y = p.y - f->y;
+        f->rehome = false;
     }
     f->x = p.x;
     f->y = p.y;

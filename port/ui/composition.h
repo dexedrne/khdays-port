@@ -109,6 +109,9 @@ void khdays_composition_set_prompt(const char *action, const char *const *inputs
  * in the middle at the picture's full height (the DS's 256 x 192); 1: smaller, at the right, the game
  * seen beside it. A picture that already shows the lower screen whole is left as it is. */
 void khdays_composition_set_lower_view(int on, int inset);
+/* `apart` 1: the window draws the view itself, beside the picture (the phone held upright: below it,
+ * host/render/gpu_present.c), so no picture carries it; the view still counts as on. 0 at the start. */
+void khdays_composition_set_lower_view_apart(int apart);
 int khdays_composition_lower_view(void);
 /* Where the last composition made put the view, in the picture's DS dots (x, y, w, h); 0 when it
  * put none. */

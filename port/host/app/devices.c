@@ -581,9 +581,15 @@ void khdays_devices_handle(const SDL_Event *event, SDL_Renderer *renderer)
 {
 #ifdef KHDAYS_MOBILE
     switch (event->type) {
-    case SDL_EVENT_WINDOW_FOCUS_LOST:
     case SDL_EVENT_WINDOW_SAFE_AREA_CHANGED:
     case SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED:
+    case SDL_EVENT_WINDOW_RESIZED:
+        /* a turned or folded phone: the touch keys are laid out anew (mobile_touch.c reads the safe area
+         * at each use); what is held stays held, on the keys as on a gamepad */
+        khdays_mobile_relaid();
+        send();
+        break;
+    case SDL_EVENT_WINDOW_FOCUS_LOST:
     case SDL_EVENT_GAMEPAD_ADDED:
     case SDL_EVENT_GAMEPAD_REMOVED: khdays_mobile_reset(); send(); break;
     case SDL_EVENT_FINGER_DOWN: case SDL_EVENT_FINGER_MOTION:

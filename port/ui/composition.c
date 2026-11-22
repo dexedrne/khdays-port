@@ -1625,8 +1625,13 @@ static void add_halves(int columns, int key_count, int *shape_count, int *shape3
     }
 }
 
-static int lower_view_on, lower_view_inset, lower_view_made;
+static int lower_view_on, lower_view_inset, lower_view_made, lower_view_apart;
 static float lower_view_at[4];
+
+void khdays_composition_set_lower_view_apart(int apart)
+{
+    lower_view_apart = apart;
+}
 
 void khdays_composition_set_lower_view(int on, int inset)
 {
@@ -1818,7 +1823,7 @@ void khdays_composition_for(const KhdaysSituation *situation, int columns, Khday
     }
     out->screens = out->screens < 0 ? KHDAYS_SCREENS_UPPER : out->screens;
     lower_view_made = 0;
-    if (lower_view_on && out->screens == KHDAYS_SCREENS_UPPER) {
+    if (lower_view_on && !lower_view_apart && out->screens == KHDAYS_SCREENS_UPPER) {
         add_lower_view(columns, key_count, &shape_count);
     }
     out->brightness = out->brightness < 0 ? (int)KOB_DEFAULT : out->brightness;
