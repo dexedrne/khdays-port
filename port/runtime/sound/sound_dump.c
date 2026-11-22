@@ -1,5 +1,6 @@
 /* The originals written out (sound_dump.h). */
 #include "sound_dump.h"
+#include "../../host/app/fs_path.h" /* (SDL on iOS: relative paths from Application Support) */
 #include "../core/window.h"
 
 #include "../core/rom.h"
@@ -114,7 +115,10 @@ static void make_directories(const char *path)
         if ((*p == '/' || *p == '\\') && p != at && p[-1] != ':') {
             const char c = *p;
             *p = '\0';
-            SDL_CreateDirectory(at);
+            {
+                char whole_[KHDAYS_FS_PATH_MAX];
+                SDL_CreateDirectory(khdays_fs_path(at, whole_, sizeof(whole_)));
+            }
             *p = c;
         }
     }

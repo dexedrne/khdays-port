@@ -16,6 +16,7 @@
 
 #include <stdio.h>
 #include <string.h>
+#include "render_counts.h" /* (the allocations and read-backs counted) */
 
 #define PAGE KHDAYS_FRAME_VRAM_PAGE
 
@@ -991,6 +992,17 @@ static void hold_capture(const KhdaysFramePackage *p)
 /* KHDAYS_PROFILE_GPU: the 2D's work submitted once the card is idle and waited for (it slows the picture it
  * measures); the time from submitting it to the card being done said every 300 pictures, as gpu_raster3d.c
  * says the 3D's. 0 when it could not be submitted. */
+static double taken_ms; /* (since the window's summary last took them: khdays_gfx_render_gpu_take) */
+static int taken_pictures;
+
+void khdays_gfx_render_gpu_take(double *ms, int *pictures)
+{
+    *ms = taken_ms;
+    *pictures = taken_pictures;
+    taken_ms = 0.0;
+    taken_pictures = 0;
+}
+
 static int submit_timed(SDL_GPUCommandBuffer *cmd, int scale, int one_screen)
 {
     static double total, most;
@@ -1012,6 +1024,8 @@ static int submit_timed(SDL_GPUCommandBuffer *cmd, int scale, int one_screen)
     }
     ms = (double)(SDL_GetPerformanceCounter() - start) * 1000.0 / (double)SDL_GetPerformanceFrequency();
     total += ms;
+    taken_ms += ms;
+    ++taken_pictures;
     most = ms > most ? ms : most;
     if (++n == 300) {
         fprintf(stderr, "gfx: 300 pictures' 2D at %dx (%s) took the card %.2f ms on average, %.2f at most\n", scale,

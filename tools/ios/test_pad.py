@@ -119,15 +119,15 @@ def title_case(exe, rom):
     # the app sent to the background: an HD video and a monologue's voice are paused at once (this build
     # has no player: its stand-in says what it is asked), and go on at the return
     at = c.expect("the app goes to the background", r"window: the app: will enter background", at)
-    at = c.expect("an HD video is paused at once", r"movie hd \(no player in this build\): video pause asked", at)
-    at = c.expect("and a voice", r"movie hd \(no player in this build\): voice pause asked", at)
+    at = c.expect("an HD video is paused at once", r"movie hd( \(no player in this build\))?: video pause asked", at)
+    at = c.expect("and a voice", r"movie hd( \(no player in this build\))?: voice pause asked", at)
     at = c.expect("and it is said", r"window: the app is in the background: an HD video and a voice wait", at)
     away = c.expect("it is in the background", r"window: the app: did enter background", at)
     at = c.expect("and comes back", r"window: the app: did enter foreground", away)
     c.check("nothing resumes them while it is away",
             not any("resume asked" in line for line in c.lines[away:at]))
-    at = c.expect("the HD video goes on at the return", r"movie hd \(no player in this build\): video resume asked", at)
-    at = c.expect("and the voice", r"movie hd \(no player in this build\): voice resume asked", at)
+    at = c.expect("the HD video goes on at the return", r"movie hd( \(no player in this build\))?: video resume asked", at)
+    at = c.expect("and the voice", r"movie hd( \(no player in this build\))?: voice resume asked", at)
     at = c.expect("and it is said", r"window: the app is back in front: an HD video and a voice go on", at)
     c.check("the gamepad's loss paused them before, and its return let them go on",
             c.index(r"video pause asked") < c.index(r"video resume asked") < away)
@@ -154,7 +154,14 @@ def field_case(exe, rom):
     at = c.expect("and closes the tutorial", r"situation: frame \d+, tutorial 0x[\da-f]+ -> 0x0", at)
     at = c.expect("the touch pad asks for the lower-screen view", r"gamepad button touchpad \(touchpad\) -> lower_view", at)
     on = c.expect("the view is on", r"lower view: on", at)
-    shown = c.expect("the picture shows it, the stylus on it", r"^picture \d+ .*the one-screen picture.*lower view shown.*stylus [\d.]+,0 256x192", on)
+    # (the view inside the visible safe area, round 5: the safe area kept 12 points clear of the edges -- as large as
+    # that takes, the DS screen's shape, in the picture's DS dots)
+    shown = c.expect("the picture shows it, the stylus on it",
+                     r"^picture \d+ .*the one-screen picture.*lower view shown.*stylus [\d.]+,[\d.]+ [\d.]+x[\d.]+", on)
+    m = re.search(r"stylus ([\d.]+),([\d.]+) ([\d.]+)x([\d.]+)", c.lines[shown]) if shown >= 0 else None
+    c.check("the view (the stylus) is the DS screen's shape, most of the picture's height, inside it",
+            bool(m) and abs(float(m[3]) * 3 - float(m[4]) * 4) <= 4 and 170 <= float(m[4]) <= 192 and
+            float(m[2]) >= 0 and float(m[2]) + float(m[4]) <= 192.5, m[0] if m else "no stylus")
     lit_on = c.expect("that picture is read back", r"^picture \d+: \d+x\d+ read back, [\d.]+% lit", shown)
     off = c.expect("the touch pad puts it away", r"lower view: off", shown)
     hidden = c.expect("the picture is the field's again", r"^picture \d+ .*the one-screen picture.*lower view off.*stylus 0,0 0x0", off)

@@ -4,6 +4,8 @@
 #include "settings_ui.h"
 #include "settings_model.h"
 
+#include "../app/mobile_touch.h"
+
 extern "C" { // the host's C headers that say nothing of C++
 #include "../app/devices.h"
 #include "../app/updates.h"
@@ -29,6 +31,11 @@ extern "C" { // the host's C headers that say nothing of C++
 #include <vector>
 
 namespace {
+
+// Where the menu is laid out in the window: its top left (0, 0 but on the phone, where it is the visible safe
+// area's, mobile_touch.h khdays_mobile_visible: the picture under it fills the display, the menu keeps clear of
+// the notch, the rounded corners and the home bar).
+ImVec2 g_origin(0, 0);
 
 constexpr Uint64 kCaptureMs = 5000;         // how long a new binding waits for its key or button
 constexpr Uint64 kRepeatDelayMs = 400;      // a held gamepad direction starts repeating after this,
@@ -1976,7 +1983,8 @@ void draw_prompt(float w, float h, float row_h, float pad)
                             : yes != nullptr ? row_h * 1.5f
                                              : 0;
     const float box_h = text_h + 2 * pad + title + answers_h;
-    const ImVec2 box_at((w - box_w) / 2, (h - box_h) / 2), box_end(box_at.x + box_w, box_at.y + box_h);
+    const ImVec2 box_at(g_origin.x + (w - box_w) / 2, g_origin.y + (h - box_h) / 2),
+        box_end(box_at.x + box_w, box_at.y + box_h);
     ImGui::SetNextWindowPos(box_at);
     ImGui::SetNextWindowSize(ImVec2(box_w, box_h));
     ImGui::PushStyleColor(ImGuiCol_WindowBg, m.skin ? IM_COL32(0, 0, 0, 0) : IM_COL32(20, 24, 40, 250));
@@ -2469,6 +2477,20 @@ void khdays_settings_draw(SDL_Renderer *renderer, SDL_Window *window)
         SDL_SetRenderLogicalPresentation(renderer, lw, lh, mode);
         return;
     }
+    // the whole window dimmed, the menu laid out in w x h from g_origin: on the phone its visible safe area
+    const int full_w = w, full_h = h;
+    g_origin = ImVec2(0, 0);
+#ifdef KHDAYS_MOBILE
+    {
+        const SDL_FRect vis = khdays_mobile_visible_output(renderer);
+        if (vis.w >= 64 && vis.h >= 64) {
+            g_origin = ImVec2(std::round(vis.x), std::round(vis.y));
+            w = (int)std::floor(vis.x + vis.w - g_origin.x);
+            h = (int)std::floor(vis.y + vis.h - g_origin.y);
+        }
+    }
+#endif
+    khdays_skin_set_origin(g_origin);
     start_imgui(renderer);
     // the HD menu's pieces when a mod has them for the menu's language (settings_skin.h); its font
     // added before the frame begins
@@ -2491,7 +2513,7 @@ void khdays_settings_draw(SDL_Renderer *renderer, SDL_Window *window)
     }
     ImGuiIO &io = ImGui::GetIO();
     const Uint64 now = SDL_GetTicks();
-    io.DisplaySize = ImVec2((float)w, (float)h);
+    io.DisplaySize = ImVec2((float)full_w, (float)full_h);
     io.DeltaTime = m.last_draw != 0 && now > m.last_draw ? (float)(now - m.last_draw) / 1000.0f : 1.0f / 60.0f;
     m.last_draw = now;
     ImGui_ImplSDLRenderer3_NewFrame();
@@ -2505,11 +2527,11 @@ void khdays_settings_draw(SDL_Renderer *renderer, SDL_Window *window)
     // in the pieces the words stay clear of the capsules' round ends
     const float pad = std::round(m.skin ? row_h * 0.45f : ImGui::GetFontSize() * 0.6f);
     const float margin = std::round(ImGui::GetFontSize());
-    const ImVec2 screen((float)w, (float)h);
+    const ImVec2 screen((float)w, (float)h), full((float)full_w, (float)full_h);
 
     if (m.mode == MODE_UPDATE) {
         // the notice alone, over the game dimmed: the menu itself is not shown
-        ImGui::GetBackgroundDrawList()->AddRectFilled(ImVec2(0, 0), screen, IM_COL32(0, 0, 0, 170));
+        ImGui::GetBackgroundDrawList()->AddRectFilled(ImVec2(0, 0), full, IM_COL32(0, 0, 0, 170));
         draw_prompt((float)w, (float)h, row_h, pad);
         ImGui::PopFont();
         ImGui::Render();
@@ -2519,7 +2541,11 @@ void khdays_settings_draw(SDL_Renderer *renderer, SDL_Window *window)
     }
 
     if (m.skin) {
-        // the HD menu's screen over the game; the menu inside its band, the hints on its bar
+        // the HD menu's screen over the game; the menu inside its band, the hints on its bar (around it, on
+        // the phone, the game dimmed as without the pieces)
+        if (full_w != w || full_h != h) {
+            ImGui::GetBackgroundDrawList()->AddRectFilled(ImVec2(0, 0), full, IM_COL32(0, 0, 0, 170));
+        }
         khdays_skin_screen(ImGui::GetBackgroundDrawList(), screen);
         // the faded picture of the section shown (the HD menu's own five, the port's choice of one
         // for each of its sections: KHDAYS_SECTION_*)
@@ -2535,8 +2561,8 @@ void khdays_settings_draw(SDL_Renderer *renderer, SDL_Window *window)
         ImGui::SetNextWindowSize(ImVec2(b.x - a.x, b.y - a.y));
     } else {
         // the game, dimmed
-        ImGui::GetBackgroundDrawList()->AddRectFilled(ImVec2(0, 0), screen, IM_COL32(0, 0, 0, 170));
-        ImGui::SetNextWindowPos(ImVec2(margin, margin));
+        ImGui::GetBackgroundDrawList()->AddRectFilled(ImVec2(0, 0), full, IM_COL32(0, 0, 0, 170));
+        ImGui::SetNextWindowPos(ImVec2(g_origin.x + margin, g_origin.y + margin));
         ImGui::SetNextWindowSize(ImVec2((float)w - 2 * margin, (float)h - 2 * margin));
     }
     ImGui::PushStyleColor(ImGuiCol_WindowBg, m.skin ? IM_COL32(0, 0, 0, 0) : kPanel);
@@ -2655,6 +2681,12 @@ void khdays_settings_draw(SDL_Renderer *renderer, SDL_Window *window)
             text_at(at, kGrey, version);
         }
     }
+#ifdef KHDAYS_MOBILE
+    {
+        const ImVec2 at = ImGui::GetWindowPos(), extent = ImGui::GetWindowSize();
+        khdays_mobile_overlay_box("settings menu", SDL_FRect{at.x, at.y, extent.x, extent.y});
+    }
+#endif
     ImGui::End();
     ImGui::PopStyleColor(2 + scroll_colours);
     if (m.skin) {
@@ -2668,6 +2700,9 @@ void khdays_settings_draw(SDL_Renderer *renderer, SDL_Window *window)
         const ImVec4 clip(a.x, a.y, b.x - pad, b.y);
         dl->AddText(ImGui::GetFont(), size_now, ImVec2(a.x + pad * 2, (a.y + b.y - size_now) / 2), kGrey, hints(),
                     nullptr, 0.0f, &clip);
+#ifdef KHDAYS_MOBILE
+        khdays_mobile_overlay_box("settings hints", SDL_FRect{a.x, a.y, b.x - a.x, b.y - a.y});
+#endif
     }
     if (m.mode != MODE_BROWSE && m.mode != MODE_TEXT) {
         draw_prompt((float)w, (float)h, row_h, pad);

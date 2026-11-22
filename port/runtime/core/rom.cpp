@@ -13,6 +13,7 @@ static size_t cartridge_size;
 extern "C" {
 #include "../../host/app/host.h"     // khdays_host_tell_no_data
 #include "../../host/app/instance.h" // khdays_host_user_folder
+#include "../../host/app/files.h"    // khdays_host_write_file_atomic
 #include "../mods/days.h"
 #include "../mods/list.h"
 #include "origin.h"
@@ -32,6 +33,7 @@ extern "C" {
 #include <fstream>
 #include <list>
 #include <map>
+#include <mutex>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -314,6 +316,74 @@ static void give_vfs_the_mods()
     khdays::vfs::set_mods(std::move(active));
 }
 
+#ifndef _WIN32
+// The game files the port's own code reads by path through the VFS (the game's fonts its screens draw with:
+// host/screens/ui_font.cpp, ui/pause.cpp, ui/save_numbers.cpp... and the HD fonts' measures) while it reads the
+// cartridge itself, with no extracted data (the phone; KHDAYS_ROM): each one copied out of the cartridge once,
+// into caches/cartridge-<game code>-<version>-<size>/ in the working folder (the phone's Documents), its
+// nitrofs/ as the card holds it, its decompressed/ as the extraction's view has it ("X" for "X.z"), and found
+// there from then on. The phone's settings menu said "the game's font text/font_eu_10.nftr was not found"
+// without it. Any thread: the copying under a lock, through a reader of its own.
+static std::optional<fs::path> cartridge_copy(const fs::path &rel, bool original)
+{
+    static std::mutex lock;
+    static KhdaysRomReader *reader;
+    static int told;
+    const std::string game = rel.generic_string();
+    if (header.size() < 0x200 || game.empty()) {
+        return std::nullopt;
+    }
+    u32 offset = 0, size = 0;
+    const bool packed = !original && khdays_rom_find((game + ".z").c_str(), &offset, &size);
+    if (!packed && !khdays_rom_find(game.c_str(), &offset, &size)) {
+        return std::nullopt;
+    }
+    char folder[96];
+    std::snprintf(folder, sizeof(folder), "caches/cartridge-%.4s-%u-%zu/%s", reinterpret_cast<const char *>(header.data()) + GAME_CODE_AT,
+                  static_cast<unsigned>(header[ROM_VERSION_AT]), cartridge_size, packed ? "decompressed" : "nitrofs");
+    const fs::path copy = fs::path(folder) / rel;
+    std::error_code ec;
+    if (fs::is_regular_file(copy, ec)) {
+        return copy;
+    }
+    std::lock_guard<std::mutex> held(lock);
+    if (fs::is_regular_file(copy, ec)) {
+        return copy; // (another thread's, meanwhile)
+    }
+    if (reader == nullptr) {
+        reader = khdays_rom_reader_new();
+    }
+    std::vector<u8> bytes;
+    if (packed) {
+        u8 *data = nullptr;
+        u32 n = 0;
+        if (!khdays_rom_file_data(reader, (game + ".z").c_str(), -1, &data, &n)) {
+            return std::nullopt;
+        }
+        bytes.assign(data, data + n);
+        std::free(data);
+    } else {
+        bytes.resize(size);
+        if (size > 0) {
+            khdays_rom_reader_read(reader, offset, bytes.data(), size);
+        }
+    }
+    const std::string where = utf8(copy);
+    if (!khdays_host_write_file_atomic(where.c_str(), bytes.data(), bytes.size())) {
+        std::fprintf(stderr, "rom: %s could not be copied out of the cartridge to %s\n", game.c_str(), where.c_str());
+        return std::nullopt;
+    }
+    if (told++ < 40) {
+        std::fprintf(stderr, "rom: %s copied out of the cartridge to %s (%zu bytes%s): the port's own code reads it by path\n",
+                     game.c_str(), where.c_str(), bytes.size(), packed ? ", decompressed" : "");
+        std::fflush(stderr);
+    }
+    khdays_log("rom: %s copied out of the cartridge to %s (%zu bytes%s)", game.c_str(), where.c_str(), bytes.size(),
+               packed ? ", decompressed" : "");
+    return copy;
+}
+#endif
+
 extern "C" int khdays_rom_init(void)
 {
     khdays_days_unpack_all("mods");                      // the .days mods' files copied out where the VFS reads them
@@ -332,6 +402,7 @@ extern "C" int khdays_rom_init(void)
             return 0;
         }
         header.assign(cartridge, cartridge + 512);
+        khdays::vfs::set_fallback(cartridge_copy); // the game's files by path, for the port's own code
         us_card = std::memcmp(header.data() + GAME_CODE_AT, US_GAME_CODE, 4) == 0 &&
                   header[ROM_VERSION_AT] == US_ROM_VERSION;
         // the overlay table as the game reads it (a US card's at the EU addresses, the enemies' overlays each

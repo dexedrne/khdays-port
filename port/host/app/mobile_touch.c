@@ -1,6 +1,7 @@
 #include "mobile_touch.h"
 #include "profile.h"
 #include "devices.h"
+#include <stdio.h>
 
 static SDL_FRect window_stylus;
 static bool stylus_point(float x, float y, float *sx, float *sy)
@@ -40,6 +41,77 @@ bool khdays_mobile_safe(SDL_Window *w, SDL_Rect *safe)
     return true;
 }
 
+bool khdays_mobile_visible(SDL_Window *w, SDL_FRect *px, float *corner)
+{
+    static float corner_pt = -1;
+    SDL_Rect safe;
+    int ww = 0, wh = 0, pw = 0, ph = 0;
+    if (corner_pt < 0) {
+        const char *v = SDL_getenv("KHDAYS_HUD_CORNER");
+        corner_pt = v != NULL && *v ? (float)SDL_atof(v) : 12.0f;
+        corner_pt = corner_pt < 0 ? 0 : corner_pt > 80 ? 80 : corner_pt;
+    }
+    if (w == NULL || !khdays_mobile_safe(w, &safe) || safe.w <= 0 || safe.h <= 0 || !SDL_GetWindowSize(w, &ww, &wh) ||
+        !SDL_GetWindowSizeInPixels(w, &pw, &ph) || ww <= 0 || wh <= 0 || pw <= 0 || ph <= 0)
+        return false;
+    {
+        const float dx = (float)pw / (float)ww, dy = (float)ph / (float)wh, c = corner_pt * dx;
+        const float x0 = SDL_max((float)safe.x * dx, c), y0 = SDL_max((float)safe.y * dy, c);
+        const float x1 = SDL_min((float)(safe.x + safe.w) * dx, (float)pw - c);
+        const float y1 = SDL_min((float)(safe.y + safe.h) * dy, (float)ph - c);
+        if (x1 <= x0 || y1 <= y0)
+            return false;
+        *px = (SDL_FRect){x0, y0, x1 - x0, y1 - y0};
+        if (corner != NULL)
+            *corner = c;
+    }
+    return true;
+}
+
+SDL_FRect khdays_mobile_visible_output(SDL_Renderer *renderer)
+{
+    SDL_FRect vis = {0, 0, 0, 0};
+    int w = 0, h = 0;
+    SDL_GetCurrentRenderOutputSize(renderer, &w, &h);
+    if (!khdays_mobile_visible(SDL_GetRenderWindow(renderer), &vis, NULL) || vis.x + vis.w > (float)w + 0.5f ||
+        vis.y + vis.h > (float)h + 0.5f)
+        vis = (SDL_FRect){0, 0, (float)w, (float)h};
+    return vis;
+}
+
+#define OVERLAYS 24
+static struct {
+    char what[48];
+    SDL_FRect px;
+} overlays[OVERLAYS];
+static int overlay_count;
+
+void khdays_mobile_overlay_clear(void)
+{
+    overlay_count = 0;
+}
+
+void khdays_mobile_overlay_box(const char *what, SDL_FRect px)
+{
+    if (overlay_count < OVERLAYS && px.w > 0 && px.h > 0) {
+        SDL_strlcpy(overlays[overlay_count].what, what, sizeof(overlays[0].what));
+        overlays[overlay_count++].px = px;
+    }
+}
+
+int khdays_mobile_overlay_count(void)
+{
+    return overlay_count;
+}
+
+const char *khdays_mobile_overlay(int i, SDL_FRect *px)
+{
+    if (i < 0 || i >= overlay_count)
+        return NULL;
+    *px = overlays[i].px;
+    return overlays[i].what;
+}
+
 #ifdef KHDAYS_MOBILE_TEST
 void khdays_mobile_test_insets(int left, int top, int right, int bottom)
 {
@@ -62,6 +134,49 @@ int khdays_ios_layout(void)
 {
     const char *v = SDL_getenv("KHDAYS_MOBILE_LAYOUT");
     return v != NULL ? SDL_atoi(v) : 2; /* as the phone: single screen unless chosen otherwise */
+}
+
+/* The picture rate's phone (mobile_touch.h): a screen of KHDAYS_TEST_SCREEN_HZ, else the one KHDAYS_SCREEN_LOCK=HZ
+ * pretends (runtime/core/clock_sdl.c), else not known; the thermal state of KHDAYS_TEST_THERMAL until the pad
+ * script says another; the display's rate only said. */
+static int test_thermal = -1, test_slow_ms;
+
+int khdays_ios_screen_most_hz(void)
+{
+    const char *v = SDL_getenv("KHDAYS_TEST_SCREEN_HZ");
+    if (v == NULL) {
+        v = SDL_getenv("KHDAYS_SCREEN_LOCK");
+    }
+    return v != NULL ? SDL_atoi(v) : 0;
+}
+
+int khdays_ios_thermal_state(void)
+{
+    if (test_thermal < 0) {
+        const char *v = SDL_getenv("KHDAYS_TEST_THERMAL");
+        test_thermal = v != NULL ? SDL_clamp(SDL_atoi(v), 0, 3) : 0;
+    }
+    return test_thermal;
+}
+
+void khdays_ios_picture_rate(int hz)
+{
+    fprintf(stderr, "test: the display asked for %d pictures a second\n", hz);
+}
+
+void khdays_mobile_test_thermal(int state)
+{
+    test_thermal = SDL_clamp(state, 0, 3);
+}
+
+void khdays_mobile_test_slow(int ms)
+{
+    test_slow_ms = ms < 0 ? 0 : ms;
+}
+
+int khdays_mobile_test_slow_ms(void)
+{
+    return test_slow_ms;
 }
 #endif
 
@@ -327,6 +442,22 @@ void khdays_mobile_finger(const SDL_Event *e, SDL_Renderer *r, bool controller)
     f->y = p.y;
     if (f->control == STYLUS && !stylus_point(p.x, p.y, &f->x, &f->y))
         f->held = false;
+    if (f->control == STYLUS && e->type == SDL_EVENT_FINGER_DOWN) {
+        /* where a finger lands on the DS's lower screen (the first 40): the phone's console and the Linux test
+         * check the stylus mapping through every layout, the filled picture's crop included */
+        static int said;
+        if (said < 40) {
+            ++said;
+            if (f->held) {
+                SDL_Log("touch: a finger at %.0f,%.0f (window points) is the stylus at DS %.1f,%.1f (lower screen at "
+                        "%.0f,%.0f %.0fx%.0f)",
+                        (double)p.x, (double)p.y, (double)f->x, (double)f->y, (double)window_stylus.x,
+                        (double)window_stylus.y, (double)window_stylus.w, (double)window_stylus.h);
+            } else {
+                SDL_Log("touch: a finger at %.0f,%.0f (window points) is off the lower screen", (double)p.x, (double)p.y);
+            }
+        }
+    }
 }
 
 void khdays_mobile_snapshot(KhdaysInputSnapshot *out)

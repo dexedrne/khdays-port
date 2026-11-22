@@ -50,6 +50,20 @@ Needs step 6. Start a new game for movie 802.
 
 The longer sections below explain the lines.
 
+## Phone checklist: 120 Hz and the picture's cost
+
+The picture rate (`port/host/render/picture_pace.h`): 120 pictures a second while they hold their time, 60 when they do not or the phone is hot, the game's own at a critical thermal state, back up after a hold. The game itself keeps the DS's 60 VBlanks a second throughout. It applies at `picture_pace = smooth`; `picture_pace = ds` keeps the DS's pace exactly. A settings file that names `internal_resolution` keeps its value: for the phone's defaults set `internal_resolution = auto` and `picture_pace = smooth` (or delete `Documents/saves/settings.ini`).
+
+| Do | Expect | A failure looks like |
+| --- | --- | --- |
+| Launch without `internal_resolution` in the settings file. | `host: no settings file yet: internal resolution auto (the 3D kept to about 1088 x 768)`, `ios: the screen shows at most 120 pictures a second; thermal state 0 ...`, `ios: the display link asks for 120 refreshes a second`, `ios: the screen refreshes every 8.33 ms (120.0 Hz)`, `clock: the screen's lock has refresh times (8.33 ms a refresh)`. No status bar upright; the home indicator hidden until the screen is touched. | `at most 60 pictures`: the screen is not ProMotion, or `CADisableMinimumFrameDurationOnPhone` is missing from the app's Info.plist. `refreshes every 16.67 ms` with `asks for 120`: iOS kept the display at 60 (Low Power Mode does this). |
+| Play a field for a minute. | Every 10 s a `pace:` line: `the picture rate 120 a second`, about 120 pictures a second, half of them `between` the game's packages, `the 3D at 4x, the 2D at 5x` unfolded lying, `0.0 allocations and 0.0 read-backs a second`, VBlanks about 60. | `pace: the picture rate now 60 a second ... missed their time (... ms each on average ...)`: the phone cannot draw 120 at this size. Send the lines: `made` is the CPU's part, `presented` mostly the card's. |
+| Play ten minutes or more, unfolded. | Perhaps `ios: the thermal state is now 2` and `pace: the picture rate now 60 a second ...: the thermal state is serious`; once cooler (`... now 1` or `0`), `pace: the picture rate now 120 a second` after at least 5 s. | The rate dropping below 60 at state 2, or never coming back after `now 0`. |
+| One launch with `KHDAYS_PROFILE_GPU=1` in `khdays-env.txt`. | The `pace:` lines add `the card X ms of 2D (N pictures) and Y ms of 3D (M) a picture, waited for`. The waits slow the picture: take the numbers, then remove the line. | |
+| Fold and unfold in a field. | `the 3D at 3x` folded lying, `4x` unfolded and upright; the `pace:` lines go on. | |
+
+`KHDAYS_PICTURE_RATE=120`, `60` or `game` in `khdays-env.txt` pins the rate (for comparing); `auto` is the rule. `KHDAYS_PACE_LOG=N` makes the summary every N seconds. `KHDAYS_AUTO_PIXELS` and `KHDAYS_AUTO_2D_PIXELS` change auto's budgets (the 3D's pixels, 835,584 by default; the 2D's, twice that; 0 for the 2D at the window's scale). `SDL_IOS_HIDE_HOME_INDICATOR=2` dims the home indicator instead of hiding it.
+
 ## Reading the phone's console
 
 The window reports pictures 1, 30, 300, 900 and 1800, and the second picture after each change of size or safe area.
@@ -67,6 +81,9 @@ The window reports pictures 1, 30, 300, 900 and 1800, and the second picture aft
 | `ios: the screen refreshes every T ms (H Hz); the clock's lock takes its times` | Since upstream 0.1.5 the game's clock follows the screen's refreshes (upstream's "screen's lock": the DS's 59.83 Hz run at the screen's 60, each picture made about 6 ms before a refresh). Windows asks its compositor; the phone has a display link (`ios_main.m`). Said once, and again when the rate changes. |
 | `clock: the screen's lock has refresh times (T ms a refresh)` / `clock: the screen's lock is off: no refresh times reported here` | Whether the clock has a screen to lock to, said each time that changes (off in the background, on again in front). `KHDAYS_SCREEN_LOCK=off` in `Documents/khdays-env.txt` turns it off (then `ios: KHDAYS_SCREEN_LOCK=off: the screen's refreshes are not watched`); `KHDAYS_TRACE_LOCK=1` adds a `lock:` line every 300 VBlanks with where the VBlanks fall. If the game stutters or its sound wavers where it did not in round 4, try `off` first. |
 | `situation: frame F, title ...` | The game's own title state, as in the Linux title test. |
+| `pace: the picture rate now R (was R2): why` | The picture rate changed: 120 or 60 a second, or the game's own pictures; why: the thermal state, or how many pictures of the last second missed their time and by how much, or two quick seconds after the hold. |
+| `pace: 10.0 s: N pictures a second (P of the game's packages, B between them), ...` | Every 10 s: pictures a second, the game's 3D frames and VBlanks a second, a picture's time on the window's thread (made, drawn, presented, the most), the game's thread's time a VBlank, the card's times (`KHDAYS_PROFILE_GPU=1` only), allocations and read-backs a second, the thermal state, the 3D's and the 2D's scale, the rate, since when and why. |
+| `ios: the screen shows at most N pictures a second`, `ios: the display link asks for N refreshes a second`, `ios: the thermal state is now N` | The screen's most (120 on ProMotion), the rate asked of the display as the picture pace changes (60 lets the screen slow down too), the thermal state as iOS changes it (0 nominal, 1 fair, 2 serious, 3 critical). |
 
 The saved pictures are `Documents/saves/logs/picture-NNNNN.png`, at most 1024 pixels wide.
 

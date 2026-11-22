@@ -1196,7 +1196,11 @@ static void test_settings_model(void)
         {KHDAYS_SET_WALK_SPEED, KHDAYS_ROW_NUMBER, 20, 90, 5},
         {KHDAYS_SET_DISPLAY, KHDAYS_ROW_CHOICE, 0, KHDAYS_DISPLAY_COUNT - 1, 0},
         {KHDAYS_SET_SCREEN_RESOLUTION, KHDAYS_ROW_CHOICE, 0, 0, 0}, /* the desktop's: no screen without the video */
+#ifdef KHDAYS_MOBILE_TEST
+        {KHDAYS_SET_RESOLUTION, KHDAYS_ROW_CHOICE, 0, 16, 0},  /* the phone's: auto, as the window allows, 2x-16x */
+#else
         {KHDAYS_SET_RESOLUTION, KHDAYS_ROW_CHOICE, 0, 15, 0},  /* as the window allows, 2x-16x: 1x is not offered */
+#endif
         {KHDAYS_SET_ANTIALIASING, KHDAYS_ROW_CHOICE, 0, 1, 0}, /* off, FXAA */
         {KHDAYS_SET_ASPECT, KHDAYS_ROW_CHOICE, 0, KHDAYS_ASPECT_COUNT - 1, 0},
         {KHDAYS_SET_SCREENS, KHDAYS_ROW_CHOICE, 0, 1, 0},
@@ -1303,6 +1307,19 @@ static void test_settings_model(void)
               strcmp(rows[1].choices[1], "1600 x 900") == 0);
         p.video.screen_resolution = 0;
         khdays_model_rows(KHDAYS_SECTION_VIDEO, &p, &context, rows);
+#ifdef KHDAYS_MOBILE_TEST
+        /* the phone's builds offer auto first (profile.h KHDAYS_RESOLUTION_AUTO) */
+        CHECK(rows[2].id == KHDAYS_SET_RESOLUTION && rows[2].high == 16);
+        CHECK(khdays_model_choice_of(&rows[2]) == 1 && rows[2].values[0] == KHDAYS_RESOLUTION_AUTO &&
+              rows[2].values[1] == KHDAYS_RESOLUTION_WINDOW);
+        CHECK(rows[2].values[2] == 2 && rows[2].values[16] == 16);
+        p.video.internal_resolution = 1;
+        khdays_model_rows(KHDAYS_SECTION_VIDEO, &p, &context, rows);
+        CHECK(rows[2].high == 17 && khdays_model_choice_of(&rows[2]) == 0 &&
+              strcmp(rows[2].choices[0], "1x (DS)") == 0);
+        khdays_model_set_choice(&p, &rows[2], khdays_model_choice_of(&rows[2]) + 1);
+        CHECK(p.video.internal_resolution == KHDAYS_RESOLUTION_AUTO);
+#else
         CHECK(rows[2].id == KHDAYS_SET_RESOLUTION && rows[2].high == 15);
         CHECK(khdays_model_choice_of(&rows[2]) == 0 && rows[2].values[0] == KHDAYS_RESOLUTION_WINDOW);
         CHECK(rows[2].values[1] == 2 && rows[2].values[15] == 16);
@@ -1312,6 +1329,7 @@ static void test_settings_model(void)
               strcmp(rows[2].choices[0], "1x (DS)") == 0);
         khdays_model_set_choice(&p, &rows[2], khdays_model_choice_of(&rows[2]) + 1);
         CHECK(p.video.internal_resolution == KHDAYS_RESOLUTION_WINDOW);
+#endif
     }
     /* the texts the rows edit hold what the settings file does */
     {
@@ -1713,9 +1731,15 @@ static void test_video_page(void)
     for (int i = 0; i < 15; ++i) {
         key(SDL_SCANCODE_RIGHT); /* 3 to 16, then as the window allows */
     }
+#ifdef KHDAYS_MOBILE_TEST
+    CHECK(v->internal_resolution == KHDAYS_RESOLUTION_AUTO); /* (the phone's: auto first, then the window's) */
+    key(SDL_SCANCODE_RIGHT);
+    CHECK(v->internal_resolution == KHDAYS_RESOLUTION_WINDOW);
+#else
     CHECK(v->internal_resolution == KHDAYS_RESOLUTION_WINDOW);
     key(SDL_SCANCODE_RIGHT); /* round again: 2x, as 1x is not offered */
     CHECK(v->internal_resolution == 2);
+#endif
     key(SDL_SCANCODE_LEFT);
     key(SDL_SCANCODE_LEFT);
     CHECK(v->internal_resolution == 16);

@@ -27,10 +27,15 @@ static const char *languages[KHDAYS_LANGUAGE_LAST + 1];
  * own picture, is not offered: on a PC it is too small to read
  * (one screen even shrinks the HUD's pieces below it). A profile that holds it (written by
  * hand, for comparing with the DS) shows it first, so the menu says what it is. */
-enum { RESOLUTION_CHOICES = 17 };
+#if defined(KHDAYS_IOS) || defined(KHDAYS_MOBILE_TEST)
+/* (the phone's builds offer Auto too, their default: profile.h KHDAYS_RESOLUTION_AUTO) */
+enum { RESOLUTION_CHOICES = 18, RESOLUTION_NAMED = 3 };
+#else
+enum { RESOLUTION_CHOICES = 17, RESOLUTION_NAMED = 2 };
+#endif
 static const char *resolutions[RESOLUTION_CHOICES], *aspects[KHDAYS_ASPECT_COUNT], *scalings[2],
     *movies[KHDAYS_MOVIES_COUNT], *paces[2], *screens_choices[2], *two_screens_choices[KHDAYS_TWO_SCREENS_COUNT],
-    *backends[KHDAYS_BACKEND_COUNT], *displays[KHDAYS_DISPLAY_COUNT], *antialiasings[2];
+    *backends[KHDAYS_BACKEND_COUNT], *displays[KHDAYS_DISPLAY_COUNT], *antialiasings[2], *fill_fit[2];
 static const int antialiasing_values[2] = {1, 2};
 static const char *autosaves[3], *save_files[2];
 static const char *hud_anchors[9], *mission_visibility[2];
@@ -38,8 +43,12 @@ static const int hud_anchor_values[9] = {1, 2, 3, 4, 5, 6, 7, 8, 9};
 /* the choices' order on screen: file 99 (the default) first */
 static const int autosave_values[3] = {KHDAYS_AUTOSAVE_FILE99, KHDAYS_AUTOSAVE_PLAYED, KHDAYS_AUTOSAVE_OFF};
 static const int save_files_values[2] = {1, 0};
-static const int resolution_values[RESOLUTION_CHOICES] = {
-    1, KHDAYS_RESOLUTION_WINDOW, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16};
+static const int resolution_values[RESOLUTION_CHOICES] = {1,
+#if defined(KHDAYS_IOS) || defined(KHDAYS_MOBILE_TEST)
+                                                           KHDAYS_RESOLUTION_AUTO,
+#endif
+                                                           KHDAYS_RESOLUTION_WINDOW, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12,
+                                                           13, 14, 15, 16};
 /* The screen resolutions: the desktop's, then the sizes of the screen's modes, largest first (and the
  * profile's own if the screen has no such mode); grown as the screen needs. */
 static const char **screen_choices;
@@ -122,12 +131,15 @@ void khdays_model_refresh(const KhdaysProfile *work)
         languages[l] = khdays_language_name(l);
     }
     {
-        static char names[RESOLUTION_CHOICES - 2][8];
+        static char names[RESOLUTION_CHOICES - RESOLUTION_NAMED][8];
         resolutions[0] = "1x (DS)";
-        resolutions[1] = khdays_text(TXT_VIDEO_RESOLUTION_WINDOW);
-        for (int i = 2; i < RESOLUTION_CHOICES; ++i) {
-            SDL_snprintf(names[i - 2], sizeof(names[i - 2]), "%dx", resolution_values[i]);
-            resolutions[i] = names[i - 2];
+#if defined(KHDAYS_IOS) || defined(KHDAYS_MOBILE_TEST)
+        resolutions[1] = khdays_text(TXT_VIDEO_RESOLUTION_AUTO);
+#endif
+        resolutions[RESOLUTION_NAMED - 1] = khdays_text(TXT_VIDEO_RESOLUTION_WINDOW);
+        for (int i = RESOLUTION_NAMED; i < RESOLUTION_CHOICES; ++i) {
+            SDL_snprintf(names[i - RESOLUTION_NAMED], sizeof(names[i - RESOLUTION_NAMED]), "%dx", resolution_values[i]);
+            resolutions[i] = names[i - RESOLUTION_NAMED];
         }
     }
     antialiasings[0] = khdays_text(TXT_OFF);
@@ -148,6 +160,8 @@ void khdays_model_refresh(const KhdaysProfile *work)
     movies[KHDAYS_MOVIES_HD] = khdays_text(TXT_VIDEO_MOVIES_HD);
     movies[KHDAYS_MOVIES_PC] = khdays_text(TXT_VIDEO_MOVIES_PC);
     movies[KHDAYS_MOVIES_DS] = khdays_text(TXT_VIDEO_MOVIES_DS);
+    fill_fit[0] = khdays_text(TXT_VIDEO_FILL);
+    fill_fit[1] = khdays_text(TXT_VIDEO_FIT);
     paces[0] = khdays_text(TXT_VIDEO_PACE_SMOOTH);
     paces[1] = khdays_text(TXT_VIDEO_PACE_DS);
     backends[KHDAYS_BACKEND_AUTO] = khdays_text(TXT_VIDEO_BACKEND_AUTO);
@@ -501,6 +515,14 @@ static void build_video(Builder *b, KhdaysProfile *w)
     r->apply = KHDAYS_APPLY_NEXT;
     r->takes = TXT_TAKES_NEXT_MOVIE;
     add_switch(b, KHDAYS_SET_SUBTITLES, TXT_VIDEO_SUBTITLES, &v->subtitles, 1, khdays_text(TXT_VIDEO_SUBTITLES_NOTE));
+#if defined(KHDAYS_IOS) || defined(KHDAYS_MOBILE_TEST)
+    /* the phone's single screen: the game's picture and the movies over the whole display (fill, the default)
+     * or inside its safe area (fit); takes at once (host/render/gpu_present.c) */
+    needs_graphics_card(b, add_choice(b, KHDAYS_SET_PICTURE_FIT, TXT_VIDEO_PICTURE_FILL, &v->picture_fit, fill_fit, 2),
+                        TXT_VIDEO_FILL_NOTE);
+    add_choice(b, KHDAYS_SET_MOVIES_FIT, TXT_VIDEO_MOVIES_FILL, &v->movies_fit, fill_fit, 2)->note =
+        khdays_text(TXT_VIDEO_FILL_NOTE);
+#endif
     r = add_choice(b, KHDAYS_SET_PACE, TXT_VIDEO_PACE, &v->picture_ds, paces, 2);
     r->note = khdays_text(TXT_VIDEO_PACE_NOTE);
     r->warning = khdays_text(TXT_VIDEO_PACE_WARNING); /* the pictures between the game's can go wrong */

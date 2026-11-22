@@ -1,7 +1,10 @@
 /* The Linux test build's emulated gamepads (pad_script.h): SDL's virtual gamepads, attached, pressed
  * and pulled out by a script as the game's frames pass, so that what a test proves goes the whole way
  * a real controller's input does -- SDL's gamepad events, devices.c, the player's bindings, the game.
- * Window's thread only. Never in a release (CMake's KHDAYS_MOBILE_TEST). */
+ * Window's thread only. Never in a release (CMake's KHDAYS_MOBILE_TEST); in the phone's own build too, where
+ * it does nothing unless Documents/khdays-env.txt names KHDAYS_PAD_SCRIPT (a test launch: MAC-STEPS.md, "The
+ * HD movie by a pad script"). On the phone a real controller keeps working beside the script's, and the
+ * test-only steps (!safe, !thermal, !slow) are said and skipped. */
 #include "pad_script.h"
 
 #include "devices.h"
@@ -56,7 +59,9 @@ int khdays_pad_script_start(void)
     /* the test's hidden window never has the focus, and SDL keeps a gamepad's events from a window
      * without it */
     SDL_SetHint(SDL_HINT_JOYSTICK_ALLOW_BACKGROUND_EVENTS, "1");
+#ifndef KHDAYS_IOS
     khdays_devices_only_virtual(1); /* not a real controller plugged into the test's machine */
+#endif
     copy = SDL_strdup(text);
     steps = (Step *)SDL_calloc(strlen(text) / 2 + 1, sizeof(Step));
     for (item = SDL_strtok_r(copy, " \n\t", &rest); item != NULL; item = SDL_strtok_r(NULL, " \n\t", &rest)) {
@@ -230,7 +235,12 @@ static void run(const Step *s)
             if (SDL_sscanf(s->what + 5, "%d,%d,%d,%d", &l, &t, &r, &b) != 4) {
                 bad(s->what);
             }
+#ifdef KHDAYS_MOBILE_TEST
             khdays_mobile_test_insets(l, t, r, b);
+#else
+            fprintf(stderr, "pad script: !%s is for the Linux test build: the phone's own safe area stays\n", s->what);
+            return;
+#endif
             SDL_zero(event);
             event.type = SDL_EVENT_WINDOW_SAFE_AREA_CHANGED;
             event.window.windowID = SDL_GetWindowID(script_window());
@@ -255,6 +265,20 @@ static void run(const Step *s)
             event.type = SDL_EVENT_FINGER_UP;
             event.tfinger.pressure = 0.0f;
             SDL_PushEvent(&event);
+        } else if (SDL_strncmp(s->what, "thermal=", 8) == 0) {
+            /* the phone's thermal state from now on (0 nominal .. 3 critical): the picture rate follows it */
+#ifdef KHDAYS_MOBILE_TEST
+            khdays_mobile_test_thermal(SDL_atoi(s->what + 8));
+#else
+            fprintf(stderr, "pad script: !%s is for the Linux test build: skipped\n", s->what);
+#endif
+        } else if (SDL_strncmp(s->what, "slow=", 5) == 0) {
+            /* each picture made this many milliseconds longer from now on: a phone too slow for its rate */
+#ifdef KHDAYS_MOBILE_TEST
+            khdays_mobile_test_slow(SDL_atoi(s->what + 5));
+#else
+            fprintf(stderr, "pad script: !%s is for the Linux test build: skipped\n", s->what);
+#endif
         } else if (SDL_strcmp(s->what, "report") == 0) {
             report_asked = 1;
         } else {

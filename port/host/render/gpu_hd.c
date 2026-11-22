@@ -5,7 +5,94 @@
 #include "../../runtime/core/session_log.h"
 #include "../../runtime/mods/textures.h"
 
+#include <stdio.h>
 #include <stdlib.h>
+#include "render_counts.h" /* (the allocations and read-backs counted) */
+
+/* (render_counts.h: here, a file every renderer's build has) */
+unsigned khdays_render_allocations, khdays_render_readbacks;
+
+/* The shaders and pipelines made (render_counts.h), by the place each was made at. */
+typedef struct PipelinePlace {
+    const char *file;
+    int line;
+    char kind; /* 'c' compute pipeline, 'g' graphics pipeline, 's' shader */
+    unsigned count, failed;
+    Uint64 ns, most_ns;
+} PipelinePlace;
+static PipelinePlace pipeline_places[48];
+static int pipeline_place_count, pipelines_reported, pipelines_said_later;
+static unsigned pipelines_made[3], pipelines_failed;
+static Uint64 pipelines_ns;
+
+static const char *base_name(const char *file)
+{
+    const char *slash = SDL_strrchr(file, '/'), *back = SDL_strrchr(file, '\\');
+    if (back != NULL && (slash == NULL || back > slash)) {
+        slash = back;
+    }
+    return slash != NULL ? slash + 1 : file;
+}
+
+static const char *kind_name(char kind)
+{
+    return kind == 'c' ? "compute pipeline" : kind == 'g' ? "graphics pipeline" : "shader";
+}
+
+void khdays_render_pipeline_made(const char *file, int line, char kind, Uint64 ns, int ok)
+{
+    PipelinePlace *p = NULL;
+    file = base_name(file);
+    pipelines_made[kind == 'c' ? 0 : kind == 'g' ? 1 : 2]++;
+    pipelines_failed += ok ? 0u : 1u;
+    pipelines_ns += ns;
+    if (pipelines_reported) {
+        if (pipelines_said_later++ < 40) {
+            fprintf(stderr, "shaders: made during play: a %s at %s:%d in %.2f ms%s\n", kind_name(kind), file, line,
+                    (double)ns / 1e6, ok ? "" : " (FAILED)");
+        }
+        return;
+    }
+    for (int i = 0; i < pipeline_place_count; ++i) {
+        if (pipeline_places[i].line == line && pipeline_places[i].kind == kind && SDL_strcmp(pipeline_places[i].file, file) == 0) {
+            p = &pipeline_places[i];
+            break;
+        }
+    }
+    if (p == NULL && pipeline_place_count < (int)SDL_arraysize(pipeline_places)) {
+        p = &pipeline_places[pipeline_place_count++];
+        SDL_zerop(p);
+        p->file = file;
+        p->line = line;
+        p->kind = kind;
+    }
+    if (p != NULL) {
+        p->count++;
+        p->failed += ok ? 0u : 1u;
+        p->ns += ns;
+        p->most_ns = ns > p->most_ns ? ns : p->most_ns;
+    }
+}
+
+void khdays_render_pipelines_report(void)
+{
+    if (pipelines_reported) {
+        return;
+    }
+    pipelines_reported = 1;
+    fprintf(stderr,
+            "shaders: %u pipelines in %.1f ms at the start (%u compute, %u graphics; and %u shaders%s%u failed): made "
+            "before the first picture, so that no scene waits for one\n",
+            pipelines_made[0] + pipelines_made[1], (double)pipelines_ns / 1e6, pipelines_made[0], pipelines_made[1],
+            pipelines_made[2], ", ", pipelines_failed);
+    for (int i = 0; i < pipeline_place_count; ++i) {
+        const PipelinePlace *p = &pipeline_places[i];
+        fprintf(stderr, "shaders:   %s:%d: %u %s%s in %.2f ms (the longest %.2f ms)%s\n", p->file, p->line, p->count,
+                kind_name(p->kind), p->count == 1 ? "" : "s", (double)p->ns / 1e6, (double)p->most_ns / 1e6,
+                p->failed ? " FAILED" : "");
+    }
+    fflush(stderr);
+}
 
 static SDL_GPUDevice *device;
 static SDL_GPUBuffer *buffer;

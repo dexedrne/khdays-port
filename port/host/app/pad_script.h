@@ -19,6 +19,10 @@
  *   !safe=L,T,R,B    its unsafe margins from now on (instead of KHDAYS_MOBILE_INSETS), with SDL's
  *                    safe-area event
  *   !report          the next picture is reported and saved (window.c's picture report)
+ *   !thermal=N       the phone's thermal state from now on: 0 nominal, 1 fair, 2 serious, 3 critical
+ *                    (host/render/picture_pace.h: the picture rate follows it)
+ *   !slow=MS         each picture made MS milliseconds longer from now on (0: as it is): a phone too
+ *                    slow for its picture rate
  * An anchor restarts the count: `t` when the title's menu first shows, `sN` when scene N begins (the
  * anchors begin in the order the script gives them).
  *

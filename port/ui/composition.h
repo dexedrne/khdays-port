@@ -133,6 +133,22 @@ int khdays_composition_lower_view(void);
 int khdays_composition_lower_view_rect(float rect[4]);
 /* The last composition's shapes were put aside (a screen of the port's takes the picture): no view in it. */
 void khdays_composition_lower_view_drop(void);
+/* The phone's single screen over the whole display (FILL, host/render/gpu_present.c): `picture` 1 makes the
+ * section condition `phone` hold, the common rule's screen whole and a backdrop's `fit` cover the picture
+ * instead of sitting in it at the DS's size; `movies` 1 does the same for the game's own movies (the situation
+ * `movie`). Both 0 at the start and on a PC. */
+void khdays_composition_set_fill(int picture, int movies);
+int khdays_composition_fill(void);
+/* The HUD's frame on the phone's filled display: the part of a picture `columns` DS dots wide (192 high) the
+ * window shows inside its visible safe area (host/app/mobile_touch.h khdays_mobile_visible), x0, y0, x1, y1 in
+ * the picture's DS dots; NULL: none (the whole picture, as on a PC). Every shape not covering the picture is
+ * laid out in it instead of the whole picture -- its corners the frame's, one larger than it made smaller to
+ * fit -- and in a frame smaller than 256 x 192 the HUD's factor shrinks with it. Set before each composition
+ * (host/render/gpu_present.c); a composition for another width ignores it. */
+void khdays_composition_set_hud_frame(int columns, const float box[4]);
+/* The frame for the last composition's width (the whole picture without one): for the pieces placed by the
+ * host (host/render/onescreen_images.c). */
+void khdays_composition_hud_frame(float box[4]);
 
 /* The composition for a situation in a picture C DS dots wide. */
 void khdays_composition_for(const KhdaysSituation *situation, int columns, KhdaysComposition *out);

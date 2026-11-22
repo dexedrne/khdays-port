@@ -314,6 +314,29 @@ hide3d all
 stop
 
 # ----------------------------------------------------------------------------
+# The phone's single screen (`phone`: host/render/gpu_present.c's FILL, the
+# owner's rule of 2026-11-21: "single screen is the whole point", every picture
+# over the whole display, no bars). Without the HD pictures the boot logos and
+# the title are not the two screens side by side there: the upper screen covers
+# the picture, the lower one shows whole with the lower-screen view (the
+# touch pad's click, Capture, the Screen key). On the title its menu (STORY
+# MODE, MISSION MODE: the lower screen) is also shown small at the bottom,
+# rounded, so that what is chosen can be seen without the view; the logos' lower
+# screen (the video codec's) only with the view. Each screen keeps its own
+# brightness (`own`), as `halves` had them.
+[intro if phone]
+screens upper
+brightness own
+shape upper at centre scale cover
+stop
+[title if phone]
+screens upper
+brightness own
+shape lower at bottom margin 0 0 0 3 scale fixed(0.38) round 6 force
+shape upper at centre scale cover
+stop
+
+# ----------------------------------------------------------------------------
 # Without the HD pictures: the boot logos and the title's two screens side by
 # side, each with its own brightness (the maintainer's choice from the
 # pictures, 2026-10-14).
@@ -374,6 +397,19 @@ stop
 # Roxas's thoughts and the game over -- the upper screen whole at the DS's
 # size in the middle, the game over's orb (the HUD's 3D) with its lines (the
 # maintainer's choice, 2026-10-14).
+# (on the phone's filled display the day's card and the thoughts cover the
+# picture instead: no bars beside them; not the game over, whose orb -- the
+# HUD's 3D at the DS's size -- would no longer sit on its picture)
+[day-counter if phone]
+screens upper
+brightness upper
+shape upper at centre scale cover
+stop
+[thoughts if phone]
+screens upper
+brightness upper
+shape upper at centre scale cover
+stop
 [day-counter]
 screens upper
 brightness upper

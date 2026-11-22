@@ -5,6 +5,7 @@
 #include "profile.h"
 #include "host.h" /* KHDAYS_ENH_* */
 #include "instance.h"
+#include "fs_path.h" /* (SDL on iOS: relative paths from Application Support) */
 #include "../screens/ui_text.h"
 
 #include <SDL3/SDL_filesystem.h>
@@ -275,6 +276,8 @@ void khdays_video_default(KhdaysVideo *v)
     v->subtitles = 1; /* as the DS showed them */
     v->display = KHDAYS_DISPLAY_WINDOW;
     v->lower_view = KHDAYS_LOWER_VIEW_FULL;
+    v->picture_fit = 0; /* fill: the owner's choice for the phone (2026-11-21) */
+    v->movies_fit = 0;
     v->screen_resolution = 0; /* the desktop's */
 }
 
@@ -296,7 +299,7 @@ static const char *const aspects[KHDAYS_ASPECT_COUNT] = {"4:3", "16:9", "16:10",
  * it), or the window's size. */
 static int valid_resolution(int n)
 {
-    return n >= 1 || n == KHDAYS_RESOLUTION_WINDOW;
+    return n >= 1 || n == KHDAYS_RESOLUTION_WINDOW || n == KHDAYS_RESOLUTION_AUTO;
 }
 
 static int input_count(int device)
@@ -421,6 +424,8 @@ int khdays_profile_repair(KhdaysProfile *p)
         changed += clamp(&p->video.hud_size, 1, 8);
         changed += clamp(&p->video.display, 0, KHDAYS_DISPLAY_COUNT - 1);
         changed += clamp(&p->video.lower_view, 0, KHDAYS_LOWER_VIEW_COUNT - 1);
+        changed += clamp(&p->video.picture_fit, 0, 1);
+        changed += clamp(&p->video.movies_fit, 0, 1);
     }
     changed += clamp(&p->sound.volume, 0, 100);
     changed += clamp(&p->sound.music, 0, 100);
@@ -574,11 +579,13 @@ void khdays_settings_path(char *path, int size)
         khdays_host_user_path("settings.ini", path, size);
         /* another player's copy on the same PC starts from the first player's
          * settings (same PC, same screen and sound) */
-        if (khdays_host_player_slot_taken() > 1 && !SDL_GetPathInfo(path, NULL)) {
+        char whole[KHDAYS_FS_PATH_MAX], first_whole[KHDAYS_FS_PATH_MAX];
+        const char *at = khdays_fs_path(path, whole, sizeof(whole));
+        if (khdays_host_player_slot_taken() > 1 && !SDL_GetPathInfo(at, NULL)) {
             size_t length = 0;
-            void *first = SDL_LoadFile("saves/settings.ini", &length);
+            void *first = SDL_LoadFile(khdays_fs_path("saves/settings.ini", first_whole, sizeof(first_whole)), &length);
             if (first != NULL) {
-                SDL_SaveFile(path, first, length);
+                SDL_SaveFile(at, first, length);
                 SDL_free(first);
             }
         }
@@ -940,7 +947,9 @@ static void read_video(Reader *r, const char *key, const char *value, const char
         const long n = SDL_strtol(value, &end, 10);
         if (SDL_strcasecmp(value, "window") == 0) {
             v->internal_resolution = KHDAYS_RESOLUTION_WINDOW;
-        } else if (end != value && *trim(end) == '\0' && n != KHDAYS_RESOLUTION_WINDOW && valid_resolution((int)n)) {
+        } else if (SDL_strcasecmp(value, "auto") == 0) {
+            v->internal_resolution = KHDAYS_RESOLUTION_AUTO; /* (the phone's default) */
+        } else if (end != value && *trim(end) == '\0' && n >= 1 && valid_resolution((int)n)) {
             v->internal_resolution = (int)n;
         } else {
             say_localized(r, TXT_VIDEO_BAD_VALUE, key, value, "window");
@@ -987,6 +996,17 @@ static void read_video(Reader *r, const char *key, const char *value, const char
         } else {
             say_localized(r, TXT_VIDEO_BAD_VALUE, key, value, "full");
             v->lower_view = KHDAYS_LOWER_VIEW_FULL;
+        }
+        return;
+    }
+    if (SDL_strcasecmp(key, "picture") == 0 || SDL_strcasecmp(key, "movie_picture") == 0) {
+        /* the phone's single screen: fill (the whole display, the default) or fit (inside the safe area) */
+        int *fit = SDL_strcasecmp(key, "picture") == 0 ? &v->picture_fit : &v->movies_fit;
+        if (SDL_strcasecmp(value, "fill") == 0 || SDL_strcasecmp(value, "fit") == 0) {
+            *fit = SDL_strcasecmp(value, "fit") == 0;
+        } else {
+            say_localized(r, TXT_VIDEO_BAD_VALUE, key, value, "fill");
+            *fit = 0;
         }
         return;
     }
@@ -1390,12 +1410,13 @@ void khdays_profile_load(KhdaysProfile *profile, const char *path, KhdaysNotice 
     size_t size = 0;
     char *text;
     Reader *r;
+    char whole[KHDAYS_FS_PATH_MAX];
     khdays_profile_default(profile);
     forget_unknown();
-    if (!SDL_GetPathInfo(path, NULL)) {
+    if (!SDL_GetPathInfo(khdays_fs_path(path, whole, sizeof(whole)), NULL)) {
         return; /* no settings yet: the defaults */
     }
-    text = (char *)SDL_LoadFile(path, &size);
+    text = (char *)SDL_LoadFile(khdays_fs_path(path, whole, sizeof(whole)), &size);
     r = (Reader *)SDL_calloc(1, sizeof(Reader));
     if (text != NULL && r != NULL) {
         r->profile = profile;
@@ -1403,8 +1424,9 @@ void khdays_profile_load(KhdaysProfile *profile, const char *path, KhdaysNotice 
         r->section = SEC_TOP;
         if (!read_text(r, text, size)) {
             char bad[512];
+            char bad_whole[KHDAYS_FS_PATH_MAX];
             SDL_snprintf(bad, sizeof(bad), "%s.bad", path);
-            SDL_CopyFile(path, bad);
+            SDL_CopyFile(khdays_fs_path(path, whole, sizeof(whole)), khdays_fs_path(bad, bad_whole, sizeof(bad_whole)));
             say(notice,
                 "settings: %s is not a settings file the port can read; it was kept as %s and the "
                 "defaults are used",
@@ -1595,6 +1617,8 @@ int khdays_profile_save(const KhdaysProfile *p, const char *path, KhdaysNotice n
         char resolution[16], screen[24];
         if (v->internal_resolution == KHDAYS_RESOLUTION_WINDOW) {
             SDL_strlcpy(resolution, "window", sizeof(resolution));
+        } else if (v->internal_resolution == KHDAYS_RESOLUTION_AUTO) {
+            SDL_strlcpy(resolution, "auto", sizeof(resolution));
         } else {
             SDL_snprintf(resolution, sizeof(resolution), "%d", v->internal_resolution);
         }
@@ -1612,7 +1636,8 @@ int khdays_profile_save(const KhdaysProfile *p, const char *path, KhdaysNotice n
             "# the window's size (a borderless window covers the screen at the desktop's)\n"
             "resolution = %s\n"
             "# internal_resolution: window (the window's size, the default) or a whole multiple of the DS's\n"
-            "# picture: the settings offer 2 to 16; 1, the DS's own, only for comparing with the DS\n"
+            "# picture: the settings offer 2 to 16; 1, the DS's own, only for comparing with the DS; auto (the\n"
+            "# phone's default): the window's, the 3D kept to about 1088 x 768 pixels\n"
             "internal_resolution = %s\n"
             "# antialiasing: off or fxaa -- the 3D's edges smoothed once it is drawn (FXAA), the HUD\n"
             "# and the text left sharp\n"
@@ -1662,6 +1687,15 @@ int khdays_profile_save(const KhdaysProfile *p, const char *path, KhdaysNotice n
             : v->backend == KHDAYS_BACKEND_VULKAN ? "vulkan"
                                                   : "auto",
             v->lower_view == KHDAYS_LOWER_VIEW_INSET ? "inset" : "full");
+#if defined(KHDAYS_IOS) || defined(KHDAYS_MOBILE_TEST)
+        add(&t,
+            "# picture: on the phone's single screen, fill (the game over the whole display, edge to edge,\n"
+            "#          the overflow cut where its shape differs) or fit (whole, inside the safe area)\n"
+            "picture = %s\n"
+            "# movie_picture: the same for the movies, HD and the DS's: fill or fit\n"
+            "movie_picture = %s\n",
+            v->picture_fit ? "fit" : "fill", v->movies_fit ? "fit" : "fill");
+#endif
     }
     add_unknown(&t, "video");
     {
@@ -1751,11 +1785,17 @@ int khdays_profile_save(const KhdaysProfile *p, const char *path, KhdaysNotice n
         slash = SDL_strrchr(dir, '\\');
     }
     if (slash != NULL) {
+        char dir_whole[KHDAYS_FS_PATH_MAX];
         *slash = '\0';
-        SDL_CreateDirectory(dir);
+        SDL_CreateDirectory(khdays_fs_path(dir, dir_whole, sizeof(dir_whole)));
     }
     SDL_snprintf(tmp, sizeof(tmp), "%s.tmp", path);
-    ok = SDL_SaveFile(tmp, t.data, t.length) && SDL_RenamePath(tmp, path);
+    {
+        /* whole paths: SDL on iOS keeps relative ones in Application Support (fs_path.h) */
+        char tmp_whole[KHDAYS_FS_PATH_MAX], path_whole[KHDAYS_FS_PATH_MAX];
+        const char *t_at = khdays_fs_path(tmp, tmp_whole, sizeof(tmp_whole));
+        ok = SDL_SaveFile(t_at, t.data, t.length) && SDL_RenamePath(t_at, khdays_fs_path(path, path_whole, sizeof(path_whole)));
+    }
     if (!ok) {
         say(notice, "settings: %s could not be written: %s", path, SDL_GetError());
     }

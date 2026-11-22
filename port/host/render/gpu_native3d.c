@@ -13,6 +13,8 @@
 #include "generated/native3d_rear_vs.h"
 #include "generated/native3d_vs.h"
 #include "generated/native3d_z_ps.h"
+#include "../app/fs_path.h"
+#include "render_counts.h" /* (each pipeline timed: the start's "shaders:" line) */
 
 #include <stdio.h>
 #include <string.h>
@@ -338,6 +340,8 @@ static SDL_GPUGraphicsPipeline *make_graphics(SDL_GPUShader *vs, SDL_GPUShader *
     return SDL_CreateGPUGraphicsPipeline(device, &info);
 }
 
+static void remember(char what, int value, int made);
+
 static SDL_GPUGraphicsPipeline *polygon_pipeline(int key)
 {
     static const SDL_GPUCompareOp depth_ops[4] = {SDL_GPU_COMPAREOP_LESS, SDL_GPU_COMPAREOP_LESS_OR_EQUAL,
@@ -382,6 +386,7 @@ static SDL_GPUGraphicsPipeline *polygon_pipeline(int key)
         }
         pipelines[key] = make_graphics(polygon_vs, z ? polygon_ps_z : polygon_ps, t, depth_ops[compare], write, s,
                                        compare_mask, write_mask);
+        remember('p', key, pipelines[key] != NULL);
     }
     return pipelines[key];
 }
@@ -404,6 +409,90 @@ static SDL_GPUGraphicsPipeline *make_full(int clear_bit, int out)
     return make_graphics(rear_vs, rear_ps, t, SDL_GPU_COMPAREOP_ALWAYS, 1,
                          stencil_ops(SDL_GPU_COMPAREOP_ALWAYS, SDL_GPU_STENCILOP_REPLACE, SDL_GPU_STENCILOP_REPLACE),
                          0xff, 0xff);
+}
+
+/* The pipelines made during play, kept between starts (the Android port's idea: its "Compiling shaders" first
+ * start keeps the compiled pipelines): a polygon pipeline (key) or a rear plane's (outputs) is made the first
+ * time a picture needs it -- on Metal its state compiled then, a stall in the middle of a scene -- so each one
+ * made is written to caches/pipelines-native3d.txt in the working folder (the phone's Documents), and the next
+ * start makes them all before its first picture (khdays_native3d_open's warm-up). The file's first line names
+ * the driver and the depth format the keys were made for; another one's list is started again. */
+#define PIPELINE_LIST "caches/pipelines-native3d.txt"
+static int warming; /* the warm-up makes them: not written again */
+static FILE *pipeline_list;
+
+static void list_header(char *line, size_t size)
+{
+    SDL_snprintf(line, size, "# khdays native3d pipelines 1 %s %d\n", SDL_GetGPUDeviceDriver(device), (int)depth_format);
+}
+
+static void remember(char what, int value, int made)
+{
+    if (warming || !made) {
+        return;
+    }
+    if (pipeline_list == NULL) {
+        char whole[KHDAYS_FS_PATH_MAX], line[128];
+        SDL_CreateDirectory(khdays_fs_path("caches", whole, sizeof(whole)));
+        pipeline_list = fopen(PIPELINE_LIST, "a");
+        if (pipeline_list == NULL) {
+            warming = 1; /* (not again: the folder cannot be written) */
+            return;
+        }
+        if (ftell(pipeline_list) == 0) {
+            list_header(line, sizeof(line));
+            fputs(line, pipeline_list);
+        }
+    }
+    fprintf(pipeline_list, "%c %d\n", what, value);
+    fflush(pipeline_list);
+}
+
+/* Makes the pipelines the list remembers; says how many and how long. */
+static void warm_up(void)
+{
+    char line[128], header[128];
+    int made = 0, failed = 0;
+    FILE *in = fopen(PIPELINE_LIST, "r");
+    Uint64 start;
+    if (in == NULL) {
+        fprintf(stderr, "shaders: no %s yet: the 3D's pipelines are made as the pictures first need them, and "
+                        "remembered for the next start\n", PIPELINE_LIST);
+        return;
+    }
+    list_header(header, sizeof(header));
+    if (fgets(line, sizeof(line), in) == NULL || SDL_strcmp(line, header) != 0) {
+        fclose(in);
+        remove(PIPELINE_LIST); /* another driver's or format's: started again */
+        fprintf(stderr, "shaders: %s was made for another driver or depth format: started again\n", PIPELINE_LIST);
+        return;
+    }
+    start = SDL_GetTicksNS();
+    warming = 1;
+    while (fgets(line, sizeof(line), in) != NULL) {
+        char what = 0;
+        int value = -1;
+        if (SDL_sscanf(line, "%c %d", &what, &value) != 2) {
+            continue;
+        }
+        if (what == 'p' && value >= 0 && value < KEYS && pipelines[value] == NULL) {
+            if (polygon_pipeline(value) != NULL) {
+                ++made;
+            } else {
+                ++failed;
+            }
+        } else if (what == 'r' && value >= 0 && value < OUTPUTS && rears[value] == NULL) {
+            if ((rears[value] = make_full(0, value)) != NULL) {
+                ++made;
+            } else {
+                ++failed;
+            }
+        }
+    }
+    warming = 0;
+    fclose(in);
+    fprintf(stderr, "shaders: the 3D's %d pipelines remembered in %s made at the start in %.1f ms%s\n", made,
+            PIPELINE_LIST, (double)(SDL_GetTicksNS() - start) / 1e6, failed ? " (some failed)" : "");
 }
 
 static SDL_GPUTexture *make_texture(SDL_GPUTextureFormat format, SDL_GPUTextureUsageFlags usage, int w, int h)
@@ -516,6 +605,11 @@ void khdays_native3d_close(void)
     if (device == NULL) {
         return;
     }
+    if (pipeline_list != NULL) {
+        fclose(pipeline_list);
+        pipeline_list = NULL;
+    }
+    warming = 0;
     drop_targets();
     drop_spare();
     for (int i = 0; i < KEYS; ++i) {
@@ -606,6 +700,9 @@ int khdays_native3d_open(SDL_GPUDevice *d)
         SDL_strlcpy(why, SDL_GetError(), sizeof(why));
         khdays_native3d_close();
         return SDL_SetError("%s", why);
+    }
+    if (SDL_getenv("KHDAYS_SHADER_WARMUP") == NULL || SDL_strcmp(SDL_getenv("KHDAYS_SHADER_WARMUP"), "off") != 0) {
+        warm_up(); /* (KHDAYS_SHADER_WARMUP=off: made as needed, as before) */
     }
     return 1;
 }
@@ -861,8 +958,12 @@ int khdays_native3d_prepare(const KhdaysG3dList *list, int count, int32_t hidden
             return 0;
         }
     }
-    if ((frame->disp3dcnt & 0x4000u) && rears[outputs] == NULL && (rears[outputs] = make_full(0, outputs)) == NULL) {
-        return 0;
+    if ((frame->disp3dcnt & 0x4000u) && rears[outputs] == NULL) {
+        rears[outputs] = make_full(0, outputs);
+        remember('r', outputs, rears[outputs] != NULL);
+        if (rears[outputs] == NULL) {
+            return 0;
+        }
     }
     if (!make_targets(frame->width, frame->height)) {
         return 0;

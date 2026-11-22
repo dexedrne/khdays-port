@@ -58,6 +58,8 @@ endif()
 host_test(clock)
 set_tests_properties(clock PROPERTIES TIMEOUT 30)
 host_test(mobile_touch)
+# the phone's picture rate: 120, 60 or the game's own, by the pictures' times and the thermal state
+host_test(picture_pace ${port}/host/render/picture_pace.c)
 host_test(sections ${port}/runtime/core/data_init.c ${port}/runtime/core/window.c)
 host_test(hd_text)
 target_link_libraries(hd_text PRIVATE khdays-hud-settings)

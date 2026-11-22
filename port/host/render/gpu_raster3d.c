@@ -21,6 +21,7 @@
 #include <math.h>
 #include <stdio.h>
 #include <string.h>
+#include "render_counts.h" /* (the allocations and read-backs counted) */
 
 #define TILE 8                           /* a tile's side, in DS pixels */
 #define MAX_COLUMNS (3 * KHDAYS_FRAME_W) /* the widest picture (see gpu_present.c) */
@@ -1227,11 +1228,25 @@ static int gpu_profile(void)
     return on;
 }
 
+/* (the same times since the window's summary last took them: khdays_raster3d_gpu_take) */
+static double taken_ms;
+static int taken_pictures;
+
+void khdays_raster3d_gpu_take(double *ms, int *pictures)
+{
+    *ms = taken_ms;
+    *pictures = taken_pictures;
+    taken_ms = 0.0;
+    taken_pictures = 0;
+}
+
 static void gpu_profile_add(double ms, int w, int h, int32_t npolys)
 {
     static double total, most;
     static int64_t polygons;
     static int n;
+    taken_ms += ms;
+    ++taken_pictures;
     total += ms;
     most = ms > most ? ms : most;
     polygons += npolys;

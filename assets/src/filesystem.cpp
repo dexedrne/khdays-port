@@ -1,6 +1,7 @@
 #include "khdays/vfs/filesystem.h"
 
 #include <algorithm>
+#include <atomic>
 #include <fstream>
 #include <mutex>
 #include <shared_mutex>
@@ -18,6 +19,7 @@ std::filesystem::path g_mods_root{"mods"};
 std::vector<std::filesystem::path> g_mods;  // set_mods's list, in load order
 bool g_mods_set = false;
 std::shared_mutex g_mods_lock;  // the three above: set on one thread while others look files up
+std::atomic<Fallback> g_fallback{nullptr};  // set_fallback's
 
 // Normalize a game path to a relative path: strip leading slashes, unify
 // separators, and reject any component that would escape the root.
@@ -98,6 +100,10 @@ std::optional<std::filesystem::path> find_mod_file(const std::filesystem::path& 
 
 }  // namespace
 
+void set_fallback(Fallback fallback) {
+    g_fallback.store(fallback);
+}
+
 void set_data_root(const std::filesystem::path& root) {
     g_data_root = root;
 }
@@ -152,6 +158,9 @@ std::optional<std::filesystem::path> resolve(std::string_view game_path) {
             }
         }
     }
+    if (const Fallback fallback = g_fallback.load()) {
+        return fallback(*rel, false);
+    }
     return std::nullopt;
 }
 
@@ -168,6 +177,9 @@ std::optional<std::filesystem::path> resolve_original(std::string_view game_path
         if (is_file(raw)) {
             return raw;
         }
+    }
+    if (const Fallback fallback = g_fallback.load()) {
+        return fallback(*rel, true);
     }
     return std::nullopt;
 }

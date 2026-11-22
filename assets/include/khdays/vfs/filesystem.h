@@ -49,6 +49,14 @@ std::optional<std::filesystem::path> resolve(std::string_view game_path);
 // so a mod there must be in the game's own format.
 std::optional<std::filesystem::path> resolve_original(std::string_view game_path);
 
+// The last place resolve() and resolve_original() look, after the mods and the extracted data: a game
+// that reads its cartridge directly has no extracted data (the port on the phone, or with KHDAYS_ROM),
+// and gives each game file asked for by path a copy on the disk this way (port/runtime/core/rom.cpp).
+// `rel` is the normalized game path; `original` is true for resolve_original (the file as the game reads
+// it), false for resolve (the decompressed view first: "X" is the decompressed "X.z"). nullptr: none.
+using Fallback = std::optional<std::filesystem::path> (*)(const std::filesystem::path& rel, bool original);
+void set_fallback(Fallback fallback);
+
 // True if resolve() finds the game path.
 bool exists(std::string_view game_path);
 

@@ -3,9 +3,10 @@
  * player's profile, the settings menu opens on Esc or the pad's settings button, sound_output.c plays.
  * Closing the window ends the process (docs/PLATFORM.md, "The PC's side"). */
 #include "host.h"
+#include "fs_path.h"
 #include "hud_settings.h"
 #include "mobile_touch.h"
-#ifdef KHDAYS_MOBILE_TEST
+#if defined(KHDAYS_MOBILE_TEST) || defined(KHDAYS_IOS)
 #include "pad_script.h"
 #endif
 #include "devices.h"
@@ -61,6 +62,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "../render/render_counts.h" /* (the allocations and read-backs counted) */
 
 #define W 256
 #define H 192
@@ -512,7 +514,9 @@ static void picture_report(SDL_Window *window, SDL_Renderer *renderer)
         }
 #endif
         if (shot_dir != NULL) {
-            SDL_CreateDirectory(shot_dir);
+            /* (a whole path: SDL on iOS would make a relative one in Application Support, fs_path.h) */
+            char whole[KHDAYS_FS_PATH_MAX];
+            SDL_CreateDirectory(khdays_fs_path(shot_dir, whole, sizeof(whole)));
         }
     }
     if (picture_report_due > 0) {
@@ -606,6 +610,31 @@ static void picture_report(SDL_Window *window, SDL_Renderer *renderer)
         }
         SDL_DestroySurface(rgba);
     }
+#ifdef KHDAYS_MOBILE
+    {
+        /* the HUD and what the window draws over the picture, each with whether it is inside the visible safe
+         * area (the safe area, clear of the rounded corners: mobile_touch.h khdays_mobile_visible) */
+        SDL_FRect vis, box;
+        float corner = 0;
+        if (khdays_mobile_visible(window, &vis, &corner)) {
+            const int pieces = khdays_present_hud_pieces(), overlays = khdays_mobile_overlay_count();
+            fprintf(stderr,
+                    "picture %u: visible safe area %.0f,%.0f to %.0f,%.0f (window pixels, %.0f clear of the edges); "
+                    "%d HUD pieces, %d overlays\n",
+                    n, (double)vis.x, (double)vis.y, (double)(vis.x + vis.w), (double)(vis.y + vis.h), (double)corner,
+                    pieces, overlays);
+            for (int i = 0; i < pieces + overlays; ++i) {
+                const char *name =
+                    i < pieces ? khdays_present_hud_piece(i, &box) : khdays_mobile_overlay(i - pieces, &box);
+                const int inside = box.x >= vis.x - 1 && box.y >= vis.y - 1 && box.x + box.w <= vis.x + vis.w + 1 &&
+                                   box.y + box.h <= vis.y + vis.h + 1;
+                fprintf(stderr, "picture %u: %s %s at %.0f,%.0f to %.0f,%.0f, %s\n", n,
+                        i < pieces ? "hud piece" : "overlay", name != NULL ? name : "?", (double)box.x, (double)box.y,
+                        (double)(box.x + box.w), (double)(box.y + box.h), inside ? "inside" : "OUTSIDE");
+            }
+        }
+    }
+#endif
     fflush(stderr);
 }
 
@@ -709,14 +738,23 @@ static void pad_lost_draw(SDL_Renderer *r)
     SDL_SetRenderDrawColor(r, 0, 0, 0, 150);
     SDL_RenderFillRect(r, NULL);
     SDL_SetRenderDrawColor(r, 255, 255, 255, 255);
-    for (int i = 0; i < 2; ++i) {
-        const float length = (float)SDL_strlen(lines[i]);
-        const float k = SDL_max(1.0f, SDL_floorf((float)w / (8.0f * 60.0f))) * (i == 0 ? 1.5f : 1.0f);
-        SDL_SetRenderScale(r, k, k);
-        SDL_RenderDebugText(r, ((float)w - 8.0f * length * k) / 2.0f / k,
-                            ((float)h / 2.0f + (i == 0 ? -14.0f : 6.0f) * SDL_max(1.0f, (float)w / 480.0f)) / k,
-                            lines[i]);
+    {
+        /* the lines in the middle of what is seen (the visible safe area), each as wide as fits it */
+        const SDL_FRect vis = khdays_mobile_visible_output(r);
+        for (int i = 0; i < 2; ++i) {
+            const float length = (float)SDL_strlen(lines[i]);
+            float k = SDL_max(1.0f, SDL_floorf(vis.w / (8.0f * 60.0f))) * (i == 0 ? 1.5f : 1.0f);
+            k = SDL_max(1.0f, SDL_min(k, SDL_floorf(vis.w / (8.0f * length + 16.0f))));
+            const float x = vis.x + (vis.w - 8.0f * length * k) / 2.0f;
+            const float y = vis.y + vis.h / 2.0f + (i == 0 ? -14.0f : 6.0f) * SDL_max(1.0f, vis.w / 480.0f);
+            SDL_SetRenderScale(r, k, k);
+            SDL_RenderDebugText(r, x / k, y / k, lines[i]);
+            khdays_mobile_overlay_box(i == 0 ? "controller notice 0" : "controller notice 1",
+                                      (SDL_FRect){x, y, 8.0f * length * k, 8.0f * k});
+        }
     }
+    (void)w;
+    (void)h;
     SDL_SetRenderScale(r, 1.0f, 1.0f);
     SDL_SetRenderLogicalPresentation(r, lw, lh, presentation);
 }
@@ -735,6 +773,15 @@ static void redraw(SDL_Window *window, SDL_Renderer *renderer)
     if (khdays_present_lost()) {
         return;
     }
+#ifdef KHDAYS_MOBILE
+    khdays_mobile_overlay_clear(); /* (what this redraw draws over the picture, for the reports) */
+#endif
+#ifdef KHDAYS_MOBILE_TEST
+    if (khdays_mobile_test_slow_ms() > 0) {
+        /* the pad script's "!slow=MS": a phone too slow for its picture rate, each picture this much longer */
+        SDL_DelayPrecise((Uint64)khdays_mobile_test_slow_ms() * 1000000u);
+    }
+#endif
     khdays_present_draw();
     {
         static int logging;
@@ -1191,9 +1238,11 @@ static int host_thread(void *unused)
              * right one (Circle), the camera on the right stick -- instead of the DS's positions,
              * and the picture as wide as the phone's screen, folded (about 2.2:1) or unfolded
              * (1.42:1), not 16:9 with bars. Settings changes both, and the file then says. */
-            char *text = (char *)SDL_LoadFile(path, NULL);
+            char whole[KHDAYS_FS_PATH_MAX];
+            char *text = (char *)SDL_LoadFile(khdays_fs_path(path, whole, sizeof(whole)), NULL);
             const int pad_said = text != NULL && (SDL_strstr(text, "[gamepad") != NULL || SDL_strstr(text, "preset") != NULL);
             const int aspect_said = text != NULL && SDL_strstr(text, "aspect") != NULL;
+            const int resolution_said = text != NULL && SDL_strstr(text, "internal_resolution") != NULL;
             if (!pad_said && SDL_getenv("KHDAYS_MOBILE_PRESET_DS") == NULL) {
                 khdays_profile_apply_preset(&profile, KHDAYS_PRESET_KH2, KHDAYS_AVAILABLE_ENHANCEMENTS);
                 fprintf(stderr, "host: %s: the Kingdom Hearts II gamepad layout\n",
@@ -1201,6 +1250,14 @@ static int host_thread(void *unused)
             }
             if (!aspect_said) {
                 profile.video.aspect = KHDAYS_ASPECT_WINDOW;
+            }
+            if (!resolution_said) {
+                /* the 3D at a scale the phone holds at 120 pictures a second (profile.h's auto: 4 on the
+                 * unfolded phone, 3 folded lying) instead of the window's 9 or 10, which ran at about 10; the
+                 * picture rate itself is the picture pace's (host/render/picture_pace.h): 120 while it holds */
+                profile.video.internal_resolution = KHDAYS_RESOLUTION_AUTO;
+                fprintf(stderr, "host: %s: internal resolution auto (the 3D kept to about 1088 x 768)\n",
+                        text == NULL ? "no settings file yet" : "the settings file names no internal resolution");
             }
             SDL_free(text);
         }
@@ -1232,7 +1289,7 @@ static int host_thread(void *unused)
         return 1;
     }
     khdays_devices_init(&profile, publish);
-#ifdef KHDAYS_MOBILE_TEST
+#if defined(KHDAYS_MOBILE_TEST) || defined(KHDAYS_IOS) /* (the phone: only with KHDAYS_PAD_SCRIPT in khdays-env.txt) */
     const int pad_script = khdays_pad_script_start();
 #else
     const int pad_script = 0;
@@ -1266,7 +1323,7 @@ static int host_thread(void *unused)
             !khdays_net_in_session() && !(SDL_GetWindowFlags(window) & SDL_WINDOW_MINIMIZED) &&
             (SDL_getenv("KHDAYS_SCREEN_LOCK") == NULL || SDL_strcmp(SDL_getenv("KHDAYS_SCREEN_LOCK"), "off") != 0));
         khdays_devices_frame(); /* a wheel's notch let go */
-#ifdef KHDAYS_MOBILE_TEST
+#if defined(KHDAYS_MOBILE_TEST) || defined(KHDAYS_IOS)
         if (pad_script) {
             /* the script's clock is the game's VBlanks, and while the game waits for a gamepad (its
              * time stopped) the wall's clock at 60 a second, so that a script can bring one back */

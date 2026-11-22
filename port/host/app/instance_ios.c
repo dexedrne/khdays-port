@@ -3,8 +3,12 @@
 #include <SDL3/SDL.h>
 
 static int slot;
+static char folder[64] = "saves";
 int khdays_host_player_slot(void)
 {
+    if (!slot) {
+        khdays_host_user_folder_from_env(folder, sizeof(folder)); /* (a test's own folder: instance.h) */
+    }
     return slot = 1;
 }
 int khdays_host_player_slot_taken(void)
@@ -17,7 +21,7 @@ int khdays_host_other_copies(void)
 }
 const char *khdays_host_user_folder(void)
 {
-    return "saves";
+    return folder;
 }
 
 void khdays_host_automatic_name(char *out, size_t size)

@@ -1,5 +1,6 @@
 /* The colours the game draws each 2D sheet's tiles with (sheet_colours.h). */
 #include "sheet_colours.h"
+#include "../../host/app/fs_path.h" /* (SDL on iOS: relative paths from Application Support) */
 
 #include "../core/io.h"
 #include "names.h"
@@ -480,7 +481,10 @@ static void make_directories(const char *path)
         if ((path[i] == '/' || path[i] == '\\') && i > 0) {
             memcpy(part, path, (size_t)i);
             part[i] = '\0';
-            SDL_CreateDirectory(part);
+            {
+                char whole_[KHDAYS_FS_PATH_MAX];
+                SDL_CreateDirectory(khdays_fs_path(part, whole_, sizeof(whole_)));
+            }
         }
     }
 }

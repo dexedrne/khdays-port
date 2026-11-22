@@ -20,8 +20,11 @@ void khdays_skin_renderer_gone();
 // none. NULL without the pieces' font.
 ImFont *khdays_skin_font(ImFontAtlas *atlas, const void *fallback_ttf, int fallback_size);
 
-// A point of the picture in the window of `size`.
+// A point of the picture in the window of `size` (from the origin below: the window's top left, or on
+// the phone the visible safe area's).
 ImVec2 khdays_skin_point(ImVec2 size, float x, float y);
+// Where the picture's top left goes in the window (0, 0 but on the phone's filled display).
+void khdays_skin_set_origin(ImVec2 origin);
 
 // The screen behind the menu, over the whole window.
 void khdays_skin_screen(ImDrawList *dl, ImVec2 size);

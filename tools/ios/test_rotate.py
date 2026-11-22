@@ -39,11 +39,17 @@ import time
 
 from test_pad import FIELD, LAVAPIPE, Checks, press
 
+ROOT = Path(__file__).resolve().parents[2]
+
 # the unfolded phone and the folded one, in pixels, with the unsafe margins (left, top, right, bottom)
 UNFOLDED_L = ((2853, 2007), (60, 0, 60, 21))
 UNFOLDED_P = ((2007, 2853), (0, 59, 0, 34))
 FOLDED_L = ((2868, 1320), (59, 0, 59, 21))
 FOLDED_P = ((1320, 2868), (0, 59, 0, 34))
+# the phone console's window (round 4, unfolded lying: 951x669 points at 2.806) with its safe area: the home
+# bar's 34 points at the foot; turned, the same margins
+CONSOLE_L = ((2669, 1878), (0, 0, 0, 95))
+CONSOLE_P = ((1878, 2669), (0, 0, 0, 95))
 
 
 def points(shape):
@@ -57,7 +63,7 @@ def turn(frame, shape):
     return f"{frame}!safe={','.join(map(str, margins))} {frame + 1}!size={w}x{h}"
 
 
-def play(exe, rom, script, shape, seconds, extra=(), settings=None, pictures=None):
+def play(exe, rom, script, shape, seconds, extra=(), settings=None, pictures=None, videos=None):
     """Runs the game until the script is done (and a moment more); returns its log's lines and status."""
     (w, h), margins = shape
     env = dict(os.environ, KHDAYS_ROM=str(rom), SDL_AUDIODRIVER="dummy", SDL_VIDEODRIVER="offscreen",
@@ -76,6 +82,10 @@ def play(exe, rom, script, shape, seconds, extra=(), settings=None, pictures=Non
         if settings is not None:
             (Path(work) / "saves").mkdir()
             (Path(work) / "saves" / "settings.ini").write_text(settings)
+        if videos is not None:
+            # the player's HD videos where the phone looks for them: a link, never a copy
+            (Path(work) / "data" / "cutscenes").mkdir(parents=True)
+            (Path(work) / "data" / "cutscenes" / "cinematics").symlink_to(videos, target_is_directory=True)
         log = Path(work) / "trace"
         with log.open("wb") as out:
             game = subprocess.Popen([exe], cwd=work, env=env, stdout=out, stderr=subprocess.STDOUT)
@@ -103,7 +113,7 @@ HEADER = re.compile(r"^picture (\d+) \(game frame \d+, scene \d+\): window (\d+)
                     r"(\d+) columns, .* logical (\d+)x(\d+) in output")
 LAYOUT = re.compile(r"^picture (\d+): layout (portrait|landscape) \(safe area (\d+)x(\d+) pixels\), "
                     r"game picture (-?\d+),(-?\d+) (\d+)x(\d+), lower view (none|below the picture|over the picture) "
-                    r"(-?\d+),(-?\d+) (\d+)x(\d+), stylus (-?\d+),(-?\d+) (\d+)x(\d+) \(window pixels\)")
+                    r"(-?\d+),(-?\d+) (\d+)x(\d+), stylus (-?\d+),(-?\d+) (\d+)x(\d+) \(window pixels\); (.*)$")
 LIT = re.compile(r"^picture (\d+): (\d+)x(\d+) read back, ([\d.]+)% lit, within (\d+),(\d+) to (\d+),(\d+),")
 SAVED = re.compile(r"^picture (\d+): saved to (\S+)")
 KEYS = re.compile(r"^picture (\d+): touch keys (drawn|not drawn) \(settings (open|closed), a controller "
@@ -135,6 +145,7 @@ class Report:
                     self.view_where = layout[9]
                     self.view = tuple(int(layout[k]) for k in range(10, 14))
                     self.stylus = tuple(int(layout[k]) for k in range(14, 18))
+                    self.fill = layout[18]
                 if lit and lit[1] == number:
                     self.read = (int(lit[2]), int(lit[3]))
                     self.share = float(lit[4])
@@ -152,10 +163,25 @@ def inside(rect, area, slack):
     return x >= area[0] - slack and y >= area[1] - slack and x + w <= area[2] + slack and y + h <= area[3] + slack
 
 
-def check_shape(c, lines, what, shape, at, view, least, one_picture, inset=False, touch=False):
+FILL_SLACK = 2  # pixels of rounding at an edge of the window
+CORNER = 12  # the visible safe area: the safe area kept this clear of every edge (mobile_touch.h, KHDAYS_HUD_CORNER)
+
+
+def visible(shape):
+    """The visible safe area x0, y0, x1, y1 the HUD and the lower-screen view keep to (the round 5 HUD stage)."""
+    (w, h), m = shape
+    return (max(m[0], CORNER), max(m[1], CORNER), w - max(m[2], CORNER), h - max(m[3], CORNER))
+
+
+def check_shape(c, lines, what, shape, at, view, least, one_picture, inset=False, touch=False, black_edges=None):
     """Reads the report after line `at` and checks it for `shape`; `view`: None (off), "below" or "over";
     `inset`: the settings file's smaller view at the right, else the full one in the middle; `touch`:
-    played by touch (no controller: the touch keys are drawn). Returns the line the report ended at."""
+    played by touch (no controller: the touch keys are drawn). Single screen FILLS the window (the owner's
+    rule, 2026-11-21): what is lit is the whole window, edge to edge, under the unsafe margins too (`black_edges`:
+    the reason the game's own black may leave an edge unlit, None for none), the game's picture covers it (upright
+    with the view on: across its width at its top, the view below), and only the touch keys keep to the safe area.
+    `one_picture`: the one-screen picture, else the upper screen of a scene that shows both. Returns the line the
+    report ended at."""
     (w, h), margins = shape
     safe = (margins[0], margins[1], w - margins[2], h - margins[3])
     safe_w, safe_h = safe[2] - safe[0], safe[3] - safe[1]
@@ -168,54 +194,55 @@ def check_shape(c, lines, what, shape, at, view, least, one_picture, inset=False
     # a picture is placed by whole dots of its own (SDL's viewport): right to within one of them
     dot = max(r.picture[2] / r.logical[0], 1.0)
     slack = math.ceil(dot) + 2
+    window = (0, 0, w, h)
     detail = (f"{r.way}, {r.share}% lit within {r.box[0]},{r.box[1]} to {r.box[2]},{r.box[3]}; game picture "
               f"{r.picture[0]},{r.picture[1]} {r.picture[2]}x{r.picture[3]}; view {r.view_where} {r.view[0]},{r.view[1]} "
-              f"{r.view[2]}x{r.view[3]}; stylus {r.stylus[0]},{r.stylus[1]} {r.stylus[2]}x{r.stylus[3]}; safe area "
-              f"{safe[0]},{safe[1]} to {safe[2]},{safe[3]}")
+              f"{r.view[2]}x{r.view[3]}; stylus {r.stylus[0]},{r.stylus[1]} {r.stylus[2]}x{r.stylus[3]}; {r.fill}")
     c.check(f"{what}: the picture read back is {w}x{h}", r.read == (w, h) and r.window == (w, h), f"{r.read[0]}x{r.read[1]}")
     c.check(f"{what}: the console says {'portrait' if upright else 'landscape'}",
             r.orientation == ("portrait" if upright else "landscape"), r.orientation)
     c.check(f"{what}: at least {least}% is lit", r.share >= least, detail)
-    c.check(f"{what}: what is lit lies in the safe area",
-            inside((r.box[0], r.box[1], r.box[2] - r.box[0] + 1, r.box[3] - r.box[1] + 1), safe, slack), detail)
-    c.check(f"{what}: the game's picture lies in the safe area", r.picture[2] > 0 and inside(r.picture, safe, slack), detail)
-    if upright:
-        c.check(f"{what}: upright, the picture is at the safe area's top, not above it",
-                safe[1] <= r.picture[1] <= safe[1] + slack, detail)
-    if one_picture:
-        c.check(f"{what}: it is the one-screen picture", r.way == "the one-screen picture", r.way)
-        if upright:
-            c.check(f"{what}: upright, the picture spans the safe area's width", r.picture[2] >= safe_w - 2 * slack, detail)
-        else:
-            c.check(f"{what}: lying, the picture spans the safe area's height", r.picture[3] >= safe_h - 2 * slack, detail)
-            c.check(f"{what}: lying, the picture is in the middle",
-                    abs(r.picture[0] + r.picture[2] / 2 - (safe[0] + safe[2]) / 2) <= slack, detail)
+    edges = (r.box[0] <= FILL_SLACK and r.box[1] <= FILL_SLACK and r.box[2] >= w - 1 - FILL_SLACK and
+             r.box[3] >= h - 1 - FILL_SLACK)
+    if black_edges is None and upright and view == "below":
+        # the room under the view: the lower screen, dimmed, covering it -- its own dark rows (the field's DAY panel,
+        # black on the DS) may leave the window's foot unlit; the other three edges must be lit
+        c.check(f"{what}: what is lit reaches the window's top and sides", r.box[0] <= FILL_SLACK and r.box[1] <= FILL_SLACK and
+                r.box[2] >= w - 1 - FILL_SLACK, detail)
+        if not edges:
+            print(f"{c.name}: {what}: the foot not lit to the edge, allowed: the dimmed lower screen's own black rows "
+                  f"under the view ({detail})")
+    elif black_edges is None:
+        c.check(f"{what}: what is lit is the whole window, edge to edge", edges, detail)
+    elif not edges:
+        print(f"{c.name}: {what}: not lit to every edge, allowed: {black_edges} ({detail})")
+    c.check(f"{what}: the console says the picture covers the window", r.fill.startswith(f"fill: ") and
+            f"covering the window {w}x{h} " in r.fill, r.fill)
+    if upright and view is not None:
+        # (the view below it, or over it when played by touch and the keys leave too little room below)
+        c.check(f"{what}: upright with the view, the picture spans the window's width at its top",
+                r.picture[0] <= 1 and r.picture[0] + r.picture[2] >= w - 1 and r.picture[1] <= 1, detail)
     else:
-        # the title is the two DS screens whole: one above the other upright, side by side lying
-        c.check(f"{what}: the two screens are {'one above the other' if upright else 'side by side'}",
-                r.way == ("two screens stacked" if upright else "two screens side by side"), r.way)
-        c.check(f"{what}: they span the safe area's width or its height",
-                r.picture[2] >= safe_w - 2 * slack or r.picture[3] >= safe_h - 2 * slack, detail)
-    if not one_picture:
-        c.check(f"{what}: the stylus is the lower screen, in the picture",
-                r.stylus[2] > 0 and inside(r.stylus, (r.picture[0], r.picture[1], r.picture[0] + r.picture[2],
-                                                      r.picture[1] + r.picture[3]), 2), detail)
-        if upright:
-            c.check(f"{what}: upright, the stylus is the lower half",
-                    abs(r.stylus[1] - (r.picture[1] + r.picture[3] / 2)) <= 2 and abs(r.stylus[2] - r.picture[2]) <= 2, detail)
-        else:
-            c.check(f"{what}: lying, the stylus is the right half",
-                    abs(r.stylus[0] - (r.picture[0] + r.picture[2] / 2)) <= 2 and abs(r.stylus[3] - r.picture[3]) <= 2, detail)
-    elif view is None:
+        c.check(f"{what}: the game's picture covers the window",
+                r.picture[0] <= 1 and r.picture[1] <= 1 and r.picture[0] + r.picture[2] >= w - 1 and
+                r.picture[1] + r.picture[3] >= h - 1, detail)
+        c.check(f"{what}: it is centred", abs(r.picture[0] + r.picture[2] / 2 - w / 2) <= slack and
+                abs(r.picture[1] + r.picture[3] / 2 - h / 2) <= slack, detail)
+    c.check(f"{what}: it is the {'one-screen picture' if one_picture else 'upper screen of both'}",
+            r.way == ("the one-screen picture" if one_picture else "the upper screen filling the window, both screens' scene"),
+            r.way)
+    if view is None:
         c.check(f"{what}: no lower-screen view, no stylus", r.view_where == "none" and r.stylus[2] == 0, detail)
     else:
         c.check(f"{what}: the lower-screen view is {view} the picture", r.view_where == f"{view} the picture", detail)
-        c.check(f"{what}: the view lies in the window's safe area", r.view[2] > 0 and inside(r.view, safe, slack), detail)
+        c.check(f"{what}: the view lies in the window", r.view[2] > 0 and inside(r.view, window, slack), detail)
+        vis = visible(shape)
+        vis_w, vis_h = vis[2] - vis[0], vis[3] - vis[1]
+        c.check(f"{what}: the view lies inside the visible safe area {vis}", inside(r.view, vis, slack), detail)
         c.check(f"{what}: the view has the DS screen's shape", abs(r.view[2] * 3 - r.view[3] * 4) <= 8, detail)
         c.check(f"{what}: the stylus rectangle is the view's", r.stylus == r.view, detail)
         if view == "below":
-            c.check(f"{what}: the view starts under the picture", r.view[1] >= r.picture[1] + r.picture[3], detail)
-            c.check(f"{what}: what is lit reaches into the view", r.box[3] > r.view[1] + r.view[3] // 2, detail)
+            c.check(f"{what}: the view starts under the picture", r.view[1] >= r.picture[1] + r.picture[3] - 1, detail)
         else:
             c.check(f"{what}: the view lies in the picture",
                     inside(r.view, (r.picture[0], r.picture[1], r.picture[0] + r.picture[2], r.picture[1] + r.picture[3]), 2),
@@ -226,17 +253,18 @@ def check_shape(c, lines, what, shape, at, view, least, one_picture, inset=False
             c.check(f"{what}: the inset view is the smaller one, in the picture's right half",
                     r.view[3] <= 0.7 * r.picture[3] and middle > r.picture[0] + r.picture[2] / 2 + r.view[2] / 8, detail)
         elif inset:
-            c.check(f"{what}: the inset view is the smaller one, at the safe area's right",
-                    r.view[2] <= 0.7 * safe_w and r.view[0] + r.view[2] >= safe[2] - slack - 4 * dot - 2 and
-                    r.view[0] + r.view[2] <= safe[2] + slack, detail)
+            c.check(f"{what}: the inset view is the smaller one, at the visible safe area's right",
+                    r.view[2] <= 0.7 * w and r.view[0] + r.view[2] >= vis[2] - slack - 4 * dot - 2 and
+                    r.view[0] + r.view[2] <= vis[2] + slack, detail)
         elif view == "over":
-            c.check(f"{what}: the full view is as tall as the picture, in its middle",
-                    r.view[3] >= r.picture[3] - 2 * slack and abs(middle - (r.picture[0] + r.picture[2] / 2)) <= slack + 1,
-                    detail)
+            # (as large as the visible safe area takes it: its height, or its width where that is narrower)
+            c.check(f"{what}: the full view is as large as the visible safe area takes, in its middle",
+                    r.view[3] >= min(vis_h, vis_w * 3 / 4, r.picture[3]) - 2 * slack and
+                    abs(middle - (vis[0] + vis[2]) / 2) <= slack + 1, detail)
         else:
-            c.check(f"{what}: the full view is in the middle, as wide as the safe area or down to its foot",
-                    abs(middle - (safe[0] + safe[2]) / 2) <= slack + 1 and
-                    (r.view[2] >= safe_w - 2 * slack or touch or r.view[1] + r.view[3] >= safe[3] - 3 * dot - slack),
+            c.check(f"{what}: the full view is in the middle, as wide as the visible safe area or down to its foot",
+                    abs(middle - (vis[0] + vis[2]) / 2) <= slack + 1 and
+                    (r.view[2] >= vis_w - 2 * slack or touch or r.view[1] + r.view[3] >= vis[3] - 3 * dot - slack),
                     detail)
     if touch:
         ok = hasattr(r, "keys")
@@ -247,7 +275,7 @@ def check_shape(c, lines, what, shape, at, view, least, one_picture, inset=False
             c.check(f"{what}: the view ends above the touch keys", r.view[1] + r.view[3] <= r.keys_top + 1,
                     f"the view's foot at {r.view[1] + r.view[3]}, the keys' top at {r.keys_top}")
         if ok:
-            c.check(f"{what}: the touch keys are at the safe area's foot", safe[1] < r.keys_top < safe[3],
+            c.check(f"{what}: the touch keys are in the safe area, at its foot", safe[1] < r.keys_top < safe[3],
                     f"their top at {r.keys_top}")
     if hasattr(r, "saved"):
         print(f"{c.name}: {what}: saved as {Path(r.saved).name}")
@@ -259,14 +287,19 @@ def check_run(c, turns, pad_stays=True):
     said = [m[1] for line in c.lines if (m := re.match(r"window: orientation (portrait|landscape) after ", line))]
     # (the first is the window's opening; a turn may be said twice: its margins, then its size)
     squeezed = [s for n, s in enumerate(said) if n == 0 or s != said[n - 1]]
+    # (two shapes of one orientation in a row -- folded lying, then the console's window lying -- are one word)
+    turns = [s for n, s in enumerate(turns) if n == 0 or s != turns[n - 1]]
     c.check("each turn is said on the console with its layout", squeezed == turns, " ".join(squeezed))
     opened = sum("host: sound: stream opened" in line for line in c.lines)
     closed = sum("host: sound: stream closed" in line or "host: no sound" in line for line in c.lines)
     c.check("the sound stream is opened once and never closed", opened == 1 and closed == 0, f"{opened} opened, {closed} closed")
     bad = [line for line in c.lines
            if re.search(r"device was lost|cannot be read back|did not take it|ALL BLACK|stopped answering|cannot open", line)]
-    # (the first pictures of a run are black: the game has drawn nothing yet)
-    bad = [line for line in bad if not re.match(r"picture ([1-9]|[1-9]\d): ", line)]
+    # (the first pictures of a run are black: the game has drawn nothing yet; and a periodic sample -- pictures 300, 900,
+    # 1800 -- can fall on the game's own black between two scenes, scene 5, the filled picture's slower pace on the CPU
+    # card moving them: seen at picture 1800, game frame 2432, scene 5)
+    bad = [line for line in bad if not re.match(r"picture ([1-9]|[1-9]\d): ", line) and
+           not re.match(r"picture (300|900|1800): \d+x\d+ read back, ALL BLACK", line)]
     c.check("no picture is lost, black or refused", not bad, bad[0][:160] if bad else "")
     if pad_stays:
         gone = sum("the gamepad is gone" in line or "gamepad disconnected" in line for line in c.lines)
@@ -278,16 +311,39 @@ def words(orders):
 
 
 def title_case(exe, rom, pictures):
-    order = [UNFOLDED_L, UNFOLDED_P, UNFOLDED_L, FOLDED_P, FOLDED_L, UNFOLDED_P, UNFOLDED_L]
-    script = ["0*ps5", "t", "60!report"]
+    order = [UNFOLDED_L, UNFOLDED_P, UNFOLDED_L, FOLDED_P, FOLDED_L, CONSOLE_L, CONSOLE_P, UNFOLDED_P, UNFOLDED_L]
+    # the boot logos first (frame 300, before the title's menu), then the title through every shape
+    script = ["0*ps5", "300!report", "t", "60!report"]
     for n, shape in enumerate(order[1:]):
         script += [turn(120 + 150 * n, shape), f"{120 + 150 * n + 100}!report"]
-    c = Checks("title", play(exe, rom, " ".join(script), order[0], 240, pictures=pictures and pictures / "title"))
-    at = c.expect("the title's menu shows", r"pad script: frame \d+: anchor t0 begins")
+    end = 120 + 150 * (len(order) - 1)
+    script += [press(end, "touchpad"), f"{end + 80}!report"]
+    # two fingers on the view (the lower screen whole over the covering picture): its middle and a point a quarter
+    # of the way in, in the window's points (its pixels here) -- each must land on the DS's lower screen there
+    taps = [(1426, 1003), (755, 500)]
+    script += [f"{end + 120 + 10 * n}!touch={x},{y}" for n, (x, y) in enumerate(taps)]
+    c = Checks("title", play(exe, rom, " ".join(script), order[0], 300, pictures=pictures and pictures / "title"))
+    # the logos: the upper screen covering the window (its lower one, the video codec's, with the view)
+    at = check_shape(c, c.lines, "the boot logos, unfolded lying", order[0], 0, None, 30.0, True)
+    at = c.expect("the title's menu shows", r"pad script: frame \d+: anchor t0 begins", at)
     names = ["unfolded lying", "unfolded upright", "unfolded lying again", "folded upright", "folded lying",
-             "unfolded upright again", "unfolded lying at the end"]
+             "the phone console's window lying", "the phone console's window upright", "unfolded upright again",
+             "unfolded lying at the end"]
     for name, shape in zip(names, order):
-        at = check_shape(c, c.lines, name, shape, at, None, 30.0, False)
+        at = check_shape(c, c.lines, name, shape, at, None, 30.0, True)
+    # the lower-screen view on the title: its whole lower screen (the menu) over the picture
+    at = check_shape(c, c.lines, "unfolded lying, the view on", order[-1], at, "over", 30.0, True)
+    asked = max((i for i in range(min(at, len(c.lines) - 1) + 1) if re.match(r"pad script: .* !report", c.lines[i])), default=0)
+    r = Report(c.lines, asked)  # (the view's report again: where its rectangle is)
+    for x, y in taps:
+        n = c.expect(f"a finger at {x},{y} on the view is the stylus", rf"touch: a finger at {x},{y} \(window points\) is the stylus", at)
+        m = re.search(r"stylus at DS ([\d.]+),([\d.]+)", c.lines[n])
+        if m and r.ok:
+            vx, vy, vw, vh = r.view
+            want = ((x - vx) * 256 / vw, (y - vy) * 192 / vh)
+            c.check(f"the finger at {x},{y} lands on the DS's lower screen where the view shows it",
+                    abs(float(m[1]) - want[0]) <= 1.5 and abs(float(m[2]) - want[1]) <= 1.5,
+                    f"DS {m[1]},{m[2]}, the view at {vx},{vy} {vw}x{vh} puts it at {want[0]:.1f},{want[1]:.1f}")
     check_run(c, words(order))
     if c.failed:
         c.tail()
@@ -437,11 +493,74 @@ def waits_case(exe, rom, pictures):
     return c.failed == 0
 
 
+def videos_folder():
+    """The player's HD videos (KHDAYS_HD_VIDEOS, else the work folder's private/cinematics), or None."""
+    named = os.environ.get("KHDAYS_HD_VIDEOS")
+    folder = Path(named) if named else ROOT.parent / "private" / "cinematics"
+    return folder.resolve() if (folder / "hd802.mp4").is_file() else None
+
+
+def movie_case(exe, rom, pictures):
+    """A new game's opening movie as the player's HD video (hd802), turned through the five shapes while it
+    plays, then paused: it covers the window in each, its pause panel whole in the safe area."""
+    videos = videos_folder()
+    if videos is None:
+        print("movie: no HD videos (KHDAYS_HD_VIDEOS or private/cinematics with hd802.mp4): skipped")
+        return True
+    order = [UNFOLDED_L, UNFOLDED_P, CONSOLE_L, FOLDED_P, FOLDED_L, UNFOLDED_L]
+    script = ["0*ps5", "t", press(130, "south"), press(330, "south"), press(530, "south"), press(680, "dpleft"),
+              press(740, "south"), "s11", "200!report"]
+    for n, shape in enumerate(order[1:]):
+        script += [turn(300 + 200 * n, shape), f"{300 + 200 * n + 120}!report"]
+    script += [press(300 + 200 * (len(order) - 1), "start")]
+    c = Checks("movie", play(exe, rom, " ".join(script), order[0], 700, {"KHDAYS_TRACE_MOVIE_HD": "1"},
+                             pictures=pictures and pictures / "movie", videos=videos))
+    if any("external HD video playback is unavailable" in line for line in c.lines):
+        print("movie: this build has no HD player (no FFmpeg libraries found): skipped")
+        return True
+    at = c.expect("the opening plays as the player's HD video", r"movies: start hd802\.mp4")
+    names = ["unfolded lying", "unfolded upright", "the phone console's window lying", "folded upright",
+             "folded lying", "unfolded lying again"]
+    for name, shape in zip(names, order):
+        (w, h), _ = shape
+        at = c.expect(f"{name}: a report is asked for", r"pad script: .* !report", at)
+        r = Report(c.lines, at)
+        c.check(f"{name}: the movie is reported", r.ok)
+        if not r.ok:
+            continue
+        detail = (f"{r.way}, {r.share}% lit within {r.box[0]},{r.box[1]} to {r.box[2]},{r.box[3]}; picture "
+                  f"{r.picture[0]},{r.picture[1]} {r.picture[2]}x{r.picture[3]}; {r.fill}")
+        c.check(f"{name}: it is the HD movie, read back {w}x{h}", r.way == "an HD movie" and r.read == (w, h), detail)
+        c.check(f"{name}: what is lit is the whole window, edge to edge",
+                r.box[0] <= FILL_SLACK and r.box[1] <= FILL_SLACK and r.box[2] >= w - 1 - FILL_SLACK and
+                r.box[3] >= h - 1 - FILL_SLACK, detail)
+        c.check(f"{name}: the video covers the window, centred, its overflow cut",
+                r.fill.startswith("fill: ") and f"covering the window {w}x{h} " in r.fill and r.picture[0] <= 1 and
+                r.picture[1] <= 1 and r.picture[0] + r.picture[2] >= w - 1 and r.picture[1] + r.picture[3] >= h - 1 and
+                abs(r.picture[0] + r.picture[2] / 2 - w / 2) <= 2 and abs(r.picture[1] + r.picture[3] / 2 - h / 2) <= 2,
+                detail)
+        at = r.at
+    at = c.expect("Options pauses the video", r"movies: pause hd802\.mp4 at", at)
+    panel = c.expect("its pause panel shows", r"movies: the pause panel at", at)
+    m = re.search(r"pause panel at (-?\d+),(-?\d+) (\d+)x(\d+)", c.lines[panel])
+    if m:
+        (w, h), margins = order[-1]
+        x, y, pw, ph = (int(m[k]) for k in range(1, 5))
+        c.check("the pause panel is whole in the safe area, 4:3",
+                x >= margins[0] - 1 and y >= margins[1] - 1 and x + pw <= w - margins[2] + 1 and
+                y + ph <= h - margins[3] + 1 and abs(pw * 3 - ph * 4) <= 8, c.lines[panel])
+    check_run(c, words(order))
+    if c.failed:
+        c.tail()
+    return c.failed == 0
+
+
 def main():
+    sys.stdout.reconfigure(line_buffering=True)  # (each line seen as it comes, under CTest too)
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("exe", type=Path)
     parser.add_argument("rom", type=Path)
-    parser.add_argument("--only", choices=("title", "field", "inset", "waits"))
+    parser.add_argument("--only", choices=("title", "field", "inset", "waits", "movie"))
     parser.add_argument("--pictures", type=Path, help="keep each case's reported pictures and console in this folder")
     args = parser.parse_args()
     if not LAVAPIPE.is_file():
@@ -452,7 +571,8 @@ def main():
     cases = (("title", lambda: title_case(exe, rom, pictures)),
              ("field", lambda: field(exe, rom, pictures, "field", None)),
              ("inset", lambda: field(exe, rom, pictures, "inset", "[video]\nlower_view = inset\n")),
-             ("waits", lambda: waits_case(exe, rom, pictures)))
+             ("waits", lambda: waits_case(exe, rom, pictures)),
+             ("movie", lambda: movie_case(exe, rom, pictures)))
     results = [case() for name, case in cases if args.only in (None, name)]
     return 0 if all(results) else 1
 

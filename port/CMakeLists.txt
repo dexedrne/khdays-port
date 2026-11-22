@@ -636,6 +636,21 @@ if(APPLE)
     list(APPEND native_host_sources host/movies/movie_hd_core.c host/movies/movie_hd_apple.m)
     set_source_files_properties(host/movies/movie_hd_apple.m PROPERTIES COMPILE_OPTIONS "-fno-objc-arc")
 endif()
+# The Linux test build of the phone (KHDAYS_MOBILE_TEST, below) plays the player's HD videos through the
+# phone's shared player too, over FFmpeg's decoder where its libraries are found (host/movies/movie_hd_ffmpeg.c):
+# the window's drawing of them (the phone's fill) is checked with the real videos. Never part of an app.
+set(khdays_ffmpeg_hd OFF)
+if(KHDAYS_MOBILE_TEST AND NOT APPLE AND NOT WIN32)
+    find_package(PkgConfig QUIET)
+    if(PKG_CONFIG_FOUND)
+        pkg_check_modules(KHDAYS_FFMPEG IMPORTED_TARGET libavformat libavcodec libavutil)
+    endif()
+    if(KHDAYS_FFMPEG_FOUND)
+        list(REMOVE_ITEM native_host_sources host/movies/movie_hd_unavailable.c)
+        list(APPEND native_host_sources host/movies/movie_hd_core.c host/movies/movie_hd_ffmpeg.c)
+        set(khdays_ffmpeg_hd ON)
+    endif()
+endif()
 add_executable(khdays-native
     ${native_host_sources}
     $<TARGET_OBJECTS:khdays-game>
@@ -760,6 +775,7 @@ add_executable(khdays-native
     host/app/sound_output.c
     host/settings/settings_sample.cpp       # the settings menu's volume samples
     host/render/gpu_present.c
+    host/render/picture_pace.c            # the phone's picture rate: 120, 60 or the game's own
     host/render/two_screens.c             # the two screens' places: stacked or side by side
     host/render/gpu_raster3d.c
     host/render/gpu_native3d.c
@@ -989,6 +1005,9 @@ else()
 endif()
 target_link_libraries(khdays-native PRIVATE khdays-lua khdays-kh2-gauge khdays-kh2-portrait khdays-kh2-ai)
 target_link_libraries(khdays-native PRIVATE khdays-gfx khdays-gpu khdays-sound khdays-host-input SDL3::SDL3)
+if(khdays_ffmpeg_hd)
+    target_link_libraries(khdays-native PRIVATE PkgConfig::KHDAYS_FFMPEG)
+endif()
 if(APPLE)
     # AVFoundation's decoder of the HD videos (host/movies/movie_hd_apple.m)
     target_link_libraries(khdays-native PRIVATE "-framework AVFoundation" "-framework CoreMedia" "-framework CoreVideo"
@@ -1026,12 +1045,14 @@ if(KHDAYS_MOBILE_TEST)
     endif()
     target_sources(khdays-host-input PRIVATE host/app/mobile_touch.c host/app/pad_script.c)
     set_property(SOURCE host/app/mobile_touch.c host/app/devices.c host/app/window.c host/render/gpu_present.c
-                        host/app/pad_script.c
+                        host/app/pad_script.c host/app/profile.c host/settings/settings_model.c
+                        host/settings/settings_corner.c host/settings/settings_menu.cpp tests/input_test.c
                  APPEND PROPERTY COMPILE_DEFINITIONS KHDAYS_MOBILE_TEST)
 endif()
 if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
     set(ios "${CMAKE_CURRENT_SOURCE_DIR}/../tools/ios")
-    target_sources(khdays-host-input PRIVATE host/app/mobile_touch.c)
+    target_sources(khdays-host-input PRIVATE host/app/mobile_touch.c host/app/pad_script.c) # (pad_script: only with
+    # KHDAYS_PAD_SCRIPT in Documents/khdays-env.txt, a test launch)
     target_sources(khdays-native PRIVATE "${ios}/ios_main.m" "${ios}/Settings.bundle/Root.plist")
     set_source_files_properties("${ios}/Settings.bundle/Root.plist" PROPERTIES MACOSX_PACKAGE_LOCATION "Resources/Settings.bundle")
     set_target_properties(khdays-native PROPERTIES MACOSX_BUNDLE TRUE
@@ -1090,7 +1111,7 @@ if(NOT WIN32)
                 add_test(NAME khdays-picture COMMAND "${Python3_EXECUTABLE}"
                     "${CMAKE_CURRENT_SOURCE_DIR}/../tools/ios/test_picture.py"
                     "$<TARGET_FILE:khdays-native>" "${KHDAYS_TEST_ROM}")
-                set_tests_properties(khdays-picture PROPERTIES TIMEOUT 600 SKIP_RETURN_CODE 77 RUN_SERIAL TRUE)
+                set_tests_properties(khdays-picture PROPERTIES TIMEOUT 2400 SKIP_RETURN_CODE 77 RUN_SERIAL TRUE)
                 # The same window played with emulated gamepads (host/app/pad_script.h): a DualSense from the
                 # title through a new game into the field, gamepads coming and going.
                 add_test(NAME khdays-pad COMMAND "${Python3_EXECUTABLE}"
@@ -1102,7 +1123,19 @@ if(NOT WIN32)
                 add_test(NAME khdays-rotate COMMAND "${Python3_EXECUTABLE}"
                     "${CMAKE_CURRENT_SOURCE_DIR}/../tools/ios/test_rotate.py"
                     "$<TARGET_FILE:khdays-native>" "${KHDAYS_TEST_ROM}")
-                set_tests_properties(khdays-rotate PROPERTIES TIMEOUT 2400 SKIP_RETURN_CODE 77 RUN_SERIAL TRUE)
+                set_tests_properties(khdays-rotate PROPERTIES TIMEOUT 3600 SKIP_RETURN_CODE 77 RUN_SERIAL TRUE)
+                # The HUD over the filled picture: every piece, the FPS line, the settings menu and the controller
+                # notice inside the visible safe area, on the title and in the first field, at every phone shape.
+                add_test(NAME khdays-hud COMMAND "${Python3_EXECUTABLE}"
+                    "${CMAKE_CURRENT_SOURCE_DIR}/../tools/ios/test_hud.py"
+                    "$<TARGET_FILE:khdays-native>" "${KHDAYS_TEST_ROM}")
+                set_tests_properties(khdays-hud PROPERTIES TIMEOUT 2400 SKIP_RETURN_CODE 77 RUN_SERIAL TRUE)
+                # The picture rate on the title (host/render/picture_pace.h): 120 on a 120 Hz screen, 60 when hot or
+                # too slow (the script's "!thermal=" and "!slow="), the game's own at critical, back up after each.
+                add_test(NAME khdays-pace COMMAND "${Python3_EXECUTABLE}"
+                    "${CMAKE_CURRENT_SOURCE_DIR}/../tools/ios/test_pace.py"
+                    "$<TARGET_FILE:khdays-native>" "${KHDAYS_TEST_ROM}")
+                set_tests_properties(khdays-pace PROPERTIES TIMEOUT 600 SKIP_RETURN_CODE 77 RUN_SERIAL TRUE)
             endif()
         endif()
         # The Metal shaders' buffers in SDL's order (uniforms first): numbered otherwise they draw nothing.

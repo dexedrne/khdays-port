@@ -4,6 +4,7 @@
 #include "settings_ui.h"
 #include "../screens/ui_font.h"
 #include "../screens/ui_text.h"
+#include "../app/mobile_touch.h"
 
 #include <math.h>
 
@@ -90,6 +91,17 @@ static void corner_line(SDL_Renderer *renderer, const char *line, int row)
     box = (float)((khdays_ui_font_line_height() + 8) * scale);
     r = (SDL_FRect){(float)(6 * scale), (float)(6 * scale) + (float)row * (box + (float)(4 * scale)),
                     (float)((khdays_ui_font_width(line) + 12) * scale), box};
+#ifdef KHDAYS_MOBILE
+    {
+        /* on the phone the top-left corner of what is seen: inside the notch and clear of the rounded corner */
+        char what[32];
+        const SDL_FRect vis = khdays_mobile_visible_output(renderer);
+        r.x += vis.x;
+        r.y += vis.y;
+        SDL_snprintf(what, sizeof(what), "corner line %d", row);
+        khdays_mobile_overlay_box(what, r);
+    }
+#endif
     fill(renderer, r, 12, 14, 24, 190);
     text(renderer, r.x + (float)(6 * scale), r.y + (float)(4 * scale), (float)scale, white, line);
     SDL_SetRenderLogicalPresentation(renderer, lw, lh, mode);

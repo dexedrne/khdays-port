@@ -1,5 +1,6 @@
 /* The sounds mods replace (sound_mods.h). */
 #include "sound_mods.h"
+#include "../../host/app/fs_path.h" /* (SDL on iOS: relative paths from Application Support) */
 #include "../characters/characters.h"
 #include "../core/window.h"
 #include "../core/rom.h"
@@ -144,17 +145,27 @@ void khdays_sound_mods_trace(int on)
     trace = on;
 }
 
+/* A folder's entries by SDL_GlobDirectory, from its whole path: SDL on iOS would look for a relative one in
+ * Application Support, never in the Documents the mods are in (host/app/fs_path.h). */
+static char **khdays_glob_whole(const char *path)
+{
+    char whole_[KHDAYS_FS_PATH_MAX];
+    return SDL_GlobDirectory(khdays_fs_path(path, whole_, sizeof(whole_)), "*", 0, NULL);
+}
+
 /* Whether `path` is a folder, or a file (SDL's look at it: the same on every system the port runs on). */
 static int is_directory(const char *path)
 {
+    char whole_[KHDAYS_FS_PATH_MAX];
     SDL_PathInfo info;
-    return SDL_GetPathInfo(path, &info) && info.type == SDL_PATHTYPE_DIRECTORY;
+    return SDL_GetPathInfo(khdays_fs_path(path, whole_, sizeof(whole_)), &info) && info.type == SDL_PATHTYPE_DIRECTORY;
 }
 
 static int is_file(const char *path)
 {
+    char whole_[KHDAYS_FS_PATH_MAX];
     SDL_PathInfo info;
-    return SDL_GetPathInfo(path, &info) && info.type == SDL_PATHTYPE_FILE;
+    return SDL_GetPathInfo(khdays_fs_path(path, whole_, sizeof(whole_)), &info) && info.type == SDL_PATHTYPE_FILE;
 }
 
 /* Whether a mod on as the game started (runtime/mods/list.h: the folders order.ini turns on, in load order)
@@ -217,7 +228,7 @@ static int added_room_music(void)
             continue;
         }
         snprintf(rooms, sizeof(rooms), "%s/rooms", path);
-        worlds = SDL_GlobDirectory(rooms, "*", 0, NULL);
+        worlds = khdays_glob_whole(rooms);
         for (int w = 0; worlds != NULL && worlds[w] != NULL && !found; ++w) {
             char world[600];
             char **keys;
@@ -225,7 +236,7 @@ static int added_room_music(void)
             if (worlds[w][0] == '.' || !is_directory(world)) {
                 continue;
             }
-            keys = SDL_GlobDirectory(world, "*", 0, NULL);
+            keys = khdays_glob_whole(world);
             for (int r = 0; keys != NULL && keys[r] != NULL && !found; ++r) {
                 char folder[600];
                 snprintf(folder, sizeof(folder), "%s/%s", world, keys[r]);
@@ -416,7 +427,7 @@ static void decode_archive_ahead(const char *mod_path, const char *archive)
     char path[600];
     char **files;
     snprintf(path, sizeof(path), "%s/sounds/seqarc/%s", mod_path, archive);
-    files = SDL_GlobDirectory(path, "*", 0, NULL);
+    files = khdays_glob_whole(path);
     for (int i = 0; files != NULL && files[i] != NULL; ++i) {
         char identifier[160], full[900];
         const char *dot = strrchr(files[i], '.');
@@ -488,7 +499,7 @@ static void decode_entries_ahead(const KhdaysSoundArchive *sdat)
             continue;
         }
         snprintf(folder, sizeof(folder), "%s/sounds/seqarc", path);
-        archives = SDL_GlobDirectory(folder, "*", 0, NULL);
+        archives = khdays_glob_whole(folder);
         for (int j = 0; archives != NULL && archives[j] != NULL; ++j) {
             char archive[900];
             snprintf(archive, sizeof(archive), "%s/%s", folder, archives[j]);

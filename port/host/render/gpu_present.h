@@ -108,6 +108,11 @@ const char *khdays_present_note(void);
 /* The phone: the orientation the last picture was laid out for and where it put the game's picture,
  * the lower-screen view (below the picture upright, else over it) and the stylus, in window pixels. */
 const char *khdays_present_layout_note(void);
+/* The pieces the last one-screen composition laid out inside the HUD's frame on the filled display (the HUD,
+ * the lower-screen view, a dialog's or a list's screen, the title's small menu), in window pixels: how many,
+ * and each one's name (its screen and source rectangle) and box. None when not filling. */
+int khdays_present_hud_pieces(void);
+const char *khdays_present_hud_piece(int index, SDL_FRect *pixels);
 #endif
 /* Whether the window shows the one-screen picture of the last frame made. */
 int khdays_present_one_picture(void);

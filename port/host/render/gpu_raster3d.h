@@ -79,6 +79,9 @@ void khdays_raster3d_recent(char *out, size_t size);
  * and the HD screenshots. NULL on failure. */
 uint32_t *khdays_raster3d_read(int *width, int *height);
 
+/* KHDAYS_PROFILE_GPU: the 3D's time on the card (waited for) and its pictures since the last call. */
+void khdays_raster3d_gpu_take(double *ms, int *pictures);
+
 /* One screen: the HUD's polygons are not moved to the sides as in widescreen. */
 void khdays_raster3d_set_one_screen(int on);
 

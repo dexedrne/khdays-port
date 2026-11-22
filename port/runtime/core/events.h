@@ -21,6 +21,8 @@ u32 khdays_events_vblank_count(void);
 /* The time of the VBlank being handled now (khdays_display_vblank's), in the
  * game's cycles. */
 u64 khdays_events_vblank_time(void);
+/* The game thread's time running (between its waits) since the start, in the clock's cycles. Any thread. */
+u64 khdays_events_busy_cycles(void);
 
 /* KHDAYS_TRACE_TIMING: what the game's time does, counted from the start and printed every 600
  * VBlanks (VBlanks, logic frames, alarm interrupts, the tick's count-ups, the movie's flips), and the

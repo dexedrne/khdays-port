@@ -22,6 +22,11 @@ int khdays_host_player_slot_taken(void);
  * taken. */
 const char *khdays_host_user_folder(void);
 
+/* KHDAYS_USER_FOLDER (the phone's khdays-env.txt, a test): this slot's folder is that one instead, a path
+ * under saves/ ("saves/movie-test"), made with its parents, so that a test run never reads or writes the
+ * player's own save, settings and logs. Into `folder` when it is such a path; else nothing changes. Called by
+ * khdays_host_player_slot (instance_posix.c, instance_ios.c); defined at the end (POSIX only). */
+
 /* Whether another copy of the port is running on this machine right now. */
 int khdays_host_other_copies(void);
 
@@ -35,6 +40,34 @@ int khdays_host_player_name(const char *nickname, unsigned short *name, int room
 void khdays_host_automatic_name(char *out, size_t size);
 
 #ifdef __cplusplus
+}
+#endif
+
+#if !defined(_WIN32)
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/stat.h>
+static inline void khdays_host_user_folder_from_env(char *folder, size_t size)
+{
+    const char *chosen = getenv("KHDAYS_USER_FOLDER");
+    char made[64];
+    if (chosen == NULL || strncmp(chosen, "saves/", 6) != 0 || chosen[6] == '\0' || strstr(chosen, "..") != NULL ||
+        strlen(chosen) >= size || strlen(chosen) >= sizeof(made)) {
+        if (chosen != NULL && *chosen != '\0') {
+            fprintf(stderr, "host: KHDAYS_USER_FOLDER=%s is not a folder under saves/: saves/ is used\n", chosen);
+        }
+        return;
+    }
+    for (size_t i = 0; chosen[i] != '\0'; ++i) {
+        made[i] = chosen[i];
+        made[i + 1] = '\0';
+        if (chosen[i + 1] == '/' || chosen[i + 1] == '\0') {
+            mkdir(made, 0700); /* (POSIX mkdir: from the working folder, the phone's Documents) */
+        }
+    }
+    strcpy(folder, chosen);
+    fprintf(stderr, "host: KHDAYS_USER_FOLDER: the save, the settings and the logs are in %s\n", folder);
 }
 #endif
 

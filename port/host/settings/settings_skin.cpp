@@ -280,15 +280,22 @@ ImFont *khdays_skin_font(ImFontAtlas *atlas, const void *fallback_ttf, int fallb
     return s.font;
 }
 
+static ImVec2 skin_origin(0, 0);
+
+void khdays_skin_set_origin(ImVec2 origin)
+{
+    skin_origin = origin;
+}
+
 ImVec2 khdays_skin_point(ImVec2 size, float x, float y)
 {
-    return ImVec2(x * size.x / s.pw, y * size.y / s.ph);
+    return ImVec2(skin_origin.x + x * size.x / s.pw, skin_origin.y + y * size.y / s.ph);
 }
 
 void khdays_skin_screen(ImDrawList *dl, ImVec2 size)
 {
     if (s.on) {
-        image(dl, s.screen, ImVec2(0, 0), size);
+        image(dl, s.screen, skin_origin, ImVec2(skin_origin.x + size.x, skin_origin.y + size.y));
     }
 }
 

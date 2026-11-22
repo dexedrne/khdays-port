@@ -597,6 +597,8 @@ static const char *const texts[TXT_COUNT][5] = {
                                    "ventana; menús y textos conservan los suyos."},
     [TXT_VIDEO_RESOLUTION_WINDOW] = {"As the window allows", "Selon la fenêtre", "Wie das Fenster erlaubt",
                                      "Quanto permette la finestra", "Lo que permita la ventana"},
+    [TXT_VIDEO_RESOLUTION_AUTO] = {"Auto (for this phone)", "Auto (pour ce téléphone)", "Auto (für dieses Telefon)",
+                                   "Auto (per questo telefono)", "Auto (para este teléfono)"},
     [TXT_VIDEO_ANTIALIASING] = {"Antialiasing", "Anticrénelage", "Kantenglättung", "Antialiasing", "Antialiasing"},
     [TXT_VIDEO_ANTIALIASING_NOTE] = {"FXAA smooths the 3D's edges once it is drawn, for little of the graphics "
                                      "card's work. The HUD, the menus and the text stay sharp.",
@@ -783,6 +785,22 @@ static const char *const texts[TXT_COUNT][5] = {
                                   "Die Untertitel der Filmsequenzen des Spiels. Ein neues Spiel fragt auch danach.",
                                   "I sottotitoli dei filmati del gioco. Anche una nuova partita lo chiede.",
                                   "Los subtítulos de las películas del juego. También lo pregunta una partida nueva."},
+    /* the phone's single screen (host/render/gpu_present.c): the picture and the movies over the whole display */
+    [TXT_VIDEO_PICTURE_FILL] = {"Picture", "Image", "Bild", "Immagine", "Imagen"},
+    [TXT_VIDEO_MOVIES_FILL] = {"Movies' picture", "Image des vidéos", "Bild der Filmsequenzen", "Immagine dei filmati",
+                               "Imagen de los vídeos"},
+    [TXT_VIDEO_FILL] = {"Fill", "Remplir", "Füllen", "Riempi", "Llenar"},
+    [TXT_VIDEO_FIT] = {"Fit", "Ajuster", "Einpassen", "Adatta", "Ajustar"},
+    [TXT_VIDEO_FILL_NOTE] = {"Fill: edge to edge over the whole display, the edges cut where its shape differs. Fit: "
+                             "whole, inside the screen's safe area, with bars.",
+                             "Remplir : d'un bord à l'autre sur tout l'écran, les bords coupés si sa forme diffère. "
+                             "Ajuster : entière, dans la zone sûre de l'écran, avec des bandes.",
+                             "Füllen: von Rand zu Rand über den ganzen Bildschirm, die Ränder abgeschnitten, wo seine "
+                             "Form abweicht. Einpassen: ganz, im sicheren Bereich des Bildschirms, mit Balken.",
+                             "Riempi: da bordo a bordo su tutto lo schermo, i bordi tagliati dove la forma è diversa. "
+                             "Adatta: intera, nell'area sicura dello schermo, con le bande.",
+                             "Llenar: de borde a borde en toda la pantalla, los bordes cortados donde su forma difiere. "
+                             "Ajustar: entera, dentro de la zona segura de la pantalla, con bandas."},
     [TXT_VIDEO_BACKEND] = {"Graphics API", "API graphique", "Grafik-API", "API grafica", "API gráfica"},
     [TXT_VIDEO_BACKEND_AUTO] = {"Automatic", "Automatique", "Automatisch", "Automatica", "Automática"},
     [TXT_VIDEO_BACKEND_NOTE] = {"What draws the picture: Automatic is Direct3D 12 on Windows, Vulkan on a Steam Deck "

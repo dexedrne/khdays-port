@@ -826,8 +826,22 @@ void khdays_hd_start(void)
     SDL_SignalSemaphore(hd.wake);
 }
 
+/* KHDAYS_TRACE_MOVIE_HD: each pause asked of the player is said, whether or not a video plays (the Linux test of the
+ * phone's build reads who pauses the HD video and the voice, and when: as movie_hd_unavailable.c says it) */
+static void trace_pause(const char *what, int pause)
+{
+    static int on = -1;
+    if (on < 0) {
+        on = SDL_getenv("KHDAYS_TRACE_MOVIE_HD") != NULL;
+    }
+    if (on) {
+        fprintf(stderr, "movie hd: %s %s asked\n", what, pause ? "pause" : "resume");
+    }
+}
+
 void khdays_hd_pause(int pause)
 {
+    trace_pause("video", pause);
     if (!hd.open_ok || (SDL_GetAtomicInt(&hd.paused) != 0) == (pause != 0)) {
         return;
     }
@@ -1286,6 +1300,7 @@ int khdays_hd_voice_speaking(void)
 
 void khdays_hd_voice_pause(int pause)
 {
+    trace_pause("voice", pause);
     voice_lock();
     if ((SDL_GetAtomicInt(&voice_paused) != 0) != (pause != 0) && voice.thread != NULL) {
         fprintf(stderr, "movies: voice %s\n", pause ? "pause" : "resume");

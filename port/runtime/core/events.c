@@ -251,6 +251,16 @@ void khdays_irq_poll(void)
     }
 }
 
+/* The game thread's time running between its waits since the start, in the clock's cycles: read by the
+ * window's summaries (khdays_events_busy_cycles). Written only by the game's thread; an aligned 64-bit
+ * value, read whole on the platforms the port runs on. */
+static volatile u64 busy_total;
+
+u64 khdays_events_busy_cycles(void)
+{
+    return busy_total;
+}
+
 /* KHDAYS_PROFILE: once a second, how long the game ran between its waits and how long it waited (a
  * game that never waits starves its lower-priority threads), and its longest run without a wait. */
 static int profile = -1;
@@ -346,6 +356,9 @@ static void wait_for_interrupt(int (*stop)(void))
     static u64 log_wait_end;
     const u64 enter = khdays_clock_cycles();
     profile_wait(enter);
+    if (log_wait_end != 0) {
+        busy_total += enter - log_wait_end; /* (khdays_events_busy_cycles) */
+    }
     if (log_wait_end != 0 && enter - log_wait_end > KHDAYS_CLOCK_HZ / 20 && khdays_log_on()) {
         /* the session log: over 50 ms without a wait (so without a frame), and in which scene */
         /* the memory free then: a PC short of it pages, and the game's thread waits on the disk */

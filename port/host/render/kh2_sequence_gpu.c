@@ -2,6 +2,7 @@
 #include "kh2_sequence_gpu.h"
 #include "gpu_hd.h"
 #include "generated/kh2_sequence_cs.h"
+#include "render_counts.h" /* (the allocations and read-backs counted) */
 
 static SDL_GPUDevice *device;
 static SDL_GPUComputePipeline *pipeline;

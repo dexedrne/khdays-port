@@ -156,6 +156,12 @@ typedef enum KhdaysAspect {
 } KhdaysAspect;
 
 #define KHDAYS_RESOLUTION_WINDOW 0 /* internal_resolution = window */
+/* internal_resolution = auto, the phone's first-run default: the window's scale, but the 3D's picture kept to
+ * about the pixels of 1088 x 768 (the unfolded Duo lying at 4x, which the owner saw hold 60 a second at the DS's
+ * pace): the largest whole scale at most the window's whose 3D is no larger (host/render/gpu_present.c
+ * auto_scale; KHDAYS_AUTO_PIXELS changes the budget). Unfolded lying 4 (1088 x 768), upright 4 (1024 x 768),
+ * folded lying 3 (1248 x 576), folded upright 4. */
+#define KHDAYS_RESOLUTION_AUTO (-1)
 
 /* The two screens' arrangement ([video] two_screens), with two screens: the upper above the lower, as the
  * DS has them, or side by side, the upper on the left. */
@@ -166,7 +172,7 @@ typedef enum KhdaysTwoScreens {
 } KhdaysTwoScreens;
 
 typedef struct KhdaysVideo {
-    int internal_resolution; /* the 3D's scale: 1 (the DS's) or more, or KHDAYS_RESOLUTION_WINDOW */
+    int internal_resolution; /* the 3D's scale: 1 (the DS's) or more, KHDAYS_RESOLUTION_WINDOW or _AUTO */
     int antialiasing;        /* 1 off, 2 FXAA: the 3D's edges smoothed once it is drawn */
     int aspect;              /* KhdaysAspect */
     int smooth_scaling;      /* 0 sharp (the DS's pixels), 1 smooth */
@@ -184,6 +190,10 @@ typedef struct KhdaysVideo {
     int subtitles;     /* the movies' subtitles show (runtime/menus/newgame.h: the new game asks) */
     int display;       /* KhdaysDisplay: a window, a borderless one over the screen, or full screen */
     int lower_view;    /* KhdaysLowerView: how the lower-screen view shows on one screen */
+    int picture_fit;   /* the phone's single screen ([video] picture): 0 fill -- the game's picture over the whole
+                        * display, edge to edge, covering it where it cannot take the display's shape -- or 1 fit,
+                        * whole inside the safe area */
+    int movies_fit;    /* the same for the movies ([video] movie_picture): 0 fill (cover, the overflow cut), 1 fit */
     int screen_resolution; /* [video] resolution: the full screen's mode or the window's size, width << 16 |
                               height; 0 the desktop's (full screen) or as the player sized it (window) */
 } KhdaysVideo;

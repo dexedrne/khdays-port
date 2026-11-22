@@ -128,4 +128,7 @@ int khdays_gfx_render_capture_frame(const KhdaysFramePackage *p);
  * pixels as 0x00RRGGBB, to free with SDL_free. NULL on failure. */
 uint32_t *khdays_gfx_render_read(int engine, int *width, int *height);
 
+/* KHDAYS_PROFILE_GPU: the 2D's time on the card (waited for) and its pictures since the last call. */
+void khdays_gfx_render_gpu_take(double *ms, int *pictures);
+
 #endif

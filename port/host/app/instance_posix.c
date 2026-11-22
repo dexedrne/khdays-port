@@ -42,6 +42,7 @@ int khdays_host_player_slot(void)
             exit(1);
         }
     }
+    khdays_host_user_folder_from_env(folder, sizeof(folder));
     return slot = chosen;
 }
 

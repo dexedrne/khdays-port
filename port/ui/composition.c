@@ -83,6 +83,7 @@ typedef struct ShapeDef {
     int capped;           /* `at-most <length>` after the scale: never larger than it */
     float cap, cap_fixed; /* that length, at the HUD's scale and fixed */
     int cover;            /* `scale cover`: as large as covers the picture, its proportions kept */
+    int picture;          /* placed in the whole picture, never the HUD's frame (`halves`' lower half) */
     uint32_t flags;       /* KOF_* */
     float fade[4], opacity;
     float round;          /* `round <r>`: the corners' radius, source dots */
@@ -111,12 +112,14 @@ typedef struct Directive {
 typedef struct Condition {
     int state; /* KHDAYS_ST_*, or -1 for the picture's width or a mod */
     int negate;
-    int width; /* 1 `wide` (16:9 or wider), 2 `narrow` (4:3); 0 none */
+    int width; /* 1 `wide` (16:9 or wider), 2 `narrow` (4:3), 3 `phone` (khdays_composition_set_fill); 0 none */
     int mod;   /* `mod-<id>`: a mod of the port's features installed (runtime/mods/installed.h): its id + 1; 0 none */
 } Condition;
 
 /* The picture's columns the compositions are made for this frame (`wide`, `narrow`). */
 static int current_columns = 256;
+/* the phone's single screen over the whole display (`phone`; khdays_composition_set_fill) */
+static int fill_picture, fill_movies;
 #define WIDE_COLUMNS 336 /* 16:9's 342 and wider; 16:10's 308 is neither wide nor narrow */
 
 typedef struct Section {
@@ -207,9 +210,48 @@ static int hud_size = 4;
  * size; `fixed(N)` a length that does not follow it. One scale for the 2D and the 3D shapes. */
 static const float hud_factors[8] = {0.6f, 0.7f, 0.85f, 1.0f, 1.15f, 1.3f, 1.5f, 1.75f};
 
+/* The HUD's frame (khdays_composition_set_hud_frame): on the phone's filled display, the part of the
+ * picture the window shows inside its visible safe area, in the picture's DS dots, for a picture
+ * `frame_columns` wide; the whole picture when none is set (a PC, the phone's Fit) or for another width. */
+static int frame_set, frame_columns;
+static float frame_box[4];
+
+static void hud_frame(int columns, float f[4])
+{
+    f[0] = 0.0f;
+    f[1] = 0.0f;
+    f[2] = (float)columns;
+    f[3] = 192.0f;
+    if (frame_set && frame_columns == columns) {
+        f[0] = fmaxf(frame_box[0], 0.0f);
+        f[1] = fmaxf(frame_box[1], 0.0f);
+        f[2] = fminf(frame_box[2], (float)columns);
+        f[3] = fminf(frame_box[3], 192.0f);
+        if (f[2] - f[0] < 16.0f || f[3] - f[1] < 16.0f) { /* (nothing sensible to lay out in) */
+            f[0] = 0.0f;
+            f[1] = 0.0f;
+            f[2] = (float)columns;
+            f[3] = 192.0f;
+        }
+    }
+}
+
+/* The HUD's own scale in a frame smaller than a 4:3 picture (the phone held upright, its picture covering
+ * the display and its sides cut): the pieces laid out for 256 x 192 dots shrink with the frame, so that
+ * the corners' pieces stay apart and whole. 1 otherwise. */
+static float frame_factor(void)
+{
+    float f[4];
+    if (!frame_set) {
+        return 1.0f;
+    }
+    hud_frame(frame_columns, f);
+    return fminf(1.0f, fminf((f[2] - f[0]) / 256.0f, (f[3] - f[1]) / 192.0f));
+}
+
 static float hud_factor(void)
 {
-    return hud_factors[hud_size - 1];
+    return hud_factors[hud_size - 1] * frame_factor();
 }
 
 /* The file as read (in arrays that grow: no fixed count). */
@@ -731,6 +773,9 @@ static int read_section(char **t, int n, const char **why)
         if (strcmp(w, "wide") == 0 || strcmp(w, "narrow") == 0) {
             c.state = -1;
             c.width = w[0] == 'w' ? 1 : 2;
+        } else if (strcmp(w, "phone") == 0) {
+            c.state = -1;
+            c.width = 3; /* the phone's single screen over the whole display (khdays_composition_set_fill) */
         } else if (strncmp(w, "mod-", 4) == 0 && khdays_mod_named(w + 4) >= 0) {
             c.state = -1;
             c.mod = khdays_mod_named(w + 4) + 1;
@@ -1019,6 +1064,7 @@ static int holds(const Section *s, const KhdaysSituation *situation)
         const int truth = c->state >= 0   ? (int)((situation->states >> c->state) & 1u)
                           : c->mod != 0   ? khdays_mod_installed(c->mod - 1)
                           : c->width == 1 ? current_columns >= WIDE_COLUMNS
+                          : c->width == 3 ? fill_picture
                                           : current_columns <= 256;
         if (truth == c->negate) {
             return 0;
@@ -1626,43 +1672,63 @@ static void build_shape(const ShapeDef *d, int columns, KhdaysShape *out, int ke
     const float c = (float)columns;
     const float w = d->w, h = d->h;
     const float cover = d->cover ? ((float)columns / w > 192.0f / h ? (float)columns / w : 192.0f / h) : 0.0f;
-    const float cap = d->capped ? d->cap * f + d->cap_fixed : 0.0f;
-    float sx = d->cover ? cover : d->sx * f + d->sx_fixed, sy = d->cover ? cover : d->sy * f + d->sy_fixed;
+    /* in a frame narrower than a 4:3 picture (upright on the phone) a `fixed(N)` scale shrinks with the frame too,
+     * as the HUD's factor does (frame_factor): the piece keeps its share of what is seen */
+    const float ff = d->cover || d->picture ? 1.0f : frame_factor();
+    const float cap = d->capped ? d->cap * f + d->cap_fixed * ff : 0.0f;
+    float sx = d->cover ? cover : d->sx * f + d->sx_fixed * ff, sy = d->cover ? cover : d->sy * f + d->sy_fixed * ff;
     float margin[4];
     if (d->capped) {
         sx = sx < cap ? sx : cap;
         sy = sy < cap ? sy : cap;
     }
+    /* placed in the HUD's frame (hud_frame: on the phone's filled display the visible safe area's part of the
+     * picture), every shape but one covering the picture; one larger than the frame made smaller to fit it,
+     * whole (a dialog's screen, a list's, the lower-screen view) */
+    float frame[4];
+    hud_frame(columns, frame);
+    if (d->cover || d->picture || !frame_set) {
+        frame[0] = frame[1] = 0.0f;
+        frame[2] = c;
+        frame[3] = 192.0f;
+    } else if (w * sx > frame[2] - frame[0] || h * sy > frame[3] - frame[1]) {
+        const float fit = fminf((frame[2] - frame[0]) / (w * sx), (frame[3] - frame[1]) / (h * sy));
+        sx *= fit;
+        sy *= fit;
+    }
+    const float fx = frame[0], fy = frame[1], fw = frame[2] - frame[0], fh = frame[3] - frame[1];
     const float width = w * sx, height = h * sy;
     float x1 = 0.0f, y1 = 0.0f;
     uint32_t *words = out->words;
     switch (d->corner) {
     case CORNER_CENTRE:
-        x1 = (c - width) / 2.0f;
-        y1 = (192.0f - height) / 2.0f;
+        x1 = (fw - width) / 2.0f;
+        y1 = (fh - height) / 2.0f;
         break;
     case CORNER_TOP_LEFT: break;
-    case CORNER_TOP: x1 = (c - width) / 2.0f; break;
-    case CORNER_TOP_RIGHT: x1 = c - width; break;
+    case CORNER_TOP: x1 = (fw - width) / 2.0f; break;
+    case CORNER_TOP_RIGHT: x1 = fw - width; break;
     case CORNER_RIGHT:
-        x1 = c - width;
-        y1 = (192.0f - height) / 2.0f;
+        x1 = fw - width;
+        y1 = (fh - height) / 2.0f;
         break;
     case CORNER_BOTTOM_RIGHT:
-        x1 = c - width;
-        y1 = 192.0f - height;
+        x1 = fw - width;
+        y1 = fh - height;
         break;
     case CORNER_BOTTOM:
-        x1 = (c - width) / 2.0f;
-        y1 = 192.0f - height;
+        x1 = (fw - width) / 2.0f;
+        y1 = fh - height;
         break;
-    case CORNER_BOTTOM_LEFT: y1 = 192.0f - height; break;
-    case CORNER_LEFT: y1 = (192.0f - height) / 2.0f; break;
-    default: /* keep: the source's middle where it was, scaled */
-        x1 = (d->x + w / 2.0f) * sx * c / 256.0f - width / 2.0f;
-        y1 = (d->y + h / 2.0f) * sy - height / 2.0f;
+    case CORNER_BOTTOM_LEFT: y1 = fh - height; break;
+    case CORNER_LEFT: y1 = (fh - height) / 2.0f; break;
+    default: /* keep: the source's middle where it was, scaled (the picture's, not the frame's) */
+        x1 = (d->x + w / 2.0f) * sx * c / 256.0f - width / 2.0f - fx;
+        y1 = (d->y + h / 2.0f) * sy - height / 2.0f - fy;
         break;
     }
+    x1 += fx;
+    y1 += fy;
     for (int i = 0; i < 4; ++i) {
         margin[i] = d->margin[i] * f + d->margin_fixed[i];
     }
@@ -1693,38 +1759,51 @@ static void build_shape(const ShapeDef *d, int columns, KhdaysShape *out, int ke
 static void build_shape3d(const Shape3dDef *d, int columns, KhdaysShape3d *out, float push_x, float push_y)
 {
     /* at the HUD's scale, as the 2D shapes, unless fixed */
-    const float u = d->fixed ? 1.0f : 1.0f / hud_factor();
+    /* (fixed: the frame's factor alone, as the 2D shapes' fixed scales: build_shape) */
+    const float u = d->fixed ? 1.0f / frame_factor() : 1.0f / hud_factor();
     const float c = (float)columns;
-    const float width = d->w * d->scale / u, height = d->h * d->scale / u;
+    float frame[4]; /* the HUD's frame, as the 2D shapes' (build_shape): one larger made smaller to fit it */
+    hud_frame(columns, frame);
+    const float fw = frame[2] - frame[0], fh = frame[3] - frame[1];
+    float scale = d->scale / u;
+    if (frame_set && !d->hide && d->w > 0.0f && d->h > 0.0f && (d->w * scale > fw || d->h * scale > fh)) {
+        scale *= fminf(fw / (d->w * scale), fh / (d->h * scale));
+    }
+    const float width = d->w * scale, height = d->h * scale;
     float x1 = 0.0f, y1 = 0.0f;
+    (void)c;
     switch (d->corner) {
     case CORNER_CENTRE:
-        x1 = (c - width) / 2.0f;
-        y1 = (192.0f - height) / 2.0f;
+        x1 = (fw - width) / 2.0f;
+        y1 = (fh - height) / 2.0f;
         break;
-    case CORNER_TOP: x1 = (c - width) / 2.0f; break;
-    case CORNER_TOP_RIGHT: x1 = c - width; break;
+    case CORNER_TOP: x1 = (fw - width) / 2.0f; break;
+    case CORNER_TOP_RIGHT: x1 = fw - width; break;
     case CORNER_RIGHT:
-        x1 = c - width;
-        y1 = (192.0f - height) / 2.0f;
+        x1 = fw - width;
+        y1 = (fh - height) / 2.0f;
         break;
     case CORNER_BOTTOM_RIGHT:
-        x1 = c - width;
-        y1 = 192.0f - height;
+        x1 = fw - width;
+        y1 = fh - height;
         break;
     case CORNER_BOTTOM:
-        x1 = (c - width) / 2.0f;
-        y1 = 192.0f - height;
+        x1 = (fw - width) / 2.0f;
+        y1 = fh - height;
         break;
-    case CORNER_BOTTOM_LEFT: y1 = 192.0f - height; break;
-    case CORNER_LEFT: y1 = (192.0f - height) / 2.0f; break;
+    case CORNER_BOTTOM_LEFT: y1 = fh - height; break;
+    case CORNER_LEFT: y1 = (fh - height) / 2.0f; break;
     default: break;
     }
     out->group = d->group;
     out->hide = d->hide;
+    if (d->corner != CORNER_KEEP) {
+        x1 += frame[0];
+        y1 += frame[1];
+    }
     out->x = x1 + (d->margin[0] - d->margin[2] + push_x) / u;
     out->y = y1 + (d->margin[1] - d->margin[3] + push_y) / u;
-    out->scale = d->scale / u;
+    out->scale = scale;
     out->src_x = d->x;
     out->src_y = d->y;
     out->src_w = d->w;
@@ -1768,6 +1847,7 @@ static void add_halves(int columns, int key_count, int *shape_count, int *shape3
         lower.sx_fixed = lower.sy_fixed = k;
         lower.flags = KOF_FORCE;
         lower.opacity = 1.0f;
+        lower.picture = 1;
         build_shape(&lower, columns, &shapes[(*shape_count)++], key_count, 0.0f, 0.0f);
     }
 }
@@ -1927,8 +2007,10 @@ static void place_panel(const KhdaysSituation *situation, int columns, PanelNow 
     const float ax = (float)(anchor % 3) * 0.5f, ay = (float)(anchor / 3) * 0.5f;
     p->shown = 1;
     p->row = anchor / 3;
-    p->dx = ax * ((float)columns - v.box[0] - v.box[2]);
-    p->dy = ay * (192.0f - v.box[1] - v.box[3]);
+    float frame[4]; /* (mirrored inside the HUD's frame: the same margin from its edges as from its top left's) */
+    hud_frame(columns, frame);
+    p->dx = ax * (frame[0] + frame[2] - v.box[0] - v.box[2]);
+    p->dy = ay * (frame[1] + frame[3] - v.box[1] - v.box[3]);
     for (int c = 0; c < 4; ++c)
         p->box[c] = v.box[c] + (c % 2 == 0 ? p->dx : p->dy);
     p->room = (v.box[3] - v.box[1]) / hud_factor() + 2.0f;
@@ -1956,6 +2038,31 @@ static float lower_view_at[4];
 void khdays_composition_set_lower_view_apart(int apart)
 {
     lower_view_apart = apart;
+}
+
+void khdays_composition_set_fill(int picture, int movies)
+{
+    fill_picture = picture != 0;
+    fill_movies = movies != 0;
+}
+
+int khdays_composition_fill(void)
+{
+    return fill_picture;
+}
+
+void khdays_composition_set_hud_frame(int columns, const float box[4])
+{
+    frame_set = box != NULL && columns > 0;
+    frame_columns = columns;
+    if (box != NULL) {
+        memcpy(frame_box, box, sizeof(frame_box));
+    }
+}
+
+void khdays_composition_hud_frame(float box[4])
+{
+    hud_frame(khdays_composition_columns(), box);
 }
 
 void khdays_composition_set_lower_view(int on, int inset)
@@ -2006,10 +2113,19 @@ static void add_lower_view(int columns, int key_count, int *shape_count)
     view.opacity = 1.0f;
     build_shape(&view, columns, &shapes[0], key_count, 0.0f, 0.0f);
     ++*shape_count;
-    lower_view_at[2] = 256.0f * k;
-    lower_view_at[3] = 192.0f * k;
-    lower_view_at[0] = lower_view_inset ? c - lower_view_at[2] - margin : (c - lower_view_at[2]) / 2.0f;
-    lower_view_at[1] = (192.0f - lower_view_at[3]) / 2.0f;
+    (void)c;
+    /* where it went (in the HUD's frame on the phone, as large as fits it: build_shape), for the stylus */
+    {
+        float x1, y1, x2, y2;
+        memcpy(&x1, &shapes[0].words[KO_DST_X1], 4);
+        memcpy(&y1, &shapes[0].words[KO_DST_Y1], 4);
+        memcpy(&x2, &shapes[0].words[KO_DST_X2], 4);
+        memcpy(&y2, &shapes[0].words[KO_DST_Y2], 4);
+        lower_view_at[0] = x1;
+        lower_view_at[1] = y1;
+        lower_view_at[2] = x2 - x1;
+        lower_view_at[3] = y2 - y1;
+    }
     lower_view_made = 1;
 }
 
@@ -2142,7 +2258,8 @@ void khdays_composition_for(const KhdaysSituation *situation, int columns, Khday
                         out->backdrop_h = p->h;
                         out->backdrop_ax = backdrops[d->value].ax;
                         out->backdrop_ay = backdrops[d->value].ay;
-                        out->backdrop_fit = backdrops[d->value].fit;
+                        /* (on the phone's filled display a `fit` covers too: no bars) */
+                        out->backdrop_fit = backdrops[d->value].fit && !fill_picture;
                     }
                 }
                 break;
@@ -2180,6 +2297,9 @@ void khdays_composition_for(const KhdaysSituation *situation, int columns, Khday
             whole.h = 192.0f;
             whole.corner = CORNER_CENTRE;
             whole.sx_fixed = whole.sy_fixed = 1.0f; /* fixed: the DS's size, whatever the HUD's */
+            /* the phone's filled display: covering the picture, its overflow cut (the game's own movies with
+             * their own choice) -- no bars beside the DS's 256 columns */
+            whole.cover = situation->scene == KHDAYS_SIT_MOVIE ? fill_movies : fill_picture;
             whole.opacity = 1.0f;
             build_shape(&whole, columns, &shapes[shape_count++], key_count, 0.0f, 0.0f);
         }

@@ -6,6 +6,10 @@
 
 #include <stddef.h>
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 /* Writes `size` bytes to `path` (UTF-8), creating its folder if missing. The
  * data goes to a temporary file beside it, is flushed to the disk, then the
  * temporary file is renamed over the old one. Returns 1 on success; on
@@ -19,5 +23,9 @@ long khdays_host_read_file(const char *path, void *data, size_t room);
 
 /* The PC's local time of day. */
 void khdays_host_local_time(int *hour, int *minute, int *second);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif

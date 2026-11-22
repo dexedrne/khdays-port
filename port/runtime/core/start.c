@@ -25,6 +25,7 @@
 
 #include "../../host/app/context.h"
 #include "../../host/app/instance.h"
+#include "../../host/app/fs_path.h"
 #include "../../host/app/host.h"
 
 #include <SDL3/SDL.h>
@@ -204,6 +205,35 @@ static void take_working_folder(void)
     fprintf(stderr, "khdays-native: %s\n", working_folder_note);
 }
 
+/* The folders the port writes in, made at the start in the working folder (the phone's Documents) before
+ * anything writes there: saves/ (the player's, saves/player<N> for a further copy on the PC) and its logs/ (the
+ * session's log, the window's picture reports). The phone's first run had none, and SDL made saves/logs in the
+ * app's Application Support instead (host/app/fs_path.h): "picture 1: cannot write saves/logs/...". caches/
+ * (the game files the port takes from the cartridge, the graphics card's pipelines) is made when first used;
+ * shots/ and the dumps' folders only when their switches ask for them. Said once when something was made. */
+static void make_folders(void)
+{
+    const char *user = khdays_host_user_folder();
+    char logs[256], made[512] = "";
+    const char *want[3];
+    snprintf(logs, sizeof(logs), "%s/logs", user);
+    want[0] = "saves";
+    want[1] = user;
+    want[2] = logs;
+    for (int i = 0; i < 3; ++i) {
+        char whole[KHDAYS_FS_PATH_MAX];
+        const char *at = khdays_fs_path(want[i], whole, sizeof(whole));
+        if ((i == 0 || strcmp(want[i], want[i - 1]) != 0) && !SDL_GetPathInfo(at, NULL)) {
+            const int ok = SDL_CreateDirectory(at);
+            snprintf(made + strlen(made), sizeof(made) - strlen(made), "%s%s%s", made[0] != '\0' ? ", " : "", want[i],
+                     ok ? "" : " (FAILED)");
+        }
+    }
+    if (made[0] != '\0') {
+        fprintf(stderr, "khdays-native: folders made in the working folder: %s\n", made);
+    }
+}
+
 /* Whether a standard handle is unset (nothing given to the process for that stream). */
 #ifdef _WIN32
 static int std_handle_free(DWORD which)
@@ -316,6 +346,7 @@ int main(int argc, char **argv)
     /* this copy's player slot: a further copy on the PC is player N, with its own save, settings, logs
      * and gamepad (host/app/instance.h) */
     khdays_host_player_slot();
+    make_folders();
     /* the multiplayer's server as the player set it, read when a session starts */
     khdays_net_settings_source(khdays_settings_server);
     if (!khdays_runtime_init(argc, argv)) {

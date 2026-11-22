@@ -123,11 +123,13 @@ void khdays_onescreen_images(const KhdaysFramePackage *p, const KhdaysSituation 
                     continue;
                 const float factor = khdays_composition_hud_factor();
                 pause_layout = 1;
-                const float columns = (float)khdays_composition_columns();
+                /* in the middle of the HUD's frame (the whole picture but on the phone's filled display) */
+                float frame[4];
+                khdays_composition_hud_frame(frame);
                 Picture *picture = &pictures[count++];
                 picture->owner = -1;
-                image_shape(&picture->shape, r, 0, columns * .5f + (x - 128) * factor, 96 + (y - 96) * factor,
-                            w * factor, h * factor);
+                image_shape(&picture->shape, r, 0, (frame[0] + frame[2]) * .5f + (x - 128) * factor,
+                            (frame[1] + frame[3]) * .5f + (y - 96) * factor, w * factor, h * factor);
                 continue;
             }
             float anchor_x = (x + w < 256 ? x + w : 256) - 2;
@@ -164,14 +166,16 @@ void khdays_onescreen_images(const KhdaysFramePackage *p, const KhdaysSituation 
                 (p->mission_panel_state & 1u) && panel[KSI_ANCHORED] && panel[KSI_OUTPUT] == r[KE_IMAGE];
             if (information || mission) {
                 const float factor = khdays_composition_hud_factor(), scale = 0.766667f * factor;
+                float frame[4]; /* their corners the HUD's frame's (the picture's but on the phone's filled display) */
+                khdays_composition_hud_frame(frame);
                 if (mission && panel[KSI_PANEL_ANCHOR] >= 1 && panel[KSI_PANEL_ANCHOR] <= 9) {
                     const unsigned anchor = panel[KSI_PANEL_ANCHOR] - 1;
                     const float ax = (float)(anchor % 3) * .5f, ay = (float)(anchor / 3) * .5f;
                     Picture *picture = &pictures[count++];
                     picture->owner = -1;
                     image_shape(&picture->shape, r, e != p->upper ? KOF_LOWER : 0,
-                                (float)khdays_composition_columns() * ax + (x - 256 * ax) * scale,
-                                192 * ay + (y - 192 * ay) * scale, w * scale, h * scale);
+                                frame[0] + (frame[2] - frame[0]) * ax + (x - 256 * ax) * scale,
+                                frame[1] + (frame[3] - frame[1]) * ay + (y - 192 * ay) * scale, w * scale, h * scale);
                     continue;
                 }
                 if (mission) {
@@ -185,9 +189,9 @@ void khdays_onescreen_images(const KhdaysFramePackage *p, const KhdaysSituation 
                  * The element already contains gauge.json's offsets and the entire animation. */
                 Picture *picture = &pictures[count++];
                 picture->owner = information ? -2 : -1;
-                image_shape(&picture->shape, r, e != p->upper ? KOF_LOWER : 0, x * scale,
-                            ((p->hud_options & KHDAYS_HUD_ALIGN_EDGES) ? 0 : 5 * factor) + y * scale, w * scale,
-                            h * scale);
+                image_shape(&picture->shape, r, e != p->upper ? KOF_LOWER : 0, frame[0] + x * scale,
+                            frame[1] + ((p->hud_options & KHDAYS_HUD_ALIGN_EDGES) ? 0 : 5 * factor) + y * scale,
+                            w * scale, h * scale);
                 continue;
             }
             const uint32_t lower = e != p->upper ? KOF_LOWER : 0;
