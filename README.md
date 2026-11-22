@@ -60,6 +60,8 @@ The game's own tutorials and prompts still draw the DS's button names: where one
 
 **Touch.** Without a controller the screen shows keys for the DS's buttons, a pad to move at the bottom left, and a Screen key for the lower-screen view. They are a fallback: there is no camera stick and no lock-on key.
 
+**Thanks** to [sonofskywalker3](https://github.com/sonofskywalker3), whose work on this port helped the iPhone version a lot: the performance and one-screen improvements he contributed upstream, and his Android port ([khdays-358-android](https://github.com/sonofskywalker3/khdays-358-android)), a reference for running the port on a phone.
+
 **App icon:** use the [KH Melon Mix](https://github.com/vitor251093/KHMelonMix) logo. Save it as a PNG, run `python3 tools/ios/make_icon.py logo.png ../my-icon/Assets.xcassets`, then build with `ICON_CATALOG=$PWD/../my-icon/Assets.xcassets`. The repository's own icon is only a placeholder.
 
 ## Status
