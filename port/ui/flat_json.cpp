@@ -3,7 +3,9 @@
 #include <charconv>
 #include <cmath>
 #include <fstream>
+#include <locale>
 #include <set>
+#include <sstream>
 #include <utility>
 
 namespace khdays::ui::json {
@@ -163,9 +165,13 @@ private:
             while (digit())
                 ++at;
         }
+        // std::from_chars(double) needs iOS 26; the token already matched the JSON number grammar, so a
+        // classic-locale stream reads it the same way on every platform.
         double n = 0;
-        const auto parsed = std::from_chars(text.data() + start, text.data() + at, n);
-        if (parsed.ec != std::errc{} || parsed.ptr != text.data() + at || !std::isfinite(n))
+        std::istringstream number(std::string(text.data() + start, text.data() + at));
+        number.imbue(std::locale::classic());
+        number >> n;
+        if (number.fail() || number.peek() != std::char_traits<char>::eof() || !std::isfinite(n))
             fail();
         return n;
     }

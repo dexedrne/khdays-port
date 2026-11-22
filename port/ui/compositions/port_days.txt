@@ -397,9 +397,9 @@ stop
 # Roxas's thoughts and the game over -- the upper screen whole at the DS's
 # size in the middle, the game over's orb (the HUD's 3D) with its lines (the
 # maintainer's choice, 2026-10-14).
-# (on the phone's filled display the day's card and the thoughts cover the
-# picture instead: no bars beside them; not the game over, whose orb -- the
-# HUD's 3D at the DS's size -- would no longer sit on its picture)
+# (on the phone's filled display the day's card and the thoughts and game over cover the
+# picture instead; the game over orb uses the same cover transform as its
+# background)
 [day-counter if phone]
 screens upper
 brightness upper
@@ -419,6 +419,12 @@ stop
 screens upper
 brightness upper
 shape upper at centre scale fixed(1)
+stop
+[game-over if phone]
+screens upper
+brightness upper
+shape upper at centre scale cover
+shape3d hud at centre scale cover
 stop
 [game-over]
 screens upper

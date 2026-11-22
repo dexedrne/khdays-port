@@ -292,11 +292,16 @@ ImVec2 khdays_skin_point(ImVec2 size, float x, float y)
     return ImVec2(skin_origin.x + x * size.x / s.pw, skin_origin.y + y * size.y / s.ph);
 }
 
-void khdays_skin_screen(ImDrawList *dl, ImVec2 size)
+void khdays_skin_screen(ImDrawList *dl, ImVec2 size, bool cover)
 {
-    if (s.on) {
-        image(dl, s.screen, skin_origin, ImVec2(skin_origin.x + size.x, skin_origin.y + size.y));
+    if (!s.on) return;
+    ImVec2 origin = skin_origin;
+    if (cover) {
+        const float scale = std::max(size.x / s.pw, size.y / s.ph);
+        origin = ImVec2((size.x - s.pw * scale) / 2, (size.y - s.ph * scale) / 2);
+        size = ImVec2(s.pw * scale, s.ph * scale);
     }
+    image(dl, s.screen, origin, ImVec2(origin.x + size.x, origin.y + size.y));
 }
 
 bool khdays_skin_place(ImDrawList *dl, const char *piece, ImVec2 size)

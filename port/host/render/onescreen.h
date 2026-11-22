@@ -30,6 +30,12 @@ int khdays_onescreen_scene(void);
 /* Its states (1 << KHDAYS_ST_*); any thread. */
 unsigned khdays_onescreen_states(void);
 
+#if defined(KHDAYS_IOS) || defined(KHDAYS_MOBILE_TEST)
+/* Separate ov024's BG0–2 subtitle tiles from the BG3/OBJ movie so they can be placed inside the safe area. */
+SDL_Texture *khdays_onescreen_movie_text(SDL_Renderer *renderer, const KhdaysFramePackage *p, int engine);
+void khdays_onescreen_movie_text_close(void);
+#endif
+
 /* The Moogle Shop's DS screens composed apart (its thread) since the last call: how many times, their
  * milliseconds in all and the longest, and the game's pictures alike to the last (not composed). */
 void khdays_onescreen_shop_work(unsigned *jobs, double *ms, double *most, unsigned *alike);

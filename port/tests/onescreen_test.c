@@ -256,6 +256,33 @@ static void test_real_file(void)
             }
         }
         {
+            /* Even when cover crops the backdrop, the game over orb must use its exact transform. */
+            KhdaysSituation over = {KHDAYS_SIT_GAME_OVER, 0};
+            KhdaysComposition comp;
+            const float safe[4] = {80, 5, 250, 178};
+            khdays_composition_set_fill(1, 1);
+            khdays_composition_set_hud_frame(342, safe);
+            khdays_composition_for(&over, 342, &comp);
+            CHECK(comp.shape_count == 1 && comp.shape3d_count == 1);
+            if (comp.shape_count == 1 && comp.shape3d_count == 1) {
+                const KhdaysShape3d *orb = comp.shapes3d;
+                CHECK(fabsf(orb->scale - 342.f / 256) < .001f);
+                CHECK(fabsf(orb->x - word_float(comp.shapes[0].words, KO_DST_X1)) < .01f);
+                CHECK(fabsf(orb->y - word_float(comp.shapes[0].words, KO_DST_Y1)) < .01f);
+            }
+            KhdaysSituation movie = {KHDAYS_SIT_MOVIE, 0};
+            for (movie.content = 1; movie.content <= 3; ++movie.content) {
+                khdays_composition_for(&movie, 342, &comp);
+                CHECK(comp.shape_count == 1);
+                if (comp.shape_count == 1) {
+                    CHECK(word_float(comp.shapes[0].words, KO_SRC_Y) == 16);
+                    CHECK(word_float(comp.shapes[0].words, KO_SRC_H) == 160);
+                }
+            }
+            khdays_composition_set_hud_frame(0, NULL);
+            khdays_composition_set_fill(0, 0);
+        }
+        {
             /* the pause: its menu, the lower screen's INFORMATION, map and panel -- but in an
              * event's pause the menu alone */
             KhdaysSituation pause = {KHDAYS_SIT_PAUSE, 0}, event = {KHDAYS_SIT_PAUSE, 1u << KHDAYS_ST_EVENT};

@@ -140,7 +140,7 @@ int first_cell(const KhdaysRow &r, int from, int dir)
 int pad_family()
 {
     SDL_Gamepad *pad = khdays_devices_gamepad();
-    switch (pad != nullptr ? SDL_GetGamepadType(pad) : SDL_GAMEPAD_TYPE_UNKNOWN) {
+    switch (khdays_devices_pad_type(pad)) {
     case SDL_GAMEPAD_TYPE_XBOX360:
     case SDL_GAMEPAD_TYPE_XBOXONE: return KHDAYS_PAD_XBOX;
     case SDL_GAMEPAD_TYPE_PS3:
@@ -246,16 +246,16 @@ void pad_input_label(int input, char *text, size_t size)
     const SDL_GamepadButton button = khdays_devices_sdl_button(input);
     if (pad != nullptr && button != SDL_GAMEPAD_BUTTON_INVALID && input <= KHDAYS_PAD_NORTH) {
         // a face button: what this controller prints on it, and where it is
-        const SDL_GamepadButtonLabel label = SDL_GetGamepadButtonLabel(pad, button);
+        const SDL_GamepadButtonLabel label = khdays_devices_button_label(pad, button);
         static const char *const letters[] = {"", "A", "B", "X", "Y"};
         if (label >= SDL_GAMEPAD_BUTTON_LABEL_A && label <= SDL_GAMEPAD_BUTTON_LABEL_Y) {
-            SDL_snprintf(text, size, "%s (%s)", letters[label], khdays_text(positions[input]));
+            SDL_snprintf(text, size, "%s (%s)", letters[label], khdays_text(positions[button]));
             return;
         }
         if (label >= SDL_GAMEPAD_BUTTON_LABEL_CROSS && label <= SDL_GAMEPAD_BUTTON_LABEL_TRIANGLE) {
             static const int shapes[] = {TXT_LABEL_CROSS, TXT_LABEL_CIRCLE, TXT_LABEL_SQUARE, TXT_LABEL_TRIANGLE};
             SDL_snprintf(text, size, "%s (%s)", khdays_text(shapes[label - SDL_GAMEPAD_BUTTON_LABEL_CROSS]),
-                         khdays_text(positions[input]));
+                         khdays_text(positions[button]));
             return;
         }
     }
@@ -1333,7 +1333,7 @@ void forget_icons()
 SDL_GamepadType pad_type()
 {
     SDL_Gamepad *pad = khdays_devices_gamepad();
-    return pad != nullptr ? SDL_GetGamepadType(pad) : SDL_GAMEPAD_TYPE_UNKNOWN;
+    return khdays_devices_pad_type(pad);
 }
 
 // The icon of an input on the connected gamepad, or NULL if there is none
@@ -1386,7 +1386,7 @@ const char *icon_name(int input)
                                                  {"xbox_button_color_y", "switch_button_y"}};
         SDL_Gamepad *pad = khdays_devices_gamepad();
         const SDL_GamepadButtonLabel label = pad != nullptr
-                                                 ? SDL_GetGamepadButtonLabel(pad, khdays_devices_sdl_button(input))
+                                                 ? khdays_devices_button_label(pad, khdays_devices_sdl_button(input))
                                                  : SDL_GAMEPAD_BUTTON_LABEL_UNKNOWN;
         switch (label) {
         case SDL_GAMEPAD_BUTTON_LABEL_CROSS: return "playstation_button_color_cross";
@@ -1713,7 +1713,7 @@ void draw_rows(float row_h, float pad)
     const float gap = ImGui::GetFontSize();
     float label_w = 0, cell_w = 0;
     float cell_x[KHDAYS_CELLS + 1] = {}; // each binding column's left, from the values' left; the last one's end
-    bool bindings = false;
+    bool bindings = false, stack_bindings = false;
     for (int i = 0; i < m.count; ++i) {
         const KhdaysRow &r = m.rows[i];
         if (r.kind == KHDAYS_ROW_BINDING) {
@@ -1757,6 +1757,9 @@ void draw_rows(float row_h, float pad)
                 total += need[c];
             }
             const float k = total > room ? room / total : 1.0f;
+#ifdef KHDAYS_MOBILE
+            stack_bindings = k < 0.7f;
+#endif
             label_w *= k;
             for (int c = 0; c < KHDAYS_CELLS; ++c) {
                 cell_x[c + 1] = cell_x[c] + need[c] * k;
@@ -1775,7 +1778,7 @@ void draw_rows(float row_h, float pad)
     ImGui::Dummy(ImVec2(w, row_h));
     for (int i = 0; i < m.count; ++i) {
         const KhdaysRow &r = m.rows[i];
-        if (r.kind == KHDAYS_ROW_BINDING && (i == 0 || m.rows[i - 1].kind != KHDAYS_ROW_BINDING)) {
+        if (!stack_bindings && r.kind == KHDAYS_ROW_BINDING && (i == 0 || m.rows[i - 1].kind != KHDAYS_ROW_BINDING)) {
             // the column headings, above the first binding of each group
             const ImVec2 p = ImGui::GetCursorScreenPos();
             for (int d = 0; d < KHDAYS_DEVICE_COUNT; ++d) {
@@ -1790,7 +1793,23 @@ void draw_rows(float row_h, float pad)
             ImGui::Dummy(ImVec2(w, row_h));
         }
         const ImVec2 p = ImGui::GetCursorScreenPos();
-        const float h = r.kind == KHDAYS_ROW_STICKS ? row_h * 4.5f : r.kind == KHDAYS_ROW_PAD ? pad_height(w) : row_h;
+        const bool list_cells = stack_bindings && r.kind == KHDAYS_ROW_BINDING;
+        bool choice_below = false;
+#ifdef KHDAYS_MOBILE
+        if (r.kind == KHDAYS_ROW_CHOICE) {
+            for (int n = 0; n <= r.high; ++n) {
+                if (value_x + width_of(r.choices[n]) + 2 * row_h > w) {
+                    choice_below = true;
+                    break;
+                }
+            }
+        }
+#endif
+        float h = row_h;
+        if (list_cells) h = (1 + KHDAYS_CELLS) * row_h;
+        else if (choice_below) h = 2 * row_h;
+        else if (r.kind == KHDAYS_ROW_STICKS) h = row_h * 4.5f;
+        else if (r.kind == KHDAYS_ROW_PAD) h = pad_height(w);
         const ImVec2 q(p.x + w, p.y + h);
         const bool focus = m.in_rows && i == m.row && (m.mode == MODE_BROWSE || m.mode == MODE_TEXT);
         const float ty = p.y + (row_h - ImGui::GetFontSize()) / 2;
@@ -1827,16 +1846,25 @@ void draw_rows(float row_h, float pad)
         case KHDAYS_ROW_STICKS: draw_sticks(p, w, h); break;
         case KHDAYS_ROW_PAD: draw_pad(p, w, h); break;
         case KHDAYS_ROW_BINDING:
-            text_fitted(ImVec2(p.x + pad, ty), colour, r.label, p.x + value_x - gap / 2);
+            text_fitted(ImVec2(p.x + pad, ty), colour, r.label, list_cells ? q.x - pad : p.x + value_x - gap / 2);
             for (int c = 0; c < KHDAYS_CELLS; ++c) {
-                const ImVec2 cp(p.x + value_x + cell_x[c] - gap / 4, p.y);
-                const ImVec2 cq(p.x + value_x + cell_x[c + 1] - gap * 3 / 4, q.y);
+                ImVec2 cp(p.x + value_x + cell_x[c] - gap / 4, p.y);
+                ImVec2 cq(p.x + value_x + cell_x[c + 1] - gap * 3 / 4, q.y);
                 if (!(r.cells & (1u << c))) {
                     continue;
                 }
+                if (list_cells) {
+                    char heading[64];
+                    SDL_snprintf(heading, sizeof(heading), "%s %d",
+                                 khdays_text(KHDAYS_CELL_DEVICE(c) == 0 ? TXT_KEYBOARD : TXT_GAMEPAD),
+                                 1 + KHDAYS_CELL_SLOT(c));
+                    cp = ImVec2(p.x + w * .40f, p.y + (c + 1) * row_h);
+                    cq = ImVec2(q.x - pad, cp.y + row_h);
+                    text_fitted(ImVec2(p.x + pad, cp.y + ty - p.y), heading_colour(), heading, cp.x - gap / 4);
+                }
                 if (focus && c == m.cell && m.mode == MODE_BROWSE &&
-                    !(m.skin && khdays_skin_piece(dl, "row", "selected", ImVec2(cp.x, capsule_min.y),
-                                                  ImVec2(cq.x, capsule_max.y)))) {
+                    !(m.skin && khdays_skin_piece(dl, "row", "selected", ImVec2(cp.x, cp.y + row_h * .06f),
+                                                  ImVec2(cq.x, cp.y + row_h * .94f)))) {
                     dl->AddRectFilled(cp, cq, kCell);
                 }
                 {
@@ -1846,7 +1874,7 @@ void draw_rows(float row_h, float pad)
                         draw_icon(dl, icon(cell_icon(r, c)), ImVec2(cp.x + gap / 4 + room * 0.45f, (cp.y + cq.y) / 2),
                                   room * 0.9f);
                     }
-                    text_fitted(ImVec2(cp.x + gap / 4 + room, ty), colour, cell_text(r, c).c_str(), cq.x);
+                    text_fitted(ImVec2(cp.x + gap / 4 + room, cp.y + ty - p.y), colour, cell_text(r, c).c_str(), cq.x);
                 }
                 record(KHDAYS_PLACE_CELL, i * KHDAYS_CELLS + c, cp, cq);
             }
@@ -1855,19 +1883,21 @@ void draw_rows(float row_h, float pad)
             if (r.kind == KHDAYS_ROW_COMMAND) {
                 text_at(ImVec2(p.x + pad, ty), colour, r.label);
             } else {
-                text_clipped(ImVec2(p.x + pad, ty), colour, r.label, p.x + value_x - gap / 2);
+                const float vx = choice_below ? pad : value_x;
+                const float offset = choice_below ? row_h : 0;
+                text_fitted(ImVec2(p.x + pad, ty), colour, r.label, choice_below ? q.x - pad : p.x + value_x - gap / 2);
                 const std::string v = value_text(r);
                 if (focus && m.mode == MODE_TEXT &&
                     !(m.skin && khdays_skin_piece(dl, "row", "selected", ImVec2(p.x + value_x - gap / 4, capsule_min.y),
                                                   capsule_max))) {
                     dl->AddRectFilled(ImVec2(p.x + value_x - gap / 4, p.y), q, kCell);
                 }
-                float value_end = p.x + value_x + std::max(width_of(v.c_str()), gap * 4);
-                if (!m.skin || !draw_skin_value(dl, r, v, ImVec2(p.x + value_x, p.y), q, row_h, pad, ty, colour, focus,
+                float value_end = p.x + vx + std::max(width_of(v.c_str()), gap * 4);
+                if (!m.skin || !draw_skin_value(dl, r, v, ImVec2(p.x + vx, p.y + offset), q, row_h, pad, ty + offset, colour, focus,
                                                 &value_end)) {
-                    text_at(ImVec2(p.x + value_x, ty), colour, v.c_str());
+                    text_fitted(ImVec2(p.x + vx, ty + offset), colour, v.c_str(), q.x - pad);
                 }
-                record(PLACE_VALUE, i, ImVec2(p.x + value_x - gap / 4, p.y), ImVec2(value_end, q.y));
+                record(PLACE_VALUE, i, ImVec2(p.x + vx - gap / 4, p.y + offset), ImVec2(std::min(value_end, q.x), q.y));
                 if (focus && m.mode == MODE_TEXT && m.window != nullptr) {
                     // an input method's candidate window goes next to the field
                     const SDL_Rect area = {(int)((p.x + value_x) / m.density), (int)(p.y / m.density),
@@ -2264,6 +2294,40 @@ int khdays_settings_handle(const SDL_Event *e, SDL_Window *window)
     if (!m.open) {
         return 0;
     }
+#ifdef KHDAYS_MOBILE
+    // iOS disables touch-generated mouse events during play. Translate taps only here.
+    static SDL_FingerID finger;
+    static float start_y;
+    static bool tracking, scrolling;
+    SDL_Event touch{};
+    if (e->type == SDL_EVENT_FINGER_DOWN) {
+        tracking = true;
+        scrolling = false;
+        finger = e->tfinger.fingerID;
+        start_y = e->tfinger.y;
+        return 0;
+    }
+    if (e->type == SDL_EVENT_FINGER_UP || e->type == SDL_EVENT_FINGER_MOTION || e->type == SDL_EVENT_FINGER_CANCELED) {
+        if (!tracking || finger != e->tfinger.fingerID) return 0;
+        int w, h;
+        if (!SDL_GetWindowSize(window, &w, &h)) return 0;
+        if (e->type == SDL_EVENT_FINGER_MOTION) {
+            if (SDL_fabsf(e->tfinger.y - start_y) * h < 10 && !scrolling) return 0;
+            scrolling = true;
+            touch.type = SDL_EVENT_MOUSE_WHEEL;
+            touch.wheel.y = (e->tfinger.y - start_y) * h / 32.0f;
+            start_y = e->tfinger.y;
+        } else {
+            tracking = false;
+            if (scrolling || e->type == SDL_EVENT_FINGER_CANCELED) return 0;
+            touch.type = SDL_EVENT_MOUSE_BUTTON_DOWN;
+            touch.button.button = SDL_BUTTON_LEFT;
+            touch.button.x = e->tfinger.x * w;
+            touch.button.y = e->tfinger.y * h;
+        }
+        e = &touch;
+    }
+#endif
     const Focus was = focus_now();
     const KhdaysProfile before = m.work;
     const int intent = intent_of(e);
@@ -2546,7 +2610,11 @@ void khdays_settings_draw(SDL_Renderer *renderer, SDL_Window *window)
         if (full_w != w || full_h != h) {
             ImGui::GetBackgroundDrawList()->AddRectFilled(ImVec2(0, 0), full, IM_COL32(0, 0, 0, 170));
         }
-        khdays_skin_screen(ImGui::GetBackgroundDrawList(), screen);
+        bool cover = false;
+#ifdef KHDAYS_MOBILE
+        cover = khdays_ios_layout() == 2 && !m.work.video.picture_fit;
+#endif
+        khdays_skin_screen(ImGui::GetBackgroundDrawList(), cover ? full : screen, cover);
         // the faded picture of the section shown (the HD menu's own five, the port's choice of one
         // for each of its sections: KHDAYS_SECTION_*)
         static const char *const emblems[KHDAYS_SECTION_COUNT] = {"emblem_keyboard", "emblem_pad",    "emblem_pad",

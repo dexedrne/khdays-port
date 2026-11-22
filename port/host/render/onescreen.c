@@ -182,6 +182,60 @@ static void tell_left_out(const KhdaysFramePackage *p, const KhdaysComposition *
                khdays_situation_name(situation.scene), count, x0, y0, x1, y1);
 }
 
+#if defined(KHDAYS_IOS) || defined(KHDAYS_MOBILE_TEST)
+static SDL_Texture *movie_text;
+static uint32_t movie_text_key;
+static int movie_text_valid;
+
+void khdays_onescreen_movie_text_close(void)
+{
+    SDL_DestroyTexture(movie_text);
+    movie_text = NULL;
+    movie_text_valid = 0;
+}
+
+SDL_Texture *khdays_onescreen_movie_text(SDL_Renderer *renderer, const KhdaysFramePackage *p, int engine)
+{
+    if (pixels.p != p || !(p->desc2d[engine][KD_FLAGS] & (7u << KDF_BG_ON_SHIFT)))
+        return NULL;
+    /* ov024's three text maps and glyphs occupy BG memory below the movie buffer at 0x8000.
+     * Its text doesn't usually change between decoded pictures. */
+    const int bg = engine ? KHDAYS_2D_BBG : KHDAYS_2D_ABG;
+    const int ext = engine ? KHDAYS_2D_BBGEXT : KHDAYS_2D_ABGEXT;
+    const uint32_t *original = pixels.desc[engine];
+    uint32_t key = SDL_crc32(engine, original, (KD_LAYERS + 3 * KD_LAYER_WORDS) * sizeof(uint32_t));
+    key = SDL_crc32(key, p->mem2d_version + bg, 2 * sizeof(uint32_t));
+    key = SDL_crc32(key, p->mem2d_version + ext, 2 * sizeof(uint32_t));
+    key = SDL_crc32(key, p->palette2d + engine * 0x400, 0x200);
+    if (movie_text_valid && key == movie_text_key)
+        return movie_text;
+    if (!movie_text) {
+        movie_text = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_RGBA32, SDL_TEXTUREACCESS_STREAMING, 256, 192);
+        if (!movie_text) return NULL;
+        SDL_SetTextureBlendMode(movie_text, SDL_BLENDMODE_BLEND);
+        SDL_SetTextureScaleMode(movie_text, SDL_SCALEMODE_LINEAR);
+    }
+    void *dst;
+    int pitch;
+    if (!SDL_LockTexture(movie_text, NULL, &dst, &pitch)) return NULL;
+    uint32_t desc[KHDAYS_DESC_WORDS];
+    memcpy(desc, original, sizeof(desc));
+    desc[KD_FLAGS] &= ~(KDF_OBJ_ON | (8u << KDF_BG_ON_SHIFT));
+    desc[KD_ELEMENTS] = desc[KD_LEFT_OUT] = 0;
+    for (int y = 0; y < 192; ++y) {
+        uint32_t *row = (uint32_t *)((uint8_t *)dst + y * pitch);
+        for (int x = 0; x < 256; ++x) {
+            const uint32_t dot = khdays_gfx_pixel_cpu(desc, &pixels.memory[engine], x, y);
+            row[x] = dot ? (dot | 0xff000000u) : 0;
+        }
+    }
+    SDL_UnlockTexture(movie_text);
+    movie_text_key = key;
+    movie_text_valid = 1;
+    return movie_text;
+}
+#endif
+
 /* The screens that show something (the situation's `content`, for the compositions' common rule): a
  * screen whose points of a 16 x 12 grid are not all alike. */
 static void screens_content(KhdaysSituation *s)
@@ -532,11 +586,21 @@ static void game_over_orb(KhdaysComposition *composition)
 
 /* The model's shape: the polygons of `src` (the DS's dots) -- the part `view` of them centred in the window
  * `dst` (the port's 1920 x 1080 layout, fitted in the picture as the screen fits it), as large as it fits. */
+static float menu_placement(int columns, float *ox, float *oy)
+{
+    float frame[4] = {0, 0, (float)columns, 192};
+    if (khdays_composition_fill()) khdays_composition_hud_frame(frame);
+    const float width = frame[2] - frame[0], height = frame[3] - frame[1];
+    const float k = width / 1920.f < height / 1080.f ? width / 1920.f : height / 1080.f;
+    *ox = frame[0] + (width - 1920.f * k) * .5f;
+    *oy = frame[1] + (height - 1080.f * k) * .5f;
+    return k;
+}
+
 static void place_model(const KhdaysFramePackage *p, int columns, const float *src, const float *view, const float *dst)
 {
-    const float c = (float)columns;
-    const float k = c / 1920.0f < 192.0f / 1080.0f ? c / 1920.0f : 192.0f / 1080.0f; /* layout -> dots */
-    const float ox = (c - 1920.0f * k) / 2.0f, oy = (192.0f - 1080.0f * k) / 2.0f;
+    float ox, oy;
+    const float k = menu_placement(columns, &ox, &oy);
     const float scale = (dst[2] / view[2] < dst[3] / view[3] ? dst[2] / view[2] : dst[3] / view[3]) * k;
     /* the 3D's polygons are where the game draws them before its 3D layer's scroll (BG0HOFS: a screen dot
      * x shows the 3D's x + scroll), in the rectangle where the screen shows them */
@@ -589,9 +653,8 @@ static KhdaysShape card_shape;
 
 static void camp_cards(int columns, const KhdaysCampModel *m, KhdaysComposition *composition)
 {
-    const float c = (float)columns;
-    const float k = c / 1920.0f < 192.0f / 1080.0f ? c / 1920.0f : 192.0f / 1080.0f; /* layout -> dots */
-    const float ox = (c - 1920.0f * k) / 2.0f, oy = (192.0f - 1080.0f * k) / 2.0f;
+    float ox, oy;
+    const float k = menu_placement(columns, &ox, &oy);
     const float *r = m->lower_card, *src = m->lower_src;
     const int on = r[2] > 0.0f && r[3] > 0.0f && src[2] > 0.0f && src[3] > 0.0f && m->lower_alpha > 0.002f;
     uint32_t *words = card_shape.words;

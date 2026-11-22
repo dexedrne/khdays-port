@@ -1,7 +1,6 @@
 /* Exercise the imported gait on the same reference-based memory the game uses. */
 #include "../runtime/input/walk.h"
 #include "../runtime/core/clock.h"
-#include <windows.h>
 #include <math.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -35,7 +34,7 @@ unsigned khdays_input_game_frames(void)
 {
     return frame;
 }
-uint64_t khdays_clock_cycles(void)
+u64 khdays_clock_cycles(void)
 {
     return cycle;
 }
@@ -97,8 +96,9 @@ int main(int argc, char **argv)
     if (argc != 2)
         return 2;
     clip_path = argv[1];
-    if (GetFileAttributesA(clip_path) == INVALID_FILE_ATTRIBUTES)
-        return 77;
+    FILE *clip = fopen(clip_path, "rb");
+    if (!clip) return 77;
+    fclose(clip);
     khdays_window = calloc(1, 0x02400000);
     if (!khdays_window)
         return 3;

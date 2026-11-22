@@ -1,4 +1,5 @@
 // The GPU sequence pass against the CPU reference, including large atlases and repeated draws.
+#include <cmath>
 #include "../gfx/kh2_sequence.h"
 #include "../ui/kh2_hp_gauge.h"
 #include "../ui/kh2_hp_config.h"

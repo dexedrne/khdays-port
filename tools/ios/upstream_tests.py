@@ -106,6 +106,12 @@ class Writer:
     def command(self, stmt, indent):
         name, args, whole = stmt
         target = first_word(args)
+        if name == "add_executable" and target == "khdays-secondary-replay":
+            # Standalone FBX inspection tool. None of the tests invoke it.
+            self.dropped.add(target)
+            return self.leave("standalone tool", whole)
+        if name == "add_executable" and target == "khdays-movie-hd-test":
+            whole = whole.replace("runtime/core/clock.c", "runtime/core/clock_sdl.c")
         if name == "add_test":
             m = re.search(r"\bCOMMAND\s+(\"[^\"]*\"|\S+)", args)
             target = m.group(1).strip('"') if m else ""
@@ -122,7 +128,10 @@ class Writer:
             self.lines.append(f"{indent}target_link_libraries({kept})")
             return None
         if name in ("target_compile_options", "set_source_files_properties") and MSVC_FLAG.search(args):
-            return None  # MSVC's options alone: nothing to say
+            if name == "target_compile_options" and "/Zp4" in args:
+                # Rewritten DS structs require four-byte packing on every host.
+                self.lines.append(f"{indent}target_compile_options({target} PRIVATE $<$<COMPILE_LANGUAGE:C>:-fpack-struct=4>)")
+            return None
         if WINDOWS.search(whole):
             return self.leave("needs Windows", whole)
         if name == "include" and any(a in args for a in ALREADY):
@@ -134,6 +143,8 @@ class Writer:
         if name == "add_executable":
             self.lines.append(f"{indent}target_link_libraries({target} PRIVATE m)")
             self.lines.append(f"{indent}add_dependencies(khdays-upstream-tests {target})")
+        elif name == "include" and args.strip() == "tests/scripts.cmake":
+            self.lines.append(f"{indent}add_dependencies(khdays-upstream-tests khdays-script-test)")
         elif name == "add_library" and re.search(r"\bMODULE\b", args):
             self.lines.append(f"{indent}add_dependencies(khdays-upstream-tests {target})")
 

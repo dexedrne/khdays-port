@@ -13,7 +13,7 @@ static unsigned finger(SDL_EventType type, SDL_FingerID id, float x, float y, bo
     e.tfinger.fingerID = id;
     e.tfinger.x = x / 512;
     e.tfinger.y = y / 384;
-    khdays_mobile_finger(&e, renderer, pad);
+    khdays_mobile_finger(&e, renderer, !pad);
     KhdaysInputSnapshot snapshot = {0};
     khdays_mobile_snapshot(&snapshot);
     return snapshot.ds_buttons;
@@ -27,6 +27,7 @@ int main(void)
     SDL_SetRenderLogicalPresentation(renderer, 256, 384, SDL_LOGICAL_PRESENTATION_STRETCH);
     khdays_mobile_stylus_rect(renderer, (SDL_FRect){0, 192, 256, 192});
     khdays_mobile_draw(renderer);
+    if (!khdays_mobile_settings_at(window, 82, 192) || khdays_mobile_settings_at(window, 486, 302)) return 1;
     unsigned a = 1u << KHDAYS_ACT_A, right = 1u << KHDAYS_ACT_RIGHT;
     if (finger(SDL_EVENT_FINGER_DOWN, 1, 486, 302, false) != a ||
         finger(SDL_EVENT_FINGER_DOWN, 2, 35, 310, false) != a ||

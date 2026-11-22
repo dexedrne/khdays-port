@@ -63,7 +63,7 @@ def turn(frame, shape):
     return f"{frame}!safe={','.join(map(str, margins))} {frame + 1}!size={w}x{h}"
 
 
-def play(exe, rom, script, shape, seconds, extra=(), settings=None, pictures=None, videos=None):
+def play(exe, rom, script, shape, seconds, extra=(), settings=None, pictures=None, videos=None, mod=None):
     """Runs the game until the script is done (and a moment more); returns its log's lines and status."""
     (w, h), margins = shape
     env = dict(os.environ, KHDAYS_ROM=str(rom), SDL_AUDIODRIVER="dummy", SDL_VIDEODRIVER="offscreen",
@@ -82,6 +82,9 @@ def play(exe, rom, script, shape, seconds, extra=(), settings=None, pictures=Non
         if settings is not None:
             (Path(work) / "saves").mkdir()
             (Path(work) / "saves" / "settings.ini").write_text(settings)
+        if mod is not None:
+            (Path(work) / "mods").mkdir()
+            (Path(work) / "mods" / mod.name).symlink_to(mod, target_is_directory=True)
         if videos is not None:
             # the player's HD videos where the phone looks for them: a link, never a copy
             (Path(work) / "data" / "cutscenes").mkdir(parents=True)
@@ -497,6 +500,9 @@ def videos_folder():
     """The player's HD videos (KHDAYS_HD_VIDEOS, else the work folder's private/cinematics), or None."""
     named = os.environ.get("KHDAYS_HD_VIDEOS")
     folder = Path(named) if named else ROOT.parent / "private" / "cinematics"
+    packed = ROOT.parent / "private" / "hd" / "data" / "cutscenes" / "cinematics"
+    if not named and (packed / "hd802.mp4").is_file():
+        folder = packed
     return folder.resolve() if (folder / "hd802.mp4").is_file() else None
 
 
@@ -519,6 +525,8 @@ def movie_case(exe, rom, pictures):
         print("movie: this build has no HD player (no FFmpeg libraries found): skipped")
         return True
     at = c.expect("the opening plays as the player's HD video", r"movies: start hd802\.mp4")
+    if (videos / "subtitles/en/hd802.txt").is_file():
+        c.expect("the HD pack supplies the opening subtitles", r"movies: 802: [1-9]\d* subtitle lines from")
     names = ["unfolded lying", "unfolded upright", "the phone console's window lying", "folded upright",
              "folded lying", "unfolded lying again"]
     for name, shape in zip(names, order):
@@ -555,12 +563,73 @@ def movie_case(exe, rom, pictures):
     return c.failed == 0
 
 
+def hd_title_case(exe, rom, pictures):
+    """Read the private title art and tap its actual Settings button after a live turn."""
+    mod = ROOT.parent / "private" / "hd" / "mods" / "HD PACK"
+    layout = mod / "layouts/title/en/root_2_0.txt"
+    if not layout.is_file():
+        print("hd-title: no private theater title layout: skipped")
+        return True
+    bounds = re.search(r"^button open_settings ([^\n]+)", layout.read_text(), re.M)
+    if not bounds:
+        print("hd-title: private theater layout is missing its Settings button")
+        return False
+    left, top, right, bottom = map(float, bounds[1].split())
+    x0, y0, x1, y1 = visible(UNFOLDED_P)
+    scale = min((x1-x0)/1920, (y1-y0)/1080)
+    x = round((x0+x1)/2 + ((left+right)/2-960)*scale)
+    y = round((y0+y1)/2 + ((top+bottom)/2-540)*scale)
+    script = " ".join(["0*ps5", "t", "200!report", turn(280, UNFOLDED_P), "480!report",
+                       f"600!touch={x},{y}", "680!report"])
+    c = Checks("hd-title", play(exe, rom, script, CONSOLE_L, 300, mod=mod,
+                                pictures=pictures and pictures / "hd-title"))
+    at = 0
+    for shape in (CONSOLE_L, UNFOLDED_P):
+        at = c.expect("read theater title", r"pad script: .* !report", at)
+        r = Report(c.lines, at)
+        w, h = shape[0]
+        c.check(f"HD title fills {w}x{h}", r.ok and r.read == (w, h) and r.way == "the one-screen picture" and
+                r.box[0] <= FILL_SLACK and r.box[1] <= FILL_SLACK and
+                r.box[2] >= w - 1 - FILL_SLACK and r.box[3] >= h - 1 - FILL_SLACK,
+                f"lit bounds {r.box}" if r.ok else "missing readback")
+        at = r.at + 1
+    at = c.expect("tap the portrait Settings button", r"pad script: .* !touch=", at)
+    c.expect("the tap opened Settings inside the safe area", r"overlay settings menu at .*inside", at)
+    if c.failed:
+        c.tail()
+    return c.failed == 0
+
+
+def ds_movie_case(exe, rom, pictures):
+    """Check the drawable itself for the 16-row borders around the native 256x160 video."""
+    script = ["0*ps5", "t", press(130, "south"), press(330, "south"), press(530, "south"),
+              press(680, "dpleft"), press(740, "south"), "s11", press(400, "start"), "s2",
+              "650!report", turn(720, UNFOLDED_P), "950!report"]
+    c = Checks("ds-movie", play(exe, rom, " ".join(script), CONSOLE_L, 300,
+                                settings="[video]\nmovies = ds\n",
+                                pictures=pictures and pictures / "ds-movie"))
+    at = c.expect("the field movie is playing", r"one screen: frame \d+, movie", c.expect(
+        "the first field has started", r"anchor s2 begins"))
+    for shape in (CONSOLE_L, UNFOLDED_P):
+        at = c.expect("read the playing movie", r"pad script: .* !report", at)
+        r = Report(c.lines, at)
+        w, h = shape[0]
+        c.check(f"native movie fills {w}x{h}", r.ok and r.read == (w, h) and
+                r.box[0] <= FILL_SLACK and r.box[1] <= FILL_SLACK and
+                r.box[2] >= w - 1 - FILL_SLACK and r.box[3] >= h - 1 - FILL_SLACK,
+                f"lit bounds {r.box}" if r.ok else "missing readback")
+        at = r.at + 1
+    if c.failed:
+        c.tail()
+    return c.failed == 0
+
+
 def main():
     sys.stdout.reconfigure(line_buffering=True)  # (each line seen as it comes, under CTest too)
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("exe", type=Path)
     parser.add_argument("rom", type=Path)
-    parser.add_argument("--only", choices=("title", "field", "inset", "waits", "movie"))
+    parser.add_argument("--only", choices=("title", "field", "inset", "waits", "movie", "ds-movie", "hd-title"))
     parser.add_argument("--pictures", type=Path, help="keep each case's reported pictures and console in this folder")
     args = parser.parse_args()
     if not LAVAPIPE.is_file():
@@ -572,7 +641,9 @@ def main():
              ("field", lambda: field(exe, rom, pictures, "field", None)),
              ("inset", lambda: field(exe, rom, pictures, "inset", "[video]\nlower_view = inset\n")),
              ("waits", lambda: waits_case(exe, rom, pictures)),
-             ("movie", lambda: movie_case(exe, rom, pictures)))
+             ("movie", lambda: movie_case(exe, rom, pictures)),
+             ("ds-movie", lambda: ds_movie_case(exe, rom, pictures)),
+             ("hd-title", lambda: hd_title_case(exe, rom, pictures)))
     results = [case() for name, case in cases if args.only in (None, name)]
     return 0 if all(results) else 1
 

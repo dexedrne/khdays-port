@@ -1044,9 +1044,9 @@ if(KHDAYS_MOBILE_TEST)
         message(FATAL_ERROR "KHDAYS_MOBILE_TEST is for the Linux test build (KHDAYS_HEADLESS_TEST_BUILD)")
     endif()
     target_sources(khdays-host-input PRIVATE host/app/mobile_touch.c host/app/pad_script.c)
-    set_property(SOURCE host/app/mobile_touch.c host/app/devices.c host/app/window.c host/render/gpu_present.c
+    set_property(SOURCE host/app/mobile_touch.c host/app/devices.c host/app/window.c host/render/gpu_present.c host/render/onescreen.c
                         host/app/pad_script.c host/app/profile.c host/settings/settings_model.c
-                        host/settings/settings_corner.c host/settings/settings_menu.cpp tests/input_test.c
+                        host/settings/settings_corner.c host/settings/settings_menu.cpp host/screens/layout_screen.c tests/input_test.c
                  APPEND PROPERTY COMPILE_DEFINITIONS KHDAYS_MOBILE_TEST)
 endif()
 if(CMAKE_SYSTEM_NAME STREQUAL "iOS")

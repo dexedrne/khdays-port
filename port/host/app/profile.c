@@ -277,6 +277,7 @@ void khdays_video_default(KhdaysVideo *v)
     v->display = KHDAYS_DISPLAY_WINDOW;
     v->lower_view = KHDAYS_LOWER_VIEW_FULL;
     v->picture_fit = 0; /* fill: the owner's choice for the phone (2026-11-21) */
+    v->touch_controls = 0;
     v->movies_fit = 0;
     v->screen_resolution = 0; /* the desktop's */
 }
@@ -425,6 +426,7 @@ int khdays_profile_repair(KhdaysProfile *p)
         changed += clamp(&p->video.display, 0, KHDAYS_DISPLAY_COUNT - 1);
         changed += clamp(&p->video.lower_view, 0, KHDAYS_LOWER_VIEW_COUNT - 1);
         changed += clamp(&p->video.picture_fit, 0, 1);
+        changed += clamp(&p->video.touch_controls, 0, 2);
         changed += clamp(&p->video.movies_fit, 0, 1);
     }
     changed += clamp(&p->sound.volume, 0, 100);
@@ -996,6 +998,15 @@ static void read_video(Reader *r, const char *key, const char *value, const char
         } else {
             say_localized(r, TXT_VIDEO_BAD_VALUE, key, value, "full");
             v->lower_view = KHDAYS_LOWER_VIEW_FULL;
+        }
+        return;
+    }
+    if (SDL_strcasecmp(key, "touch_controls") == 0) {
+        if (SDL_strcasecmp(value, "on") == 0) v->touch_controls = 1;
+        else if (SDL_strcasecmp(value, "off") == 0) v->touch_controls = 2;
+        else {
+            v->touch_controls = 0;
+            if (SDL_strcasecmp(value, "auto") != 0) say_localized(r, TXT_VIDEO_BAD_VALUE, key, value, "auto");
         }
         return;
     }
@@ -1688,6 +1699,7 @@ int khdays_profile_save(const KhdaysProfile *p, const char *path, KhdaysNotice n
                                                   : "auto",
             v->lower_view == KHDAYS_LOWER_VIEW_INSET ? "inset" : "full");
 #if defined(KHDAYS_IOS) || defined(KHDAYS_MOBILE_TEST)
+        add(&t, "touch_controls = %s\n", v->touch_controls == 1 ? "on" : v->touch_controls == 2 ? "off" : "auto");
         add(&t,
             "# picture: on the phone's single screen, fill (the game over the whole display, edge to edge,\n"
             "#          the overflow cut where its shape differs) or fit (whole, inside the safe area)\n"

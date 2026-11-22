@@ -322,10 +322,10 @@ static void run(const Step *s)
                                        input == KHDAYS_PAD_LEFTTRIGGER ? SDL_GAMEPAD_AXIS_LEFT_TRIGGER
                                                                        : SDL_GAMEPAD_AXIS_RIGHT_TRIGGER,
                                        down ? SDL_JOYSTICK_AXIS_MAX : SDL_JOYSTICK_AXIS_MIN);
-        } else if (input >= 0 && khdays_devices_sdl_button(input) != SDL_GAMEPAD_BUTTON_INVALID) {
+        } else if (input >= 0 && khdays_devices_positional_button(input) != SDL_GAMEPAD_BUTTON_INVALID) {
             /* SDL numbers a virtual gamepad's buttons in SDL_GamepadButton order, counting only those
              * it has */
-            const Uint32 bit = 1u << khdays_devices_sdl_button(input);
+            const Uint32 bit = 1u << khdays_devices_positional_button(input);
             int raw = 0;
             if (!(pads[s->pad].mask & bit)) {
                 fprintf(stderr, "pad script: pad %d has no %s\n", s->pad + 1, s->what);

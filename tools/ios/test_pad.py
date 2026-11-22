@@ -31,7 +31,8 @@ def press(frame, name, pad=""):
 
 
 TITLE = " ".join([
-    "0*ps5", "t", press(100, "dpdown"), "160/", "220*switchpro-nocapture", press(280, "back"),
+    "0*switchpro", "s1", press(80, "east"), press(110, "south"), press(140, "north"), press(170, "west"),
+    "200/", "230*ps5", "t", press(100, "dpdown"), "160/", "220*switchpro-nocapture", press(280, "back"),
     "340#2*ps5", press(400, "touchpad", "#2"), "460!background", "480!foreground",
     press(560, "south", "#2")])
 
@@ -105,6 +106,9 @@ class Checks:
 def title_case(exe, rom):
     c = Checks("title", play(exe, rom, TITLE, "948x667", 150))
     at = c.expect("first run: the Kingdom Hearts II layout", r"no settings file yet: the Kingdom Hearts II gamepad layout")
+    for physical, slot, action in (("b", "south", "a"), ("a", "east", "b"), ("y", "north", "x"), ("x", "west", "y")):
+        at = c.expect(f"Switch Pro printed {action.upper()} drives DS {action.upper()}",
+                      rf"gamepad button {slot} \({physical}\) -> {action}$", at)
     at = c.expect("the DualSense connects and plays", r"gamepad connected: .*type PS5.*touch pad click yes.*\(playing\)", at)
     at = c.expect("its D-pad reaches the game", r"gamepad button dpdown \(dpdown\) -> down", at)
     at = c.expect("pulled out: the touch keys come back", r"gamepads: 0 connected, none plays; touch keys shown", at)

@@ -687,7 +687,10 @@ int main(int argc, char **argv)
         CHECK(strstr(said, "test.provider: plugin test.user.ping hello") != NULL);
         CHECK(strstr(said, "test.user: plugin frame refused") != NULL);
         CHECK(strstr(said, "replaces it as test.provider's does") != NULL);
-        CHECK(strstr(said, "routine 42 in module 22, datum 1234, none 0000000000000000, back same") != NULL);
+        char expected_routine[96];
+        snprintf(expected_routine, sizeof(expected_routine), "routine 42 in module 22, datum 1234, none %p, back same",
+                 (void *)0);
+        CHECK(strstr(said, expected_routine) != NULL);
         khdays_plugins_game_event("frame", 7, 0, 0, 0, NULL);
         CHECK(strstr(said, "test.provider: plugin frame 7") != NULL);
         {

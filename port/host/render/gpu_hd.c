@@ -25,6 +25,24 @@ static int pipeline_place_count, pipelines_reported, pipelines_said_later;
 static unsigned pipelines_made[3], pipelines_failed;
 static Uint64 pipelines_ns;
 
+#ifdef KHDAYS_IOS
+/* Content-addressed by the exact bytes in the generated header (metal_libraries.py).
+ * Libraries ship with the binary, so reinstalls and first launches can use them. */
+void *khdays_metal_library(SDL_GPUDevice *device, SDL_GPUShaderFormat format, const Uint8 *source,
+                           size_t length, size_t *bytes)
+{
+    const char *base = SDL_GetBasePath();
+    if (!base || format != SDL_GPU_SHADERFORMAT_MSL ||
+        !(SDL_GetGPUShaderFormats(device) & SDL_GPU_SHADERFORMAT_METALLIB)) return NULL;
+    char path[1024];
+    const unsigned hash = SDL_crc32(0, source, length);
+    if (SDL_snprintf(path, sizeof(path), "%sShaders/%08x.metallib", base, hash) >= (int)sizeof(path)) return NULL;
+    void *data = SDL_LoadFile(path, bytes);
+    SDL_Log("shaders: %08x using %s", hash, data ? "bundled Metal library" : "embedded Metal source");
+    return data;
+}
+#endif
+
 static const char *base_name(const char *file)
 {
     const char *slash = SDL_strrchr(file, '/'), *back = SDL_strrchr(file, '\\');

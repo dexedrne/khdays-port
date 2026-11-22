@@ -258,7 +258,7 @@ void khdays_mobile_stylus_rect(SDL_Renderer *renderer, SDL_FRect stylus_rect)
     }
 }
 
-enum { VIEW_KEY = -1 };
+enum { VIEW_KEY = -1, SETTINGS_KEY = -2 };
 static struct Button {
     const char *label;
     int action;
@@ -267,7 +267,7 @@ static struct Button {
                      {"Y", KHDAYS_ACT_Y, 2, 1},         {"R", KHDAYS_ACT_R, 0, 3},          {"L", KHDAYS_ACT_L, -1, 3},
                      {"Start", KHDAYS_ACT_START, 3, 0}, {"Select", KHDAYS_ACT_SELECT, 4, 0},
                      /* the lower-screen view of one screen, shown and put away (no DS button) */
-                     {"Screen", VIEW_KEY, 5, 0}};
+                     {"Screen", VIEW_KEY, 5, 0}, {"Settings", SETTINGS_KEY, -2, 3}};
 enum { STICK = -2, STYLUS = -1 };
 static struct Finger {
     bool held;
@@ -280,7 +280,7 @@ static float size;
 
 static SDL_FRect button_rect(const SDL_Rect *safe, int i)
 {
-    float x = buttons[i].x < 0 ? safe->x : safe->x + safe->w - (buttons[i].x + 1) * size;
+    float x = buttons[i].x < 0 ? safe->x + (-buttons[i].x - 1) * size : safe->x + safe->w - (buttons[i].x + 1) * size;
     return (SDL_FRect){x + 2, safe->y + safe->h - (buttons[i].y + 1) * size + 2, size - 4, size - 4};
 }
 
@@ -290,6 +290,15 @@ static bool geometry(SDL_Window *w, SDL_Rect *safe)
         return false;
     size = SDL_min(55, SDL_min(safe->w / 8.f, safe->h / 7.f));
     return true;
+}
+
+bool khdays_mobile_settings_at(SDL_Window *window, float x, float y)
+{
+    SDL_Rect safe;
+    if (!geometry(window, &safe)) return false;
+    const SDL_FPoint point = {x, y};
+    const SDL_FRect key = button_rect(&safe, SDL_arraysize(buttons) - 1);
+    return SDL_PointInRectFloat(&point, &key);
 }
 
 /* The stick's zone: where a finger that comes down on no key is the stick. */
@@ -321,16 +330,16 @@ static void draw_key(SDL_Renderer *r, SDL_FRect rect, const char *label)
     at.w = end_x - at.x;
     at.h = end_y - at.y;
     const float length = (float)SDL_strlen(label);
-    const float text = SDL_max(1.0f, SDL_floorf(SDL_min(at.h / 22.0f, at.w / (8.0f * length + 4.0f))));
-    const int line = (int)SDL_max(1.0f, SDL_roundf(at.h / 40.0f));
-    SDL_SetRenderDrawColor(r, 255, 255, 255, 34);
+    const float text = SDL_max(1.0f, SDL_floorf(SDL_min(at.h / 16.0f, at.w / (8.0f * length + 4.0f))));
+    const int line = (int)SDL_max(1.0f, SDL_roundf(at.h / 27.0f));
+    SDL_SetRenderDrawColor(r, 12, 20, 36, 196);
     SDL_RenderFillRect(r, &at);
-    SDL_SetRenderDrawColor(r, 255, 255, 255, 170);
+    SDL_SetRenderDrawColor(r, 246, 248, 255, 235);
     for (int i = 0; i < line; ++i) {
         const SDL_FRect edge = {at.x + (float)i, at.y + (float)i, at.w - 2.0f * (float)i, at.h - 2.0f * (float)i};
         SDL_RenderRect(r, &edge);
     }
-    SDL_SetRenderDrawColor(r, 255, 255, 255, 220);
+    SDL_SetRenderDrawColor(r, 255, 255, 255, 255);
     SDL_SetRenderScale(r, text, text);
     SDL_RenderDebugText(r, (at.x + (at.w - 8.0f * length * text) / 2.0f) / text,
                         (at.y + (at.h - 8.0f * text) / 2.0f) / text, label);
@@ -390,7 +399,7 @@ void khdays_mobile_relaid(void)
     }
 }
 
-void khdays_mobile_finger(const SDL_Event *e, SDL_Renderer *r, bool controller)
+void khdays_mobile_finger(const SDL_Event *e, SDL_Renderer *r, bool keys_visible)
 {
     int w, h;
     SDL_Rect safe;
@@ -411,7 +420,7 @@ void khdays_mobile_finger(const SDL_Event *e, SDL_Renderer *r, bool controller)
         return;
     if (e->type == SDL_EVENT_FINGER_DOWN) {
         int control = STYLUS;
-        if (!controller) {
+        if (keys_visible) {
             for (int i = 0; i < (int)SDL_arraysize(buttons); ++i) {
                 SDL_FRect rect = button_rect(&safe, i);
                 if (SDL_PointInRectFloat(&p, &rect)) {

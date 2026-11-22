@@ -5,8 +5,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <windows.h>
-#undef PlaySound
 unsigned char *khdays_window;
 unsigned char io_bytes[0x10000];
 unsigned char *khdays_io_host = io_bytes;

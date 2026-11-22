@@ -787,6 +787,8 @@ static const char *const texts[TXT_COUNT][5] = {
                                   "Los subtítulos de las películas del juego. También lo pregunta una partida nueva."},
     /* the phone's single screen (host/render/gpu_present.c): the picture and the movies over the whole display */
     [TXT_VIDEO_PICTURE_FILL] = {"Picture", "Image", "Bild", "Immagine", "Imagen"},
+    [TXT_TOUCH_CONTROLS] = {"On-screen controls", "Commandes tactiles", "Touch-Steuerung", "Comandi touch", "Controles táctiles"},
+    [TXT_TOUCH_AUTO] = {"Auto", "Auto", "Auto", "Auto", "Auto"},
     [TXT_VIDEO_MOVIES_FILL] = {"Movies' picture", "Image des vidéos", "Bild der Filmsequenzen", "Immagine dei filmati",
                                "Imagen de los vídeos"},
     [TXT_VIDEO_FILL] = {"Fill", "Remplir", "Füllen", "Riempi", "Llenar"},

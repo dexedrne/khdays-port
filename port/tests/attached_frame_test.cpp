@@ -1,6 +1,7 @@
 // A weapon on a mod's KH2 model (runtime/mods/attached_frame.h): the KH2 joint's frame in a KH2 motion, the game's
 // turn at the joint's place in the game's own animation, halfway between them across a fade, the shorter way; a
 // thrown weapon let go of the hand; and a base transform's words read as the game's (gfx/g3d.h).
+#include <cstdint>
 #include "../runtime/mods/attached_frame.h"
 
 extern "C" {

@@ -3,6 +3,7 @@
  * prints where and what; the program returns non-zero if any did. */
 #include "../host/app/bindings.h"
 #include "../host/app/devices.h"
+#include "../host/app/mobile_touch.h"
 #include "../host/app/profile.h"
 #include "../host/settings/settings_model.h"
 #include "../host/settings/settings_ui.h"
@@ -399,7 +400,7 @@ static void test_pads_and_view(void)
     khdays_devices_init(&p, capture);
     (void)khdays_devices_take_pad_change();
 
-    /* The same position gives the same DS button on a DualSense (kind 0) and a Switch Pro (kind 1). */
+    /* A DualSense by position; on the phone a Switch Pro by its printed labels. */
     for (int kind = 0; kind < 2; ++kind) {
         id[0] = attach_kind(kind);
         pump();
@@ -410,7 +411,12 @@ static void test_pads_and_view(void)
         CHECK(khdays_devices_take_pad_change() == 1);
         for (size_t i = 0; i < sizeof(layout) / sizeof(layout[0]); ++i) {
             press(pad[0], kind, layout[i].button, true);
-            CHECK(last.ds_buttons == DS(layout[i].action));
+            int action = layout[i].action;
+#ifdef KHDAYS_MOBILE
+            if (kind == 1 && layout[i].button == SDL_GAMEPAD_BUTTON_SOUTH) action = KHDAYS_ACT_B;
+            if (kind == 1 && layout[i].button == SDL_GAMEPAD_BUTTON_EAST) action = KHDAYS_ACT_A;
+#endif
+            CHECK(last.ds_buttons == DS(action));
             press(pad[0], kind, layout[i].button, false);
             CHECK(last.ds_buttons == 0);
         }
@@ -490,17 +496,27 @@ static void test_pads_and_view(void)
     }
     (void)khdays_devices_take_pad_change();
 
+    SDL_GamepadButton confirm = SDL_GAMEPAD_BUTTON_SOUTH;
+#ifdef KHDAYS_MOBILE
+    confirm = SDL_GAMEPAD_BUTTON_EAST;
+    CHECK(!khdays_mobile_keys_visible());
+    p.video.touch_controls = 1;
+    khdays_devices_set_profile(&p);
+    CHECK(khdays_mobile_keys_visible());
+    p.video.touch_controls = 0;
+    khdays_devices_set_profile(&p);
+#endif
     /* Two gamepads: the first plays; while it holds something the second's buttons do nothing; once
      * it holds nothing, a button of the second makes that one play, and its press counts. */
     id[1] = attach_kind(0);
     pump();
     pad[1] = SDL_OpenJoystick(id[1]);
     CHECK(khdays_devices_take_pad_change() == 0);
-    press(pad[0], 2, SDL_GAMEPAD_BUTTON_SOUTH, true);
+    press(pad[0], 2, confirm, true);
     press(pad[1], 0, SDL_GAMEPAD_BUTTON_EAST, true);
     CHECK(last.ds_buttons == DS(KHDAYS_ACT_A));
     press(pad[1], 0, SDL_GAMEPAD_BUTTON_EAST, false);
-    press(pad[0], 2, SDL_GAMEPAD_BUTTON_SOUTH, false);
+    press(pad[0], 2, confirm, false);
     CHECK(last.ds_buttons == 0);
     press(pad[1], 0, SDL_GAMEPAD_BUTTON_EAST, true);
     CHECK(last.ds_buttons == DS(KHDAYS_ACT_B));
@@ -516,9 +532,9 @@ static void test_pads_and_view(void)
     SDL_CloseJoystick(pad[1]);
     SDL_DetachVirtualJoystick(id[1]);
     pump();
-    press(pad[0], 2, SDL_GAMEPAD_BUTTON_SOUTH, true);
+    press(pad[0], 2, confirm, true);
     CHECK(last.ds_buttons == DS(KHDAYS_ACT_A));
-    press(pad[0], 2, SDL_GAMEPAD_BUTTON_SOUTH, false);
+    press(pad[0], 2, confirm, false);
 
     /* The phone asleep and awake again (the focus lost and gained) with a stick held: nothing held
      * while away, and the stick counts again only once back at its centre. */
@@ -539,7 +555,7 @@ static void test_pads_and_view(void)
 
     /* Gone (its battery) and back: nothing held meanwhile; a button held as it comes back (pressed to
      * wake it) only counts once let go. */
-    press(pad[0], 2, SDL_GAMEPAD_BUTTON_SOUTH, true);
+    press(pad[0], 2, confirm, true);
     SDL_CloseJoystick(pad[0]);
     SDL_DetachVirtualJoystick(id[0]);
     pump();
@@ -558,6 +574,12 @@ static void test_pads_and_view(void)
     SDL_DetachVirtualJoystick(id[0]);
     pump();
     CHECK(khdays_devices_gamepad() == NULL);
+#ifdef KHDAYS_MOBILE
+    CHECK(khdays_mobile_keys_visible());
+    p.video.touch_controls = 2;
+    khdays_devices_set_profile(&p);
+    CHECK(!khdays_mobile_keys_visible());
+#endif
     SDL_Quit();
 }
 
@@ -771,6 +793,9 @@ static void test_every_binding_saved(void)
     khdays_profile_default(&p);
     CHECK(khdays_profile_set(&p, KB, BASE, KHDAYS_ACT_HUD_MODE, 0, SDL_SCANCODE_H) == 0);
     CHECK(khdays_profile_set(&p, KHDAYS_DEVICE_GAMEPAD, BASE, KHDAYS_ACT_HUD_MODE, 0, KHDAYS_PAD_PADDLE1) == 0);
+#ifdef KHDAYS_MOBILE_TEST
+    p.video.touch_controls = 2;
+#endif
     path_of("hud_mode.ini", path, sizeof(path));
     CHECK(khdays_profile_save(&p, path, count_notice) == 0);
     notices = 0;
@@ -1791,6 +1816,57 @@ static void test_video_page(void)
     key(SDL_SCANCODE_RETURN); /* HD graphics: not there yet, stays as it is */
     CHECK(v->hd_graphics == 1);
     shot("7-video-changed");
+#ifdef KHDAYS_MOBILE_TEST
+    to_row(KHDAYS_SET_TOUCH_CONTROLS, -1);
+    CHECK(v->touch_controls == 0);
+    pad_press(SDL_GAMEPAD_BUTTON_DPAD_RIGHT);
+    CHECK(v->touch_controls == 1);
+    pad_press(SDL_GAMEPAD_BUTTON_DPAD_RIGHT);
+    CHECK(v->touch_controls == 2);
+    use_screen(440, 956);
+    khdays_settings_draw(screen, NULL);
+    khdays_settings_draw(screen, NULL);
+    int section, in_rows, row, cell;
+    khdays_settings_focus(&section, &in_rows, &row, &cell);
+    SDL_FRect value = {0};
+    CHECK(khdays_settings_place(KHDAYS_PLACE_VALUE, row, &value));
+    CHECK(value.w > 10 && value.x >= 0 && value.x + value.w <= 440);
+    SDL_SetHint(SDL_HINT_VIDEO_DRIVER, "dummy");
+    CHECK(SDL_InitSubSystem(SDL_INIT_VIDEO));
+    SDL_Window *phone = SDL_CreateWindow("folded settings", 440, 956, SDL_WINDOW_HIDDEN);
+    CHECK(phone != NULL);
+    if (phone && value.w > 10) {
+        SDL_Event tap = {0};
+        tap.type = SDL_EVENT_FINGER_DOWN;
+        tap.tfinger.fingerID = 1;
+        tap.tfinger.x = (value.x + value.w * .1f) / 440;
+        tap.tfinger.y = (value.y + value.h / 2) / 956;
+        khdays_settings_handle(&tap, phone);
+        tap.type = SDL_EVENT_FINGER_UP;
+        khdays_settings_handle(&tap, phone);
+        CHECK(v->touch_controls == 1);
+    }
+    to_section(KHDAYS_SECTION_CONTROLS);
+    to_row(KHDAYS_SET_BINDING, KHDAYS_ACT_UP);
+    khdays_settings_draw(screen, NULL);
+    khdays_settings_focus(&section, &in_rows, &row, &cell);
+    float bottom = 0;
+    for (int i = 0; i < KHDAYS_CELLS; ++i) {
+        SDL_FRect target = {0};
+        CHECK(khdays_settings_place(KHDAYS_PLACE_CELL, row * KHDAYS_CELLS + i, &target));
+        CHECK(target.y >= bottom && target.w > 40 && target.x + target.w <= 440);
+        bottom = target.y + target.h;
+    }
+    to_section(KHDAYS_SECTION_VIDEO);
+    khdays_settings_renderer_gone();
+    SDL_DestroyRenderer(screen);
+    SDL_DestroySurface(surface);
+    screen = NULL;
+    SDL_DestroyWindow(phone);
+    SDL_QuitSubSystem(SDL_INIT_VIDEO);
+    use_screen(1280, 720);
+    khdays_settings_draw(screen, NULL);
+#endif
 
     /* Restore the video settings: only those. */
     to_row(KHDAYS_SET_RESTORE_VIDEO, -1);

@@ -2,6 +2,7 @@
 #include "layout_screen.h"
 
 #include "../app/devices.h"
+#include "../app/mobile_touch.h"
 #include "../render/png_io.h"
 #include "../app/profile.h"
 #include "../settings/settings_ui.h"
@@ -327,19 +328,35 @@ const unsigned short *khdays_layout_string(const KhdaysLayoutStrings *s, int rec
 
 /* ---- Drawing --------------------------------------------------------------------------------- */
 
-void khdays_layout_begin(SDL_Renderer *renderer, KhdaysLayoutFrame *fr)
+static void layout_frame(SDL_Renderer *renderer, KhdaysLayoutFrame *fr, int *w, int *h)
 {
-    int w = 0, h = 0;
-    /* in the window's own pixels: the picture's logical size set aside while the screen draws */
     fr->logical_w = fr->logical_h = 0;
     fr->mode = SDL_LOGICAL_PRESENTATION_DISABLED;
     SDL_GetRenderLogicalPresentation(renderer, &fr->logical_w, &fr->logical_h, &fr->mode);
     SDL_SetRenderLogicalPresentation(renderer, 0, 0, SDL_LOGICAL_PRESENTATION_DISABLED);
-    SDL_GetCurrentRenderOutputSize(renderer, &w, &h);
-    fr->scale = fminf((float)w / KHDAYS_LAYOUT_W, (float)h / KHDAYS_LAYOUT_H);
-    fr->ox = ((float)w - KHDAYS_LAYOUT_W * fr->scale) / 2;
-    fr->oy = ((float)h - KHDAYS_LAYOUT_H * fr->scale) / 2;
-    /* the black around the picture */
+    SDL_GetCurrentRenderOutputSize(renderer, w, h);
+    SDL_FRect content = {0, 0, (float)*w, (float)*h};
+    fr->cover = (SDL_FRect){0};
+#ifdef KHDAYS_MOBILE
+    const KhdaysVideo *video = &khdays_devices_profile()->video;
+    if (khdays_ios_layout() == 2 && !video->picture_fit) {
+        const float scale = fmaxf(content.w / KHDAYS_LAYOUT_W, content.h / KHDAYS_LAYOUT_H);
+        fr->cover.w = KHDAYS_LAYOUT_W * scale;
+        fr->cover.h = KHDAYS_LAYOUT_H * scale;
+        fr->cover.x = (content.w - fr->cover.w) / 2;
+        fr->cover.y = (content.h - fr->cover.h) / 2;
+        content = khdays_mobile_visible_output(renderer);
+    }
+#endif
+    fr->scale = fminf(content.w / KHDAYS_LAYOUT_W, content.h / KHDAYS_LAYOUT_H);
+    fr->ox = content.x + (content.w - KHDAYS_LAYOUT_W * fr->scale) / 2;
+    fr->oy = content.y + (content.h - KHDAYS_LAYOUT_H * fr->scale) / 2;
+}
+
+void khdays_layout_begin(SDL_Renderer *renderer, KhdaysLayoutFrame *fr)
+{
+    int w = 0, h = 0;
+    layout_frame(renderer, fr, &w, &h);
     SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_NONE);
     SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
     SDL_RenderClear(renderer);
@@ -349,14 +366,11 @@ void khdays_layout_begin(SDL_Renderer *renderer, KhdaysLayoutFrame *fr)
 void khdays_layout_begin_over(SDL_Renderer *renderer, KhdaysLayoutFrame *fr)
 {
     int w = 0, h = 0;
-    fr->logical_w = fr->logical_h = 0;
-    fr->mode = SDL_LOGICAL_PRESENTATION_DISABLED;
-    SDL_GetRenderLogicalPresentation(renderer, &fr->logical_w, &fr->logical_h, &fr->mode);
-    SDL_SetRenderLogicalPresentation(renderer, 0, 0, SDL_LOGICAL_PRESENTATION_DISABLED);
-    SDL_GetCurrentRenderOutputSize(renderer, &w, &h);
-    fr->scale = fminf((float)w / KHDAYS_LAYOUT_W, (float)h / KHDAYS_LAYOUT_H);
-    fr->ox = ((float)w - KHDAYS_LAYOUT_W * fr->scale) / 2;
-    fr->oy = ((float)h - KHDAYS_LAYOUT_H * fr->scale) / 2;
+    layout_frame(renderer, fr, &w, &h);
+    if (fr->cover.w > 0) {
+        SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND);
+        return;
+    }
     /* black only around the picture: what is under it stays */
     SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_NONE);
     SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
@@ -381,6 +395,8 @@ void khdays_layout_end(SDL_Renderer *renderer, const KhdaysLayoutFrame *fr)
 
 SDL_FRect khdays_layout_to_window(const KhdaysLayoutFrame *fr, float x, float y, float w, float h)
 {
+    if (fr->cover.w > 0 && x == 0 && y == 0 && w == KHDAYS_LAYOUT_W && h == KHDAYS_LAYOUT_H)
+        return fr->cover;
     SDL_FRect r;
     r.x = fr->ox + x * fr->scale;
     r.y = fr->oy + y * fr->scale;
@@ -499,7 +515,7 @@ static int icon_of_input(const KhdaysLayout *l, SDL_Gamepad *pad, int on_pad, in
     const KhdaysLayoutPiece *p;
     memset(out, 0, sizeof(*out));
     if (on_pad) {
-        const SDL_GamepadType type = SDL_GetGamepadType(pad);
+        const SDL_GamepadType type = khdays_devices_pad_type(pad);
         const int playstation =
             type == SDL_GAMEPAD_TYPE_PS3 || type == SDL_GAMEPAD_TYPE_PS4 || type == SDL_GAMEPAD_TYPE_PS5;
         const int nintendo = type == SDL_GAMEPAD_TYPE_NINTENDO_SWITCH_PRO ||

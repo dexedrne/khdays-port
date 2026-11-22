@@ -247,8 +247,13 @@ int main()
         }
         write_config(
             R"({"canvas_padding":0,"source_origin_x":455,"source_origin_y":355,"limit_circle":157,"limit_bar":158,"limit_marker":159})");
+#ifdef _WIN32
         _putenv_s("KHDAYS_KH2_HUD", "");
         _putenv_s("KHDAYS_KH2_ASSET_DIR", "");
+#else
+        unsetenv("KHDAYS_KH2_HUD");
+        unsetenv("KHDAYS_KH2_ASSET_DIR");
+#endif
         word(0x0207f618, 0x02080000);
         word(0x02080000, 0x02081000);
         std::fill_n(memory.begin() + 0x02081000, 320, static_cast<unsigned char>(0x11));

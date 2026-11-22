@@ -27,7 +27,7 @@ ImVec2 khdays_skin_point(ImVec2 size, float x, float y);
 void khdays_skin_set_origin(ImVec2 origin);
 
 // The screen behind the menu, over the whole window.
-void khdays_skin_screen(ImDrawList *dl, ImVec2 size);
+void khdays_skin_screen(ImDrawList *dl, ImVec2 size, bool cover);
 
 // A piece where it lies in the picture, in the window of `size` (the faded
 // picture of the section shown: "emblem_screen" and the others).

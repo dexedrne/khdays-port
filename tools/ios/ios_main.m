@@ -30,7 +30,9 @@ int khdays_ios_layout(void)
 static void take_environment(void)
 {
     NSString *documents = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES).firstObject;
-    NSString *path = [documents stringByAppendingPathComponent:@"khdays-env.txt"];
+    const char *movie_test = getenv("KHDAYS_MOVIE_TEST");
+    NSString *file = movie_test && strcmp(movie_test, "1") == 0 ? @"khdays-movie-test.txt" : @"khdays-env.txt";
+    NSString *path = [documents stringByAppendingPathComponent:file];
     NSString *text = [NSString stringWithContentsOfFile:path encoding:NSUTF8StringEncoding error:nil];
     setenv("KHDAYS_TRACE_SITUATION", "1", 0);
     for (NSString *line in [text componentsSeparatedByCharactersInSet:NSCharacterSet.newlineCharacterSet]) {
@@ -47,7 +49,7 @@ static void take_environment(void)
             setenv(name.UTF8String, value.UTF8String, 1);
             SDL_SetEnvironmentVariable(SDL_GetEnvironment(), name.UTF8String, value.UTF8String, true);
         }
-        fprintf(stderr, "ios: khdays-env.txt: %s=%s\n", name.UTF8String, value.UTF8String);
+        fprintf(stderr, "ios: %s: %s=%s\n", file.UTF8String, name.UTF8String, value.UTF8String);
     }
 }
 

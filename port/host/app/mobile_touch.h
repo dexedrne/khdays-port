@@ -66,7 +66,9 @@ void khdays_mobile_draw(SDL_Renderer *);
  * them out in. What is to be touched as the DS's lower screen is kept above it (the lower-screen view
  * below the picture, host/render/gpu_present.c). */
 float khdays_mobile_keys_top(SDL_Window *);
-void khdays_mobile_finger(const SDL_Event *, SDL_Renderer *, bool controller);
+void khdays_mobile_finger(const SDL_Event *, SDL_Renderer *, bool keys_visible);
+bool khdays_mobile_keys_visible(void);
+bool khdays_mobile_settings_at(SDL_Window *, float x, float y);
 void khdays_mobile_reset(void);
 /* The window was laid out anew (turned, folded): held keys stay held and the stick keeps its
  * direction; a finger that was the stylus is let go. */

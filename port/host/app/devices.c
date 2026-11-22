@@ -131,6 +131,15 @@ const KhdaysDeviceState *khdays_devices_state(void)
     return &state;
 }
 
+#ifdef KHDAYS_MOBILE
+bool khdays_mobile_keys_visible(void)
+{
+    const int mode = khdays_devices_profile()->video.touch_controls;
+    return mode == 1 || (mode == 0 && khdays_devices_gamepad() == NULL);
+}
+
+#endif
+
 void khdays_devices_set_game_input(int on)
 {
     if (on && !game_input) {
@@ -192,8 +201,46 @@ const char *khdays_devices_gamepad_name(void)
 /* Our input number for one of SDL's gamepad buttons (both are named by
  * position), or -1. The paddles follow the Xbox Elite's P1-P4: upper right,
  * lower right, upper left, lower left. */
-static int pad_input(SDL_GamepadButton button)
+SDL_GamepadType khdays_devices_pad_type(SDL_Gamepad *pad)
 {
+    if (!pad) return SDL_GAMEPAD_TYPE_UNKNOWN;
+    const SDL_GamepadType type = SDL_GetGamepadType(pad);
+#ifdef KHDAYS_MOBILE
+    if ((type == SDL_GAMEPAD_TYPE_STANDARD || type == SDL_GAMEPAD_TYPE_UNKNOWN) &&
+        (SDL_GetGamepadVendor(pad) == 0x057e ||
+         SDL_GetGamepadButtonLabel(pad, SDL_GAMEPAD_BUTTON_EAST) == SDL_GAMEPAD_BUTTON_LABEL_A))
+        return SDL_GAMEPAD_TYPE_NINTENDO_SWITCH_PRO;
+#endif
+    return type;
+}
+
+SDL_GamepadButtonLabel khdays_devices_button_label(SDL_Gamepad *pad, SDL_GamepadButton button)
+{
+    const SDL_GamepadType type = khdays_devices_pad_type(pad);
+    if (pad && type != SDL_GetGamepadType(pad)) return SDL_GetGamepadButtonLabelForType(type, button);
+    return SDL_GetGamepadButtonLabel(pad, button);
+}
+
+static int pad_input(SDL_Gamepad *pad, SDL_GamepadButton button)
+{
+#ifdef KHDAYS_MOBILE
+    if (pad && button >= SDL_GAMEPAD_BUTTON_SOUTH && button <= SDL_GAMEPAD_BUTTON_NORTH &&
+        (SDL_GetGamepadVendor(pad) == 0x057e ||
+         SDL_GetGamepadButtonLabel(pad, SDL_GAMEPAD_BUTTON_EAST) == SDL_GAMEPAD_BUTTON_LABEL_A ||
+         SDL_GetGamepadType(pad) == SDL_GAMEPAD_TYPE_NINTENDO_SWITCH_PRO)) {
+        /* KH2's binding slots are south=A, east=B, north=X, west=Y. SDL supplies
+         * the printed label even when the driver maps the hardware differently. */
+        switch (khdays_devices_button_label(pad, button)) {
+        case SDL_GAMEPAD_BUTTON_LABEL_A: return KHDAYS_PAD_SOUTH;
+        case SDL_GAMEPAD_BUTTON_LABEL_B: return KHDAYS_PAD_EAST;
+        case SDL_GAMEPAD_BUTTON_LABEL_X: return KHDAYS_PAD_NORTH;
+        case SDL_GAMEPAD_BUTTON_LABEL_Y: return KHDAYS_PAD_WEST;
+        default: break;
+        }
+    }
+#else
+    (void)pad;
+#endif
     switch (button) {
     case SDL_GAMEPAD_BUTTON_SOUTH: return KHDAYS_PAD_SOUTH;
     case SDL_GAMEPAD_BUTTON_EAST: return KHDAYS_PAD_EAST;
@@ -226,14 +273,24 @@ SDL_Gamepad *khdays_devices_gamepad(void)
 }
 
 /* SDL's button for one of our input numbers (the reverse of pad_input). */
-SDL_GamepadButton khdays_devices_sdl_button(int input)
+static SDL_GamepadButton sdl_button(SDL_Gamepad *pad, int input)
 {
     for (int b = 0; b < SDL_GAMEPAD_BUTTON_COUNT; ++b) {
-        if (pad_input((SDL_GamepadButton)b) == input) {
+        if (pad_input(pad, (SDL_GamepadButton)b) == input) {
             return (SDL_GamepadButton)b;
         }
     }
     return SDL_GAMEPAD_BUTTON_INVALID;
+}
+
+SDL_GamepadButton khdays_devices_sdl_button(int input)
+{
+    return sdl_button(khdays_devices_gamepad(), input);
+}
+
+SDL_GamepadButton khdays_devices_positional_button(int input)
+{
+    return sdl_button(NULL, input);
 }
 
 /* The gamepad used since the keyboard or the mouse last were (khdays_devices_pad_in_use). */
@@ -257,7 +314,7 @@ static void read_active_pad(void)
         return;
     }
     for (int b = 0; b < SDL_GAMEPAD_BUTTON_COUNT; ++b) {
-        const int input = pad_input((SDL_GamepadButton)b);
+        const int input = pad_input(khdays_devices_gamepad(), (SDL_GamepadButton)b);
         if (input >= 0) {
             state.pad[input] = SDL_GetGamepadButton(pads[active].gamepad, (SDL_GamepadButton)b);
         }
@@ -294,6 +351,9 @@ static int find_pad(SDL_JoystickID id)
 static void play_pad(int i)
 {
     active = i;
+#ifdef KHDAYS_MOBILE
+    if (!khdays_mobile_keys_visible()) khdays_mobile_reset();
+#endif
     read_active_pad();
     khdays_bindings_mask_held_pad(&state);
     ++pad_changes;
@@ -467,7 +527,7 @@ static int pad_idle(void)
 static void pad_button(SDL_JoystickID id, SDL_GamepadButton button, int down)
 {
     const int i = find_pad(id);
-    int input = pad_input(button);
+    int input = i >= 0 ? pad_input(pads[i].gamepad, button) : -1;
     if (i < 0 || input < 0) {
         return;
     }
@@ -493,6 +553,14 @@ static void pad_button(SDL_JoystickID id, SDL_GamepadButton button, int down)
         if (down && said < 300) {
             const int owner = khdays_profile_owner(&profile, KHDAYS_DEVICE_GAMEPAD, KHDAYS_LAYER_BASE, input);
             ++said;
+#ifdef KHDAYS_MOBILE
+            if (button >= SDL_GAMEPAD_BUTTON_SOUTH && button <= SDL_GAMEPAD_BUTTON_NORTH) {
+                static const char *const labels[] = {"?", "A", "B", "X", "Y", "Cross", "Circle", "Square", "Triangle"};
+                const unsigned label = (unsigned)khdays_devices_button_label(pads[i].gamepad, button);
+                fprintf(stderr, "KHDAYS pad log: %s printed %s -> %s\n", SDL_GetGamepadName(pads[i].gamepad),
+                        label < SDL_arraysize(labels) ? labels[label] : "?", owner >= 0 ? khdays_action_name(owner) : "unbound");
+            }
+#endif
             fprintf(stderr, "host: gamepad button %s (%s) -> %s%s%s\n", khdays_pad_input_name(input),
                     SDL_GetGamepadStringForButton(button), owner >= 0 ? khdays_action_name(owner) : "nothing",
                     i != active ? " (not the playing gamepad)" : "", game_input ? "" : " (the settings menu has it)");
@@ -598,7 +666,7 @@ void khdays_devices_handle(const SDL_Event *event, SDL_Renderer *renderer)
     case SDL_EVENT_GAMEPAD_REMOVED: khdays_mobile_reset(); send(); break;
     case SDL_EVENT_FINGER_DOWN: case SDL_EVENT_FINGER_MOTION:
     case SDL_EVENT_FINGER_UP: case SDL_EVENT_FINGER_CANCELED:
-        if (game_input) khdays_mobile_finger(event, renderer, active >= 0);
+        if (game_input) khdays_mobile_finger(event, renderer, khdays_mobile_keys_visible());
         send();
         return;
     }

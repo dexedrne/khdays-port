@@ -2,23 +2,15 @@
 
 Run the steps in order on an Apple Silicon Mac with Xcode, CMake 3.25+, Ninja, Python 3.11+ and pycparser. The first configure needs the pinned dependency downloads or their local caches. Set `SDL3_SOURCE` to reuse a local SDL 3.4.12 source checkout. Every script is headless and niced and opens no window.
 
-The iOS simulator cannot run the game: its Metal lacks features the graphics path needs. The simulator build is only a compile and link check. The picture and the controls are checked on Linux (`ctest -R 'khdays-(picture|pad)'`) and on the phone.
-
-The order is build, then device. Nothing is checked in the simulator.
-
-**Build**
-
-1. Set `KHDAYS_MAC_HOST=user@host` and optionally `KHDAYS_MAC_DIR` (default `khdays`). From the repository root run `tools/ios/sync.sh`. This sends the tracked files, the new port sources and decompilation commit `a2b0478`. It never sends a cartridge or a video.
-2. On the Mac run `cd ~/khdays/src` (or your `KHDAYS_MAC_DIR`). Set the cartridge path on that Mac, for example `export ROM="$HOME/Downloads/games-emulation/358kh.nds"`.
-3. Build the device app with `tools/ios/mac/build.sh iphoneos`. This is the first time `port/host/movies/movie_hd_apple.m` is compiled and linked for real: a failure here names the file and line. (`tools/ios/mac/build.sh iphonesimulator` is an optional link check only.)
-4. Set `export TEAM_ID='<Apple development team ID>'` and run `tools/ios/mac/sign_app.sh`. The signing identity and provisioning must permit `beer.vyvanse.khdays`.
-
-**Device**
-
-5. Run `xcrun devicectl list devices`, unlock the paired iPhone, set `export DEVICE_UDID='<device identifier>'` and run `tools/ios/mac/device_run.sh`. This installs the app, puts the ROM in Documents/Kh358.nds and launches the game.
-6. HD videos, once: `export VIDEOS=<folder with the hd*.mp4 files, outside the source tree>` and run `tools/ios/mac/device_videos.sh`. It copies each file to `Documents/data/cutscenes/cinematics/` in the app's container and names any that fail. The script is untested; the other way is the Files app: On My iPhone > 358/2 Days > `data/cutscenes/cinematics`.
-7. Run `tools/ios/mac/device_log.sh 120`. It relaunches the app with its console captured for 120 seconds, writes `../phone-logs/console.txt`, fetches the saved pictures into `../phone-logs/logs/` and prints the report lines (`picture`, `ios:`, `window:`, `host:`, `movies:`, `scenes:`, `lower view:`). Everything else, the `movies: avf:` lines included, is in `console.txt`.
-8. Go through the two checklists below while a `device_log.sh` capture runs, then send `../phone-logs/`.
+1. From the Linux checkout, set `KHDAYS_MAC_HOST` to the SSH destination and run `tools/ios/sync.sh`. The default checkout on the Mac is `~/Developer/KHDAYS/src`; set `KHDAYS_MAC_DIR` to use another work directory. The sync includes the checked-out port changes and the pinned decompilation.
+2. From that checkout **on the Mac**, run `tools/ios/mac/build.sh iphonesimulator`, then `tools/ios/mac/build.sh iphoneos`. Each builds arm64. With the Xcode Metal toolchain installed, both also compile the bundled shader libraries for their SDK.
+3. Set `SIM_UDID` to the dedicated simulator identifier from `xcrun simctl list devices available` and run `xcrun simctl bootstatus "$SIM_UDID" -b`. This boots the simulator headlessly. For a launch diagnostic, set `ROM` to the local EU cartridge path and run `tools/ios/mac/sim_run.sh`. The simulator's Metal capabilities prevent a title run. Use the physical device for playback.
+4. On the signing Mac, set `PROFILE` to the Days development provisioning profile and `SIGN_IDENTITY` to its installed signing identity. Set `SIGN_KEYCHAIN` if the identity is in a separate unlocked keychain. Run `tools/ios/mac/sign_app.sh` to sign the device Ninja product. The owner's existing two-Mac signing workflow can also provide the signed app at `~/Developer/KHDAYS/signed/khdays-native.app`; set `SIGNED_APP` to that path when using it.
+5. On the paired Mac, set `ROM` to the local EU ROM, set `DEVICE_UDID` from `xcrun devicectl list devices`, unlock the phone and run `tools/ios/mac/device_run.sh`. It installs, launches, captures the console and reads the picture reports. Each capture gets its own folder under `../phone-logs/`. Set `CAPTURE_SECONDS=120` for a longer check.
+6. For the owner's videos, set `VIDEOS` to their folder outside the checkout and run `tools/ios/mac/device_videos.sh`. Put the HD pack in Documents/mods/HD PACK and subtitles and cinematics under Documents/data/cutscenes.
+7. Run `tools/ios/mac/device_movie_test.sh` for a scripted New Game opening. The script backs up the current save on the paired Mac, selects a fresh save folder for this launch, watches for hd802 open/start/end and compares the owner's save afterward. Ordinary launches continue to read Documents/khdays-env.txt. To capture normal play again, run `tools/ios/mac/device_log.sh 120`.
+8. On Switch Pro, press printed A, B, X and Y once each and read the four `KHDAYS pad log` lines. Each printed label should match its DS action. On DualSense, Cross, Circle, Triangle and Square should report a, b, x and y.
+9. In Settings → Video, check On-screen controls in each mode. Auto hides with either pad, On keeps the keys usable alongside it, and Off keeps them hidden after disconnect. Relaunch to verify persistence. Tap Settings on the touch overlay, or use three fingers to open Settings and go back. Swipe the list and tap either half of a choice to change it.
 
 ## Phone checklist: Rotation
 
@@ -26,13 +18,13 @@ Do each step in a field with the DualSense connected, unfolded and then folded. 
 
 | Do | Expect | A failure looks like |
 | --- | --- | --- |
-| Turn the phone upright, then lying again. | `window: orientation portrait after a size change (change N, ...)`, then `... landscape ...`. The picture is across the top upright and fills the height lying. A report follows: `picture N: layout portrait ..., game picture X,Y WxH`. | No `window: orientation` line (iOS did not turn the app: check the orientation lock), a picture stretched or off the screen, `ALL BLACK`. |
+| Turn the phone upright, then lying again. | `window: orientation portrait after a size change (change N, ...)`, then `... landscape ...`. The game covers the drawable in both orientations. Opening the lower view upright places the game across the top. A report follows: `picture N: layout portrait ..., game picture X,Y WxH`. | No `window: orientation` line (iOS did not turn the app: check the orientation lock), a picture stretched or off the screen, `ALL BLACK`. |
 | Hold the left stick while turning. | Roxas keeps walking. `host: sound: stream opened (1 this run)` stays the only such line. | A second `stream opened`, the music stopping, the stick let go. |
 | Click the touch pad, turn upright and back. | `lower view: on`; the report says `lower view below the picture` upright and `over the picture` lying. | The view missing after the turn, or under the notch or home bar. |
 | Switch the controller off, turn the phone, switch it on. | `host: the gamepad is gone: the game waits`, the dimmed picture laid out again at once and shown whole (smaller, not cut at the sides), then `host: the game goes on`. | The picture keeps its old shape, or its sides are cut off, until the controller is back. |
 | Lock the phone, turn it, unlock. | `window: the app is in the background: ...`, then `window: the app: did enter foreground`, `window: the app is back in front: ...` and `window: orientation ... after the return to the foreground`. The picture fits the new shape. | A stretched picture after unlocking that stays until a button is pressed. |
 | Switch the controller off and touch the screen; press the Screen key, upright. | `host: gamepads: 0 connected, none plays; touch keys shown`. `picture N: touch keys drawn (...), their top at y T`. Unfolded upright the view is `over the picture`; folded upright it is `below the picture` and ends above `T`. Every part of the view takes the finger as the stylus. | A key or the Move pad lying over the view; a part of the view that presses a key instead. |
-| Open the settings (PS button) upright. | The Controls page shows every hint whole, one under the other. | Hints cut off mid-word. On the folded screen the narrow columns of the binding table are still cut: known. |
+| Open the settings (PS button) upright. | The Controls page shows every hint whole, one under the other. | Hints cut off mid-word. On a folded phone, check that each binding has a device label and a usable value on its own line. |
 
 ## Phone checklist: HD cutscenes
 
@@ -46,7 +38,7 @@ Needs step 6. Start a new game for movie 802.
 | Press Options during a movie, then Continue. | `movies: pause hd802.mp4 at T s`, the pause's Continue and Skip, then `movies: resume hd802.mp4 at T s` with the same T. | The sound going on under the pause, or a jump after it. |
 | Lock the phone during a movie, wait ten seconds, unlock. | `window: the app is in the background: an HD video and a voice wait`, `movies: pause ...`, then after unlocking `window: the app is back in front: an HD video and a voice go on` and `movies: resume ...` at the same time of the video. If iOS took the decoder away: `movies: avf: ...: the pictures' reader was interrupted at ... opening it again there at once` and `... reader opened again at ... (try 1 of 40)`; the video goes on. | `movies: hd802.mp4 FAILED ...` after unlocking, or `... could not be opened again in 40 tries`: send the `movies: avf:` lines. The video ending at once on return: its clock counted the time away. |
 | Switch the controller off during a movie, then on. | `movies: pause ...` with `host: the gamepad is gone: the game waits`, then `movies: resume ...`. | The video running on behind the notice. |
-| Turn the phone during a movie. | The video is laid out again, at the top upright; the sound does not stop. | A black picture or silence after the turn. |
+| Turn the phone during a movie. | The video covers the new drawable; the sound does not stop. | A black picture or silence after the turn. |
 
 The longer sections below explain the lines.
 
@@ -91,14 +83,14 @@ To switch testing options on without a rebuild, put `khdays-env.txt` in the app'
 
 ## What to check on the phone
 
-Linux proves the logic with emulated controllers (`ctest -R 'khdays-(pad|input|picture|title)'`): the layout by position, the lower-screen view, a controller going and coming back, two controllers, the app leaving and returning. The phone must confirm what only real hardware shows. After a launch with the controller connected, `device_log.sh 120` captures every line named below.
+Linux proves the logic with emulated controllers (`ctest -R 'khdays-(pad|input|picture|title)'`): DualSense positions, Nintendo printed labels, the lower-screen view, a controller going and coming back, two controllers, the app leaving and returning. The phone must confirm what only real hardware shows. After a launch with the controller connected, `device_log.sh 120` captures every line named below.
 
 1. **The picture.** The title shows (the Metal shader fix of commit `1310676`). `picture 300: ... % lit` and no `ALL BLACK`.
 2. **The DualSense is seen as one.** `host: gamepad connected: ... (type PS5, ..., touch pad click yes, ...) (playing)` and `host: no settings file yet: the Kingdom Hearts II gamepad layout` on the first run.
 3. **Cross confirms.** On the title, Cross starts NEW GAME and Circle goes back. The console shows `host: gamepad button south (a) -> a` for Cross and `east (b) -> b` for Circle. If they are swapped, the controller's positions are reported differently on the phone: send the lines.
 4. **Field.** Left stick moves, right stick turns and tilts the camera, R1 locks on, R2 / L2 change target, R3 puts the camera behind Roxas, the D-pad moves the command deck, Options opens the menu.
 5. **Lower-screen view.** The touch pad's click shows the DS lower screen over the picture (`lower view: on`), a second click puts it away. With the view on, a finger on it acts as the stylus.
-6. **Switch Pro.** `type Switch Pro` in its line. The bottom button (B) confirms, as Cross does. Check whether its line says `Share/Capture yes`: if so Capture is the view; if it says `the lower-screen view is on Minus / Back`, Minus is the view and there is no SELECT.
+6. **Switch Pro.** `type Switch Pro` in its line. Press the four printed buttons in order. The console should say `KHDAYS pad log: … printed A -> a`, then B → b, X → x and Y → y. A confirms and B goes back. Check whether its line says `Share/Capture yes`: if so Capture is the view; if it says `the lower-screen view is on Minus / Back`, Minus is the view and there is no SELECT.
 7. **Controller off and on.** Switch the controller off in a field: the screen dims with "Controller disconnected" (`host: the gamepad is gone: the game waits`). Switch it on: the game goes on. Do it again and touch the screen instead: the touch keys play.
 8. **Two controllers.** With both connected, pick up the other one and press a button: `host: gamepad now playing: ...`.
 9. **Sleep and wake.** Lock the phone in a field, unlock: the picture returns, the controller plays without a stuck direction (`window: the app: did enter foreground`).
@@ -114,10 +106,10 @@ The app allows all four orientations on iPhone and iPad (`Info.plist`, `SDL_HINT
 
 | Held | Game picture | Lower-screen view (touch pad click) |
 | --- | --- | --- |
-| Lying (landscape) | Fills the safe area's height, in the middle, as wide as the screen allows. | Over the picture: whole in the middle, or the inset at the right. |
-| Upright (portrait) | Across the safe area's whole width, at its top (under the notch or status bar). | Below the picture, as large as fits; the inset style is smaller, at the right. Over the picture when the space below is under half a DS screen. Played by touch, the space below ends where the touch keys begin, so the view never lies under a key: unfolded that leaves too little and the view goes over the picture; folded it stays below. |
+| Lying (landscape) | Covers the whole drawable, centred. | Over the picture: whole in the middle, or the inset at the right. |
+| Upright (portrait) | Covers the whole drawable with the view off. With the lower view below, the game spans the width above it. | Below the picture, as large as fits; the inset style is smaller, at the right. Over the picture when the space below is under half a DS screen. Played by touch, the space below ends where the touch keys begin, so the view never lies under a key: unfolded that leaves too little and the view goes over the picture; folded it stays below. |
 
-Upright, the title and every other place that shows both DS screens whole has them one above the other, as on the DS. An HD video is at the top too.
+Movies cover the drawable in both orientations unless Movies → Fit is selected. The single-screen title keeps the menu choice visible; the controller can show the full lower view.
 
 What the console says at each turn:
 
@@ -127,9 +119,9 @@ What the console says at each turn:
 - `window: orientation ... after the return to the foreground` each time the app comes back: the picture is laid out and drawn twice again whether or not anything changed, because a turn made while the app was hidden is drawn into SDL's old-size backbuffer otherwise.
 - `host: sound: stream opened (1 this run)` appears once. A second one after a turn is a fault.
 
-Check on the phone: (a) the picture is at the top upright and fills the height lying, in all four orientations, folded and unfolded; (b) the HUD and the view stay inside the notch, the corners and the home bar; (c) the music does not stop or stutter at a turn; (d) a stick held during the turn still moves Roxas or the camera after it; (e) with the controller off (`Controller disconnected`) and under the settings menu, the screen is laid out again when turned; (f) without a controller, the touch keys move to the new bottom corners, a held key stays held, and a finger on the view below the picture is the stylus.
+Check on the phone: (a) the game covers the display in both orientations with the lower view closed, in all four orientations, folded and unfolded; (b) the HUD and the view stay inside the notch, the corners and the home bar; (c) the music does not stop or stutter at a turn; (d) a stick held during the turn still moves Roxas or the camera after it; (e) with the controller off (`Controller disconnected`) and under the settings menu, the screen is laid out again when turned; (f) without a controller, the touch keys move to the new bottom corners, a held key stays held, and a finger on the view below the picture is the stylus.
 
-Known limits: while the game stands still (the settings menu, the controller notice) the picture behind was made for the old shape; after a turn it is shown whole at the size that fits (smaller, with bars) until the game runs again. Lying, played by touch, the touch keys still lie over the lower-screen view at the bottom corners, as before. The settings menu does not keep inside the safe area, and on the folded screen upright its binding table's narrow columns are cut off.
+Check readability of the folded portrait binding table and the lower-view touch targets near the on-screen keys on the device.
 
 Single screen is the default and the main way to play. Stacked and side by side remain under Settings → Apps → 358/2 Days → Screen layout; restart the app after changing it.
 

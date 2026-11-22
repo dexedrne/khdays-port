@@ -18,6 +18,9 @@ extern unsigned khdays_render_allocations, khdays_render_readbacks;
  * it is made ("shaders: made during play ..."), the first 40. gpu_hd.c. */
 void khdays_render_pipeline_made(const char *file, int line, char kind, Uint64 ns, int ok);
 void khdays_render_pipelines_report(void);
+#ifdef KHDAYS_IOS
+void *khdays_metal_library(SDL_GPUDevice *, SDL_GPUShaderFormat, const Uint8 *, size_t, size_t *);
+#endif
 #ifdef __cplusplus
 }
 #endif
@@ -27,7 +30,19 @@ static inline SDL_GPUComputePipeline *khdays_timed_compute_pipeline(SDL_GPUDevic
                                                                     const char *file, int line)
 {
     const Uint64 t = SDL_GetTicksNS();
-    SDL_GPUComputePipeline *p = SDL_CreateGPUComputePipeline(d, i);
+    SDL_GPUComputePipeline *p = NULL;
+#ifdef KHDAYS_IOS
+    SDL_GPUComputePipelineCreateInfo cached = *i;
+    void *library = khdays_metal_library(d, i->format, i->code, i->code_size, &cached.code_size);
+    if (library) {
+        cached.code = (const Uint8 *)library;
+        cached.format = SDL_GPU_SHADERFORMAT_METALLIB;
+        p = SDL_CreateGPUComputePipeline(d, &cached);
+        if (!p) SDL_Log("shaders: compiled library rejected: %s", SDL_GetError());
+        SDL_free(library);
+    }
+#endif
+    if (!p) p = SDL_CreateGPUComputePipeline(d, i);
     khdays_render_pipeline_made(file, line, 'c', SDL_GetTicksNS() - t, p != NULL);
     return p;
 }
@@ -44,7 +59,19 @@ static inline SDL_GPUShader *khdays_timed_shader(SDL_GPUDevice *d, const SDL_GPU
                                                  int line)
 {
     const Uint64 t = SDL_GetTicksNS();
-    SDL_GPUShader *p = SDL_CreateGPUShader(d, i);
+    SDL_GPUShader *p = NULL;
+#ifdef KHDAYS_IOS
+    SDL_GPUShaderCreateInfo cached = *i;
+    void *library = khdays_metal_library(d, i->format, i->code, i->code_size, &cached.code_size);
+    if (library) {
+        cached.code = (const Uint8 *)library;
+        cached.format = SDL_GPU_SHADERFORMAT_METALLIB;
+        p = SDL_CreateGPUShader(d, &cached);
+        if (!p) SDL_Log("shaders: compiled library rejected: %s", SDL_GetError());
+        SDL_free(library);
+    }
+#endif
+    if (!p) p = SDL_CreateGPUShader(d, i);
     khdays_render_pipeline_made(file, line, 's', SDL_GetTicksNS() - t, p != NULL);
     return p;
 }

@@ -193,6 +193,7 @@ typedef struct KhdaysVideo {
     int picture_fit;   /* the phone's single screen ([video] picture): 0 fill -- the game's picture over the whole
                         * display, edge to edge, covering it where it cannot take the display's shape -- or 1 fit,
                         * whole inside the safe area */
+    int touch_controls; /* 0 auto, 1 on, 2 off */
     int movies_fit;    /* the same for the movies ([video] movie_picture): 0 fill (cover, the overflow cut), 1 fit */
     int screen_resolution; /* [video] resolution: the full screen's mode or the window's size, width << 16 |
                               height; 0 the desktop's (full screen) or as the player sized it (window) */

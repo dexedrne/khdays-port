@@ -137,7 +137,7 @@ static const Icon *kenney_icon(const char *name)
 /* The gamepad's family as the icons name it. */
 static const char *family(SDL_Gamepad *pad)
 {
-    switch (SDL_GetGamepadType(pad)) {
+    switch (khdays_devices_pad_type(pad)) {
     case SDL_GAMEPAD_TYPE_XBOX360:
     case SDL_GAMEPAD_TYPE_XBOXONE: return "xbox";
     case SDL_GAMEPAD_TYPE_PS3:
@@ -305,7 +305,7 @@ uint32_t khdays_button_icons_signature(void)
     const int device = pad != NULL ? KHDAYS_DEVICE_GAMEPAD : KHDAYS_DEVICE_KEYBOARD;
     uint32_t h = 2166136261u;
     h = (h ^ (pad != NULL ? (uint32_t)SDL_GetGamepadID(pad) : 0u)) * 16777619u;
-    h = (h ^ (pad != NULL ? (uint32_t)SDL_GetGamepadType(pad) : 0u)) * 16777619u;
+    h = (h ^ (pad != NULL ? (uint32_t)khdays_devices_pad_type(pad) : 0u)) * 16777619u;
     if (profile != NULL) {
         for (int layer = 0; layer < KHDAYS_LAYER_COUNT; ++layer) {
             for (int a = 0; a < KHDAYS_ACT_COUNT; ++a) {

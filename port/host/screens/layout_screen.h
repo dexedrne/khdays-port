@@ -66,6 +66,7 @@ typedef struct KhdaysLayoutFrame {
     float scale, ox, oy;
     int logical_w, logical_h; /* the renderer's own presentation, set aside while drawing */
     SDL_RendererLogicalPresentation mode;
+    SDL_FRect cover; /* full-canvas artwork destination in mobile Fill mode */
 } KhdaysLayoutFrame;
 
 /* Its own: frees what a layout holds (it can be read again). */

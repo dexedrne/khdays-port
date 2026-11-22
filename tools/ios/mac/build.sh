@@ -18,6 +18,12 @@ nice -n 10 cmake -S port -B "$build/game-ninja" "${args[@]}" "-DKHDAYS_GEN=$gen"
 nice -n 10 cmake --build "$build/game-ninja" --config Release --target khdays-native --parallel "$jobs"
 test -x "$build/game-ninja/khdays-native.app/khdays-native"
 app="$build/game-ninja/khdays-native.app"
+# Some Xcode installations lack the optional Metal toolchain. The embedded MSL is the fallback.
+if xcrun --sdk "$sdk" metal --version >/dev/null 2>&1; then
+    nice -n 10 python3 tools/ios/metal_libraries.py "$sdk" "$build/metal" "$app"
+else
+    echo "Metal compiler unavailable; using embedded shader source on this build." >&2
+fi
 # App icon: compile the asset catalog into the bundle and merge the icon keys into its Info.plist.
 xcrun actool "${ICON_CATALOG:-tools/ios/Assets.xcassets}" --compile "$app" --platform "$sdk" --minimum-deployment-target 16.0 \
     --app-icon AppIcon --target-device iphone --target-device ipad --output-partial-info-plist "$build/icon-info.plist" >/dev/null

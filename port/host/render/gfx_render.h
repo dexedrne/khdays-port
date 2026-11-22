@@ -39,6 +39,7 @@ typedef struct KhdaysOneScreenDraw {
     float backdrop_ax, backdrop_ay;
     int backdrop_fit; /* inside the picture instead of covering it */
     int hide3d_all;
+    unsigned movie_text_engines; /* ov024 text drawn separately in the safe area, one bit per engine */
     int lower_whole; /* engine A, the lower screen, composed with its 3D (ui/composition.h) */
     /* The Moogle Shop's screens composed apart (ui/composition.h shop_*), and the camp's (the Files page's upper
      * screen, the Panels page's): by screen (0 the upper, 1 the lower), KHDAYS_SHOP_WANT_* bits, the layers its cut

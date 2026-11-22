@@ -99,6 +99,7 @@ typedef struct Shape3dDef {
     int corner;
     float margin[4];
     float scale;
+    int cover;
     int fixed; /* `scale fixed(N)`: its scale and margins do not follow the HUD's */
 } Shape3dDef;
 
@@ -675,6 +676,9 @@ static int read_shape3d(char **t, int n, Shape3dDef *s, const char **why)
     while (i < n) {
         if (strcmp(t[i], "margin") == 0 && four(t, n, i + 1, s->margin)) {
             i += 5;
+        } else if (strcmp(t[i], "scale") == 0 && i + 1 < n && strcmp(t[i + 1], "cover") == 0) {
+            s->cover = 1;
+            i += 2;
         } else if (strcmp(t[i], "scale") == 0 && i + 1 < n && fixed_value(t[i + 1], &s->scale) && s->scale > 0.0f) {
             s->fixed = 1;
             i += 2;
@@ -1647,6 +1651,30 @@ static int animation_now(int a, uint32_t frame)
     return count;
 }
 
+/* The theater title is authored in 16:9. The full-canvas background keeps its cover
+ * transform. Move its menu pieces and their hit targets together into the visible area.
+ * Rectangles here use left/top/right/bottom in the original atlas layout. */
+static void frame_title_menu(KhdaysComposition *out, int columns, float ax, float ay)
+{
+    const float w = (float)out->picture_w, h = (float)out->picture_h;
+    if (w <= 0 || h <= 0) return;
+    float frame[4];
+    hud_frame(columns, frame);
+    const float cover = fmaxf(columns / w, 192.f / h);
+    const float fit = fminf((frame[2] - frame[0]) / w, (frame[3] - frame[1]) / h);
+    const float dx = (frame[0] + (frame[2] - frame[0] - w * fit) * .5f - (columns - w * cover) * ax) / cover;
+    const float dy = (frame[1] + (frame[3] - frame[1] - h * fit) * .5f - (192.f - h * cover) * ay) / cover;
+    const float scale = fit / cover;
+    for (int n = 0; n < out->piece_count + out->button_count; ++n) {
+        float *r = n < out->piece_count ? pieces_now[n].rect : buttons_now[n - out->piece_count].rect;
+        if (n < out->piece_count && r[0] <= 0 && r[1] <= 0 && r[2] >= w && r[3] >= h) continue;
+        r[0] = dx + r[0] * scale;
+        r[1] = dy + r[1] * scale;
+        r[2] = dx + r[2] * scale;
+        r[3] = dy + r[3] * scale;
+    }
+}
+
 /* A section that begins with a backdrop no mod gives (this frame's name) is not used. */
 static int backdrop_there(const Section *s, const KhdaysSituation *situation)
 {
@@ -1764,9 +1792,16 @@ static void build_shape3d(const Shape3dDef *d, int columns, KhdaysShape3d *out, 
     const float c = (float)columns;
     float frame[4]; /* the HUD's frame, as the 2D shapes' (build_shape): one larger made smaller to fit it */
     hud_frame(columns, frame);
+    if (d->cover) {
+        frame[0] = frame[1] = 0;
+        frame[2] = c;
+        frame[3] = 192;
+    }
     const float fw = frame[2] - frame[0], fh = frame[3] - frame[1];
     float scale = d->scale / u;
-    if (frame_set && !d->hide && d->w > 0.0f && d->h > 0.0f && (d->w * scale > fw || d->h * scale > fh)) {
+    if (d->cover) {
+        scale = fmaxf(fw / d->w, fh / d->h);
+    } else if (frame_set && !d->hide && d->w > 0.0f && d->h > 0.0f && (d->w * scale > fw || d->h * scale > fh)) {
         scale *= fminf(fw / (d->w * scale), fh / (d->h * scale));
     }
     const float width = d->w * scale, height = d->h * scale;
@@ -2246,6 +2281,8 @@ void khdays_composition_for(const KhdaysSituation *situation, int columns, Khday
                                 }
                             }
                             out->buttons = buttons_now;
+                            if (fill_picture && situation->scene == KHDAYS_SIT_TITLE)
+                                frame_title_menu(out, columns, backdrops[d->value].ax, backdrops[d->value].ay);
                             shown = a;
                         }
                     } else if ((p = picture_named(name)) != NULL) {
@@ -2287,6 +2324,9 @@ void khdays_composition_for(const KhdaysSituation *situation, int columns, Khday
         out->screens = situation->content == 2u   ? KHDAYS_SCREENS_LOWER
                        : situation->content == 3u ? KHDAYS_SCREENS_SIDE_BY_SIDE
                                                   : KHDAYS_SCREENS_UPPER;
+        if (situation->scene == KHDAYS_SIT_MOVIE && fill_movies && situation->content == 3u) {
+            out->screens = KHDAYS_SCREENS_UPPER;
+        }
         if (out->screens != KHDAYS_SCREENS_SIDE_BY_SIDE &&
             grow((void **)&shapes, &shape_room, shape_count, sizeof(KhdaysShape))) {
             ShapeDef whole;
@@ -2295,6 +2335,11 @@ void khdays_composition_for(const KhdaysSituation *situation, int columns, Khday
             whole.whole = 1;
             whole.w = 256.0f;
             whole.h = 192.0f;
+            /* ov024 offsets BG3 by sixteen scanlines around its 256x160 MobiClip picture. */
+            if (situation->scene == KHDAYS_SIT_MOVIE && fill_movies) {
+                whole.y = 16.0f;
+                whole.h = 160.0f;
+            }
             whole.corner = CORNER_CENTRE;
             whole.sx_fixed = whole.sy_fixed = 1.0f; /* fixed: the DS's size, whatever the HUD's */
             /* the phone's filled display: covering the picture, its overflow cut (the game's own movies with

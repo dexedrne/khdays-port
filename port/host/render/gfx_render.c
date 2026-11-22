@@ -1452,6 +1452,8 @@ static int draw(const KhdaysFramePackage *p, int scale, int scale3d, int raster,
         uint32_t n = 0;
         engine_at[e] = at;
         memcpy(out, p->desc2d[e], KHDAYS_DESC_WORDS * 4);
+        if (one && (one->movie_text_engines & (1u << e)))
+            ((uint32_t *)out)[KD_FLAGS] &= ~(7u << KDF_BG_ON_SHIFT);
         if (e == 0) {
             ((uint32_t *)out)[KD_WIDE] = wide; /* 0: no wider 3D this frame, the DS's columns */
         }

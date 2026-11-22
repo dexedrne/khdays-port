@@ -520,6 +520,11 @@ static void build_video(Builder *b, KhdaysProfile *w)
      * or inside its safe area (fit); takes at once (host/render/gpu_present.c) */
     needs_graphics_card(b, add_choice(b, KHDAYS_SET_PICTURE_FIT, TXT_VIDEO_PICTURE_FILL, &v->picture_fit, fill_fit, 2),
                         TXT_VIDEO_FILL_NOTE);
+    static const char *touch_choices[3];
+    touch_choices[0] = khdays_text(TXT_TOUCH_AUTO);
+    touch_choices[1] = khdays_text(TXT_ON);
+    touch_choices[2] = khdays_text(TXT_OFF);
+    add_choice(b, KHDAYS_SET_TOUCH_CONTROLS, TXT_TOUCH_CONTROLS, &v->touch_controls, touch_choices, 3);
     add_choice(b, KHDAYS_SET_MOVIES_FIT, TXT_VIDEO_MOVIES_FILL, &v->movies_fit, fill_fit, 2)->note =
         khdays_text(TXT_VIDEO_FILL_NOTE);
 #endif

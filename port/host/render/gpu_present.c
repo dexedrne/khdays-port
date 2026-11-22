@@ -39,7 +39,7 @@
 #define W KHDAYS_FRAME_W
 #define H KHDAYS_FRAME_H
 
-#define SHADER_FORMATS (SDL_GPU_SHADERFORMAT_DXIL | SDL_GPU_SHADERFORMAT_SPIRV | SDL_GPU_SHADERFORMAT_MSL)
+#define SHADER_FORMATS (SDL_GPU_SHADERFORMAT_DXIL | SDL_GPU_SHADERFORMAT_SPIRV | SDL_GPU_SHADERFORMAT_MSL | SDL_GPU_SHADERFORMAT_METALLIB)
 
 static SDL_Window *window;
 static SDL_GPUDevice *device; /* NULL before the window is made, and while it is remade */
@@ -58,6 +58,9 @@ static unsigned vsync_changes; /* how many times it changed (the "pace:" summary
 static int raster_ready;      /* gpu_raster3d.c opened on this device */
 static SDL_Texture *hd;       /* this frame's, or NULL to show the 1x picture as it is */
 static SDL_Texture *hd_movie; /* an HD video's picture, NV12 */
+#ifdef KHDAYS_MOBILE
+static SDL_Texture *ds_movie_text; /* owned by onescreen.c */
+#endif
 static int hd_movie_w, hd_movie_h;
 static double hd_movie_time, hd_movie_fps; /* the picture's time and its file's rate, for its subtitles */
 static float hd_movie_level = 1.0f;        /* how much of it shows through its fades */
@@ -188,6 +191,7 @@ static SDL_GPUDevice *make_device(int debug, const char *name)
     SDL_SetBooleanProperty(props, SDL_PROP_GPU_DEVICE_CREATE_SHADERS_DXIL_BOOLEAN, true); /* SHADER_FORMATS */
     SDL_SetBooleanProperty(props, SDL_PROP_GPU_DEVICE_CREATE_SHADERS_SPIRV_BOOLEAN, true);
     SDL_SetBooleanProperty(props, SDL_PROP_GPU_DEVICE_CREATE_SHADERS_MSL_BOOLEAN, true);
+    SDL_SetBooleanProperty(props, SDL_PROP_GPU_DEVICE_CREATE_SHADERS_METALLIB_BOOLEAN, true);
     if (name != NULL) {
         SDL_SetStringProperty(props, SDL_PROP_GPU_DEVICE_CREATE_NAME_STRING, name);
     }
@@ -302,6 +306,10 @@ static int make_renderer(void)
 static void destroy(void)
 {
     hd = NULL;
+#ifdef KHDAYS_MOBILE
+    ds_movie_text = NULL;
+    khdays_onescreen_movie_text_close();
+#endif
     if (hd_movie != NULL) {
         SDL_DestroyTexture(hd_movie);
         hd_movie = NULL;
@@ -406,7 +414,7 @@ static int side_by_side(void)
  * whole inside the safe area; movie_picture the same for the movies. */
 static int fill_now(void)
 {
-    return video.one_screen && !video.picture_fit;
+    return video.one_screen && (khdays_onescreen_scene() == KHDAYS_SIT_MOVIE ? !video.movies_fit : !video.picture_fit);
 }
 
 static int movies_fill_now(void)
@@ -622,7 +630,7 @@ static int view_below(int cols, SDL_FRect *at)
 {
     float room = (float)tall_rows(cols) - (float)H - VIEW_GAP;
     float k;
-    if (khdays_devices_gamepad() == NULL && window != NULL) {
+    if (khdays_mobile_keys_visible() && window != NULL) {
         SDL_Rect safe;
         const float keys = khdays_mobile_keys_top(window);
         if (keys >= 0 && khdays_mobile_safe(window, &safe) && safe.w > 0) {
@@ -2143,6 +2151,13 @@ static void present_now(const KhdaysFramePackage *p, int first)
 #endif
             khdays_onescreen_prepare(p, wide > W ? wide : W, &composition, &one);
 #ifdef KHDAYS_MOBILE
+            ds_movie_text = NULL;
+            if (khdays_onescreen_scene() == KHDAYS_SIT_MOVIE && movies_fill_now() && !lower_view &&
+                khdays_subtitles_shown() && !khdays_movie_hd_showing()) {
+                const int engine = composition.screens == KHDAYS_SCREENS_LOWER ? !p->upper : p->upper;
+                ds_movie_text = khdays_onescreen_movie_text(renderer, p, engine);
+                if (ds_movie_text) one.movie_text_engines = 1u << engine;
+            }
             note_hud_pieces(&composition, wide > W ? wide : W,
                             hud_framed && (composition.screens == KHDAYS_SCREENS_UPPER ||
                                            composition.screens == KHDAYS_SCREENS_LOWER));
@@ -2378,7 +2393,7 @@ void khdays_present_set_video(const KhdaysVideo *v)
     khdays_composition_set_hud_size(video.hud_size);
 #ifdef KHDAYS_MOBILE
     /* the compositions' `phone` sections, their screens whole and their backdrops covering the picture */
-    khdays_composition_set_fill(fill_now(), fill_now() && movies_fill_now());
+    khdays_composition_set_fill(video.one_screen && !video.picture_fit, video.one_screen && movies_fill_now());
 #endif
     if (screens != NULL) {
         SDL_SetTextureScaleMode(screens, video.smooth_scaling ? SDL_SCALEMODE_LINEAR : SDL_SCALEMODE_NEAREST);
@@ -2841,6 +2856,12 @@ static void draw_screens(void)
         if (picture != NULL) {
             draw_fill(picture, NULL, made, 1, other, other != NULL ? ds_columns(other, wl) : (SDL_FRect){0, 0, 0, 0},
                       one_kind == KHDAYS_SCREENS_LOWER);
+            SDL_FRect text_at;
+            if (ds_movie_text && khdays_onescreen_scene() == KHDAYS_SIT_MOVIE && !lower_view &&
+                in_safe_area(256, 192, &text_at)) {
+                SDL_RenderTexture(renderer, ds_movie_text, NULL, &text_at);
+                out_of_safe_area();
+            }
         }
         darken(1.0f - khdays_movie_hd_game_level());
         return;

@@ -545,7 +545,7 @@ static void picture_report(SDL_Window *window, SDL_Renderer *renderer)
 #endif
 #ifdef KHDAYS_MOBILE
     fprintf(stderr, "picture %u: touch keys %s (settings %s, a controller %s), their top at y %.0f (window pixels)\n", n,
-            !khdays_settings_is_open() && !khdays_devices_gamepad() && !pad_lost ? "drawn" : "not drawn",
+            !khdays_settings_is_open() && khdays_mobile_keys_visible() && !pad_lost ? "drawn" : "not drawn",
             khdays_settings_is_open() ? "open" : "closed",
             khdays_devices_gamepad() ? "connected" : pad_lost ? "not connected: the game waits for one" : "not connected",
             (double)(khdays_mobile_keys_top(window) * SDL_GetWindowPixelDensity(window)));
@@ -829,7 +829,7 @@ static void redraw(SDL_Window *window, SDL_Renderer *renderer)
 #ifdef KHDAYS_MOBILE
     if (pad_lost) {
         pad_lost_draw(renderer);
-    } else if (!khdays_settings_is_open() && !khdays_devices_gamepad()) {
+    } else if (!khdays_settings_is_open() && khdays_mobile_keys_visible()) {
         khdays_mobile_draw(renderer);
     }
 #endif
@@ -1601,6 +1601,33 @@ static int host_thread(void *unused)
 
         /* Input. The devices always see it (they track what is held). While the
          * settings menu is open, the menu gets the input and the game none. */
+#ifdef KHDAYS_MOBILE
+        if (event.type == SDL_EVENT_FINGER_DOWN) {
+            int count = 0;
+            SDL_free(SDL_GetTouchFingers(event.tfinger.touchID, &count));
+            int w, h;
+            if (!pad_lost && !khdays_settings_is_open() && SDL_GetWindowSize(window, &w, &h)) {
+                const float x = event.tfinger.x * w, y = event.tfinger.y * h;
+                if ((khdays_mobile_keys_visible() && khdays_mobile_settings_at(window, x, y)) ||
+                    (khdays_present_settings_button() && khdays_present_settings_button_at(x, y)) ||
+                    khdays_movie_pause_settings_at(renderer, x, y)) {
+                    settings_key();
+                    redraw(window, renderer);
+                    continue;
+                }
+            }
+            if (count >= 3) {
+                if (!khdays_settings_is_open()) {
+                    settings_key();
+                    redraw(window, renderer);
+                    continue;
+                }
+                SDL_zero(event);
+                event.type = SDL_EVENT_KEY_DOWN;
+                event.key.scancode = SDL_SCANCODE_ESCAPE;
+            }
+        }
+#endif
         if (khdays_settings_is_open()) {
             /* One picture for the events waiting, not one each: a gamepad's sticks and
              * triggers send their moves many times a frame (and SDL each twice, as a joystick's
@@ -1671,7 +1698,7 @@ static int host_thread(void *unused)
                     khdays_devices_pad_count(), khdays_devices_gamepad() != NULL ? "playing: " : "none plays",
                     khdays_devices_gamepad() != NULL ? khdays_devices_gamepad_name() : "",
 #ifdef KHDAYS_MOBILE
-                    khdays_devices_gamepad() != NULL ? "hidden" : "shown",
+                    khdays_mobile_keys_visible() ? "shown" : "hidden",
 #else
                     "not in this build",
 #endif

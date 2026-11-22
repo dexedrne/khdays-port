@@ -67,7 +67,12 @@ int khdays_devices_pad_in_use(void);
 
 /* The SDL button behind one of our positional inputs, or
  * SDL_GAMEPAD_BUTTON_INVALID (the triggers are axes). */
+SDL_GamepadType khdays_devices_pad_type(SDL_Gamepad *pad);
+SDL_GamepadButtonLabel khdays_devices_button_label(SDL_Gamepad *pad, SDL_GamepadButton button);
 SDL_GamepadButton khdays_devices_sdl_button(int input);
+
+/* Physical position for scripted hardware events, independent of the active controller. */
+SDL_GamepadButton khdays_devices_positional_button(int input);
 
 /* What is held right now (for the settings menu's displays). */
 const KhdaysDeviceState *khdays_devices_state(void);
