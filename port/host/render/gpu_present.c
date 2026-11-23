@@ -687,6 +687,23 @@ static int auto_scale(int n)
     return n;
 }
 
+/* Whether the 2D's scale is kept to a pixel budget (KHDAYS_AUTO_2D_PIXELS). On the phone always, whatever
+ * internal_resolution says: a screen with the card's 3D under it -- every field and battle, engine A -- is
+ * composed at every output pixel (`compose2d.hlsl`, the 2D once a DS dot's PRE_EACH dots; docs/RENDERING.md),
+ * so the window's own scale multiplies the field's 2D cost, and the composition is finer than the display can
+ * show anyway: the owner's phone, 2026-11-23, composed the field's 2D at 13x (3328 x 2496) for a 1880 px wide
+ * window -- 14 to 33 ms a picture on the card, 26-36 pictures a second -- while the title's 2D, which reads no
+ * 3D and so takes the once-a-dot path (a dot composed once, its pixels copied), cost 4-6 ms at the same 13x.
+ * Elsewhere only internal_resolution = auto does (desktop runs keep the setting the player chose). */
+static int cap_2d_now(void)
+{
+#ifdef KHDAYS_MOBILE
+    return 1;
+#else
+    return video.internal_resolution == KHDAYS_RESOLUTION_AUTO;
+#endif
+}
+
 /* The 2D's scale over a 3D at `n3d`: the window's own (smooth scaling: the whole multiple at least as large,
  * shrunk on the card; sharp: the largest that fits), so the HUD, menus and text stay as sharp as the window
  * whatever the internal resolution; the 3D's when that is finer (an internal resolution above the
@@ -694,13 +711,13 @@ static int auto_scale(int n)
 static int scale2d_now(int n3d)
 {
     const float s = shown_scale();
-    int n = video.smooth_scaling ? (int)SDL_ceilf(s - 0.01f) : (int)SDL_floorf(s);
-    if (video.internal_resolution == KHDAYS_RESOLUTION_AUTO) {
-        /* auto (the phone's): the 2D kept to twice the 3D's pixels (KHDAYS_AUTO_2D_PIXELS; 0 the window's). The
-         * 2D at the window's 10x was most of a picture's time on the card (run-r5/pace: 2853 x 2007, the 2D at
-         * 10x and the 3D at 4x), and sharp, the DS's own pixels come out the same at any whole scale -- each
-         * 10 or 11 of the screen's at the unfolded phone's 10.45 -- so only what is finer than them (a mod's HD
-         * tiles and fonts, the HD pack's HUD pieces) is drawn coarser: at 5x instead of 10x lying unfolded. */
+    const int windowed = video.smooth_scaling ? (int)SDL_ceilf(s - 0.01f) : (int)SDL_floorf(s);
+    int n = windowed;
+    if (cap_2d_now()) {
+        /* the 2D kept to twice the 3D's pixels (KHDAYS_AUTO_2D_PIXELS; 0 the window's own scale, uncapped).
+         * Sharp, the DS's own pixels come out the same at any whole scale -- each 10 or 11 of the screen's at
+         * the unfolded phone's 10.45 -- so only what is finer than them (a mod's HD tiles and fonts, the HD
+         * pack's HUD pieces) is drawn coarser: at 5x instead of 14x upright on the phone. */
         static long budget = -1;
         const long columns = columns_now();
         if (budget < 0) {
@@ -709,6 +726,18 @@ static int scale2d_now(int n3d)
         }
         while (budget > 0 && n > n3d && (long)n * columns * n * H > budget) {
             --n;
+        }
+        if (n < windowed) {
+            /* one line each time the cap bites anew (the phone's console says what the picture cost) */
+            static int last_windowed = -1, last_n = -1;
+            if (windowed != last_windowed || n != last_n) {
+                fprintf(stderr,
+                        "graphics: the 2D at %dx: the window's %dx (%d x %d) kept to %ld pixels or fewer "
+                        "(KHDAYS_AUTO_2D_PIXELS)\n",
+                        n, windowed, (int)(columns * windowed), H * windowed, budget);
+                last_windowed = windowed;
+                last_n = n;
+            }
         }
     }
     if (port2d_mode == 2 || n < n3d) {
@@ -2606,13 +2635,20 @@ int khdays_present_one_picture(void)
 
 /* The scale mode for texture `t` shown as `w` x `h` DS pixels: nearest when it already has the
  * window's pixels for them (shrunk to the size shown, gfx_render.c) -- drawn one to one, a filter
- * would only blur it -- else the setting's. */
+ * would only blur it -- linear when it has FEWER than them (the phone's 2D budget, round 10: a 5x
+ * composition shown at the window's 9x or 13x; nearest would draw each of its texels as an uneven
+ * block, and the 3D inside it -- 4x -- worse), else the setting's. */
 static SDL_ScaleMode mode_for(SDL_Texture *t, float w, float h)
 {
     float tw = 0.0f, th = 0.0f;
     const float s = shown_scale();
-    if (SDL_GetTextureSize(t, &tw, &th) && SDL_fabsf(tw - w * s) <= 1.0f && SDL_fabsf(th - h * s) <= 1.0f) {
-        return SDL_SCALEMODE_NEAREST;
+    if (SDL_GetTextureSize(t, &tw, &th)) {
+        if (SDL_fabsf(tw - w * s) <= 1.0f && SDL_fabsf(th - h * s) <= 1.0f) {
+            return SDL_SCALEMODE_NEAREST;
+        }
+        if (tw < w * s - 1.0f || th < h * s - 1.0f) {
+            return SDL_SCALEMODE_LINEAR;
+        }
     }
     return video.smooth_scaling ? SDL_SCALEMODE_LINEAR : SDL_SCALEMODE_NEAREST;
 }
@@ -2635,13 +2671,14 @@ const char *khdays_present_note(void)
     SDL_GetCurrentRenderOutputSize(renderer, &ow, &oh);
     SDL_snprintf(draw_note, sizeof(draw_note),
                  "drawn as %s; %d columns, internal scale %d, logical %dx%d in output %dx%d, viewport %d,%d %dx%d, "
-                 "scale %.3f, 2D %s, one-screen setting %d, lower view %s, game level %.2f"
+                 "scale %.3f, 2D %s, 2D scale %d, one-screen setting %d, lower view %s, game level %.2f"
 #ifdef KHDAYS_MOBILE
                  ", layout %d, stylus %.0f,%.0f %.0fx%.0f, %s"
 #endif
                  ,
                  draw_way, columns, scale_now(), presented_w, presented_h, ow, oh, view.x, view.y, view.w, view.h,
-                 (double)sx, port2d_drawn ? "the port's" : port2d_ready ? "not drawn yet" : "off", video.one_screen,
+                 (double)sx, port2d_drawn ? "the port's" : port2d_ready ? "not drawn yet" : "off",
+                 device != NULL ? khdays_present_scale() : 1, video.one_screen,
                  !lower_view ? "off" : lower_view_shown ? "shown" : "on (this picture has the lower screen already)",
                  (double)khdays_movie_hd_game_level()
 #ifdef KHDAYS_MOBILE
@@ -2735,7 +2772,7 @@ static void draw_fill(SDL_Texture *pic, const SDL_FRect *from, int made, int com
     } else {
         return;
     }
-    SDL_SetTextureScaleMode(lower, video.smooth_scaling ? SDL_SCALEMODE_LINEAR : SDL_SCALEMODE_NEAREST);
+    SDL_SetTextureScaleMode(lower, mode_for(lower, (float)W, (float)H));
     SDL_RenderTexture(renderer, lower, &lower_from, &view);
     lower_view_shown = 1;
     lower_view_at = view;

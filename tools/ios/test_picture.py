@@ -22,35 +22,47 @@ import tempfile
 import time
 
 ROOT = Path(__file__).resolve().parents[2]
-# name, window, layout, unsafe margins (left, top, right, bottom), least lit share at the title
+# name, window, layout, unsafe margins (left, top, right, bottom), least lit share at the title,
+# settings.ini text (None: no settings file) and the 2D's internal scale the picture report must give
+# (0: not checked). Round 10: the 2D's pixel budget applies on the phone whatever internal_resolution
+# says (host/render/gpu_present.c scale2d_now), so the last case pins the resolution the owner's
+# settings file pins and checks the 2D is still composed at 5x, not at the window's 9x.
 CASES = [
-    ("landscape, single screen (the phone's default)", (2853, 2007), 2, (60, 0, 60, 21), 30.0),
-    ("portrait, single screen", (2007, 2853), 2, (0, 59, 0, 34), 15.0),
-    ("landscape, single screen, the phone console's window and safe area", (2669, 1878), 2, (0, 0, 0, 95), 30.0),
-    ("folded portrait, single screen", (1320, 2868), 2, (0, 59, 0, 34), 15.0),
-    ("folded landscape, single screen", (2868, 1320), 2, (59, 0, 59, 21), 30.0),
-    ("landscape, stacked", (2853, 2007), 0, (60, 0, 60, 21), 30.0),
-    ("portrait, stacked", (2007, 2853), 0, (0, 59, 0, 34), 30.0),
-    ("landscape, side by side", (2853, 2007), 1, (60, 0, 60, 21), 30.0),
+    ("landscape, single screen (the phone's default)", (2853, 2007), 2, (60, 0, 60, 21), 30.0, None, 0),
+    ("portrait, single screen", (2007, 2853), 2, (0, 59, 0, 34), 15.0, None, 0),
+    ("landscape, single screen, the phone console's window and safe area", (2669, 1878), 2, (0, 0, 0, 95), 30.0,
+     None, 0),
+    ("folded portrait, single screen", (1320, 2868), 2, (0, 59, 0, 34), 15.0, None, 0),
+    ("folded landscape, single screen", (2868, 1320), 2, (59, 0, 59, 21), 30.0, None, 0),
+    ("landscape, stacked", (2853, 2007), 0, (60, 0, 60, 21), 30.0, None, 0),
+    ("portrait, stacked", (2007, 2853), 0, (0, 59, 0, 34), 30.0, None, 0),
+    ("landscape, side by side", (2853, 2007), 1, (60, 0, 60, 21), 30.0, None, 0),
+    ("the phone console's window with internal_resolution = 4 pinned (the owner's settings file)",
+     (2669, 1878), 2, (0, 0, 0, 95), 30.0, "[video]\ninternal_resolution = 4\n", 5),
 ]
 FILL_SLACK = 2  # pixels of rounding at an edge
 FILL = re.compile(rb"^picture (\d+): layout .*; fill: (\d+)x(\d+) covering the window (\d+)x(\d+) at ([\d.]+)")
 LIT = re.compile(rb"^picture (\d+): (\d+)x(\d+) read back, ([\d.]+)% lit, within (\d+),(\d+) to (\d+),(\d+),")
 DRAWN = re.compile(rb"^picture (\d+) \(.*; drawn as ([^;]+);")
+SCALE2D = re.compile(rb"^picture (\d+) \(.*, 2D scale (\d+),")
+CAP = re.compile(rb"^graphics: the 2D at (\d+)x: the window's (\d+)x")
 LAVAPIPE = Path("/usr/share/vulkan/icd.d/lvp_icd.json")
 
 
-def run(exe, rom, name, size, layout, margins, least):
+def run(exe, rom, name, size, layout, margins, least, settings=None, want_2d=0):
     env = dict(os.environ, KHDAYS_ROM=str(rom), SDL_AUDIODRIVER="dummy", SDL_VIDEODRIVER="offscreen",
                KHDAYS_TEST_WINDOW="1", KHDAYS_NET_SERVER="", KHDAYS_MOBILE_WINDOW=f"{size[0]}x{size[1]}",
                KHDAYS_MOBILE_LAYOUT=str(layout), KHDAYS_MOBILE_INSETS=",".join(map(str, margins)),
                VK_DRIVER_FILES=str(LAVAPIPE))
     env.pop("KHDAYS_HEADLESS", None)
     with tempfile.TemporaryDirectory(dir=Path.cwd()) as work:
+        if settings is not None:
+            (Path(work) / "saves").mkdir()
+            (Path(work) / "saves" / "settings.ini").write_text(settings)
         log = Path(work) / "trace"
         with log.open("wb") as out, log.open("rb") as reader:
             game = subprocess.Popen([exe], cwd=work, env=env, stdout=out, stderr=subprocess.STDOUT)
-            drawn, filled = {}, {}
+            drawn, filled, scales2d, capped = {}, {}, {}, {}
             try:
                 deadline = time.monotonic() + 420  # (upright, covering: the 3D and 2D at 15x on the CPU card)
                 while time.monotonic() < deadline:
@@ -67,6 +79,12 @@ def run(exe, rom, name, size, layout, margins, least):
                     fill = FILL.match(line)
                     if fill:
                         filled[int(fill[1])] = fill
+                    two = SCALE2D.match(line)
+                    if two:
+                        scales2d[int(two[1])] = int(two[2])
+                    cap = CAP.match(line)
+                    if cap:
+                        capped[(int(cap[1]), int(cap[2]))] = True
                     lit = LIT.match(line)
                     if not lit or int(lit[1]) < 300:
                         continue
@@ -86,6 +104,13 @@ def run(exe, rom, name, size, layout, margins, least):
                                   y1 <= size[1] - margins[3] + 4)
                         how = "inside the safe area" if placed else "out of the safe area"
                     ok = share >= least and placed and (int(lit[2]), int(lit[3])) == size
+                    if want_2d:
+                        # the 2D's budget, not the window's scale: 5x here, and the console says it cut
+                        got = scales2d.get(int(lit[1]), 0)
+                        windowed = next((w for (n, w) in capped if n == got), 0)
+                        ok = ok and got == want_2d and windowed > got
+                        how += (f", the 2D at {got}x of the window's {windowed}x"
+                                if windowed else f", the 2D at {got}x (no cap line)")
                     print(f"{name}: picture {int(lit[1])} {way}, {share}% lit within {x0},{y0} to {x1},{y1} ({how}): "
                           f"{'passed' if ok else 'FAILED'}")
                     return ok

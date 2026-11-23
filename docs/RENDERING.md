@@ -428,6 +428,20 @@ one wider than the DS's 256 columns, and any screen on a card that cannot read
 and write the verdicts' texture through one binding. `KHDAYS_2D_ONCE=0`
 composes every pixel.
 
+**The 2D's budget on the phone.** The once-a-dot path above is what makes a menu's or the title's 2D cheap
+at any scale, but it cannot help a screen with the card's 3D under it -- engine A in a field or a battle is
+composed at every output pixel (`PRE_EACH`). Composed at the *window's* scale
+that cost grows with the square of the display's size: the owner's phone (2026-11-23, the unfolded Duo lying
+at 2669 x 1878 and upright at 1878 x 2669), the field's 2D at 9x took 15-28 ms a picture lying and at 13x
+14-33 ms upright, 26-36 pictures a second, against 4-6 ms for the title at the same 13x. So on the phone
+(MOBILE, `gpu_present.c` `cap_2d_now`) the 2D's scale is kept inside a pixel budget whatever
+`internal_resolution` says -- `KHDAYS_AUTO_2D_PIXELS`, two times the 3D's budget (2 x 1088 x 768 =
+1,671,168 pixels), which is 5x at the Duo's shapes, 6.8x fewer 2D texels than upright 13x; `0` restores the
+window's own scale. The screen is then made smaller than the presentation and the window's blit holds it to
+the display's pixels (its `mode_for` samples it linearly, `set_shown`). `graphics: the 2D at 5x: the
+window's 13x ... kept to 1671168 pixels or fewer` says each time the cap bites, and the picture report's
+`2D scale N` says the scale the picture used.
+
 **One screen: the parts read.** The one-screen picture reads the two screens
 only through its shapes, often a few corners of them (the HUD's pieces, the
 lower screen's map), so only those parts are composed (`gfx_render.c`
