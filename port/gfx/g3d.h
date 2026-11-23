@@ -241,6 +241,13 @@ const KhdaysG3dList *khdays_g3d_shown(void);
  * matrices and the tests stay the DS's. */
 void khdays_g3d_set_widen(float k);
 
+/* The field of view, the factor the projection's x and y are drawn at (khdays_g3d_matrices' and the
+ * game's vertices' alike): 1 is the game's own; less is wider -- more of the world inside the DS's
+ * screen, the camera further away, which a phone's display wants ([video] camera_zoom, the host's
+ * invert). The HUD's own 3D (khdays_g3d_set_hud) and a screen-space picture (an orthographic
+ * projection, its w always 1) keep their size and place. Held to 0.5..2. */
+void khdays_g3d_set_zoom(float k);
+
 /* The polygons sent from now on are the HUD's (1), the HUD's shown over the
  * 2D (2: KHDAYS_G3D_OVER_2D), or not (0), so that widescreen can keep the HUD
  * to the sides and the one picture's 3D shapes place it (host/render/gpu_raster3d.c). */

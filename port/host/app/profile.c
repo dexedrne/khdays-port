@@ -280,6 +280,13 @@ void khdays_video_default(KhdaysVideo *v)
     v->touch_controls = 0;
     v->movies_fit = 0;
     v->screen_resolution = 0; /* the desktop's */
+    /* the field of view, a percent of the game's own: a phone's display has the camera closer than the
+     * owner wants (2026-11-22), the desktop as the DS has it */
+#if defined(KHDAYS_IOS) || defined(KHDAYS_MOBILE_TEST)
+    v->camera_zoom = 115;
+#else
+    v->camera_zoom = 100;
+#endif
 }
 
 /* The display values as the file writes them. */
@@ -428,6 +435,7 @@ int khdays_profile_repair(KhdaysProfile *p)
         changed += clamp(&p->video.picture_fit, 0, 1);
         changed += clamp(&p->video.touch_controls, 0, 2);
         changed += clamp(&p->video.movies_fit, 0, 1);
+        changed += clamp(&p->video.camera_zoom, 100, 160);
     }
     changed += clamp(&p->sound.volume, 0, 100);
     changed += clamp(&p->sound.music, 0, 100);
@@ -1027,6 +1035,17 @@ static void read_video(Reader *r, const char *key, const char *value, const char
         } else {
             say_localized(r, TXT_VIDEO_BAD_VALUE, key, value, "stacked");
             v->two_screens = defaults.two_screens;
+        }
+        return;
+    }
+    if (SDL_strcasecmp(key, "camera_zoom") == 0) {
+        char *end = NULL;
+        const long n = SDL_strtol(value, &end, 10);
+        if (end != value && *trim(end) == '\0' && n >= 100 && n <= 160) {
+            v->camera_zoom = (int)n;
+        } else {
+            say_localized(r, TXT_VIDEO_BAD_VALUE, key, value, "100");
+            v->camera_zoom = defaults.camera_zoom;
         }
         return;
     }
@@ -1699,6 +1718,11 @@ int khdays_profile_save(const KhdaysProfile *p, const char *path, KhdaysNotice n
                                                   : "auto",
             v->lower_view == KHDAYS_LOWER_VIEW_INSET ? "inset" : "full");
 #if defined(KHDAYS_IOS) || defined(KHDAYS_MOBILE_TEST)
+        add(&t,
+            "# camera_zoom: the field of view of the game's 3D, a percent of the DS's own: 100 as the DS has it,\n"
+            "#              more a wider camera (115 the phone's first run), 100 to 160\n"
+            "camera_zoom = %d\n",
+            v->camera_zoom);
         add(&t, "touch_controls = %s\n", v->touch_controls == 1 ? "on" : v->touch_controls == 2 ? "off" : "auto");
         add(&t,
             "# picture: on the phone's single screen, fill (the game over the whole display, edge to edge,\n"

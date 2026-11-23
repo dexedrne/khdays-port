@@ -42,6 +42,11 @@ void khdays_host_shot_soon(void);
  * changes between frames. */
 float khdays_host_frame_widen(void);
 
+/* The factor the game's 3D projection's x and y are drawn at ([video] camera_zoom's inverse): 1 is the
+ * game's own field of view, less is a wider one; for khdays_g3d_set_zoom. 1 when headless. It only
+ * changes between frames. */
+float khdays_host_camera_zoom(void);
+
 /* The scale the picture's 2D is composed at (the window's, or the internal resolution when that is
  * finer; 1 when headless), for what the game thread draws at that resolution (the port's own elements:
  * HD text, the KH2 HUD's pictures). It only changes between frames. */

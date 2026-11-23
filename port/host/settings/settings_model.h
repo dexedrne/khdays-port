@@ -114,6 +114,7 @@ enum KhdaysSettingId {
     KHDAYS_SET_PICTURE_FIT, /* the phone's: fill or fit */
     KHDAYS_SET_MOVIES_FIT,
     KHDAYS_SET_TOUCH_CONTROLS,
+    KHDAYS_SET_CAMERA_ZOOM, /* the game's 3D field of view, a percent */
     KHDAYS_SET_PACE,
     KHDAYS_SET_SHOW_FPS,
     KHDAYS_SET_BACKEND,

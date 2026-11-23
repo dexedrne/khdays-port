@@ -7,8 +7,10 @@ own picture reports (host/app/window.c) at picture 300 (the title).
 
 Single screen (the phone's default) FILLS the window (the owner's rule, 2026-11-21): what is lit must be
 the whole window, edge to edge, under the unsafe margins too -- give or take FILL_SLACK pixels of
-rounding -- and the layout line must say how the picture covers it. The two-screen layouts (stacked, side
-by side) keep the old fit: lit inside the safe area.
+rounding -- and the layout line must say how the picture covers it. Upright the game's picture lies across
+the window's whole width at its top (all of the DS's 256 columns) and the room below it is covered by the
+lower screen dimmed, so the lit box is still the whole window. The two-screen layouts (stacked, side by
+side) keep the old fit: lit inside the safe area.
 """
 import argparse
 import os

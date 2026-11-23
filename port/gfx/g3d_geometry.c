@@ -126,6 +126,7 @@ static struct {
 
     uint8_t viewport[4];       /* x1, y1, x2, y2 */
     int32_t widen, widen_next; /* the list being built's horizontal clip, the next list's */
+    int32_t zoom;              /* the field of view, 1/WIDEN_ONE of the game's own (khdays_g3d_set_zoom) */
     int hud;                   /* the polygons sent now are the HUD's */
     int marker;                /* selection art in the 3D layer, after the world's polygons */
     int clip_owner;            /* mod polygons sent are a clip volume's owner's (khdays_g3d_set_clip_owner) */
@@ -148,6 +149,22 @@ static struct {
     int16_t vec_result[3];
     uint32_t irq_mode; /* GXSTAT bits 30-31 */
 } g;
+
+/* The field of view now (g.zoom, WIDEN_ONE the game's own): a wider one takes the projection's x and y
+ * smaller, so more of the world falls inside the DS's screen -- the game's field camera sits too close on a
+ * phone's display (owner, 2026-11-22). It is the game's world only: the HUD's 3D (g.hud, a portrait's
+ * model) keeps its place on the screen, and a projection with no perspective (w always 1 -- a screen-space
+ * picture, a fade, Sora's memories) covers the screen whole, which shrinking would undo. */
+static int32_t zoom_now(void)
+{
+    if (g.zoom == WIDEN_ONE || g.hud) {
+        return WIDEN_ONE;
+    }
+    if (g.proj.m[3] == 0 && g.proj.m[7] == 0 && g.proj.m[11] == 0) {
+        return WIDEN_ONE; /* orthographic */
+    }
+    return g.zoom;
+}
 
 /* Parameter words per command; 0 for one that takes none. */
 static const int8_t param_count[0x80] = {
@@ -310,6 +327,7 @@ void khdays_g3d_reset(void)
     g.viewport[2] = 255;
     g.viewport[3] = 191;
     g.widen = g.widen_next = WIDEN_ONE;
+    g.zoom = WIDEN_ONE;
     for (int i = 0; i < 4; ++i) {
         clear_list(&lists[i]);
     }
@@ -835,6 +853,14 @@ static void vertex(int32_t x, int32_t y, int32_t z)
                     12);
     c.w = (int32_t)(((int64_t)x * m->m[3] + (int64_t)y * m->m[7] + (int64_t)z * m->m[11] + ((int64_t)m->m[15] << 12)) >>
                     12);
+    {
+        /* the field of view ([video] camera_zoom): the clip x and y taken smaller, a wider camera */
+        const int32_t zk = zoom_now();
+        if (zk != WIDEN_ONE) {
+            c.x = (int32_t)(((int64_t)c.x * zk) >> 12);
+            c.y = (int32_t)(((int64_t)c.y * zk) >> 12);
+        }
+    }
     c.r = expand5(g.color[0]);
     c.g = expand5(g.color[1]);
     c.b = expand5(g.color[2]);
@@ -895,10 +921,20 @@ static void vertex(int32_t x, int32_t y, int32_t z)
 
 void khdays_g3d_matrices(float position[16], float vector[16], float projection[16])
 {
+    const int32_t zk = zoom_now();
+    const float z = (float)zk / 4096.0f;
     for (int i = 0; i < 16; ++i) {
         position[i] = (float)g.pos.m[i] / 4096.0f;
         vector[i] = (float)g.vec.m[i] / 4096.0f;
         projection[i] = (float)g.proj.m[i] / 4096.0f;
+    }
+    if (zk != WIDEN_ONE) {
+        /* the field of view: the projection's x and y outputs taken smaller (a mod's model, an enemy's
+         * drawn where the game's own 3D puts the world: vertex() takes its polygons the same way) */
+        for (int r = 0; r < 4; ++r) {
+            projection[r * 4 + 0] *= z;
+            projection[r * 4 + 1] *= z;
+        }
     }
 }
 
@@ -1576,6 +1612,20 @@ void khdays_g3d_set_marker(int on)
 void khdays_g3d_set_widen(float k)
 {
     g.widen_next = (int32_t)lroundf(k * WIDEN_ONE);
+}
+
+void khdays_g3d_set_zoom(float k)
+{
+    /* the factor the projection's x and y are drawn at ([video] camera_zoom's inverse -- 1 the game's own
+     * field of view, less a wider one), held to half and twice it */
+    int32_t z = k > 0.0f ? (int32_t)lroundf(k * (float)WIDEN_ONE) : WIDEN_ONE;
+    if (z < WIDEN_ONE / 2) {
+        z = WIDEN_ONE / 2;
+    }
+    if (z > WIDEN_ONE * 2) {
+        z = WIDEN_ONE * 2;
+    }
+    g.zoom = z;
 }
 
 /* --- Commands ----------------------------------------------------------------- */

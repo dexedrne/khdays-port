@@ -458,12 +458,12 @@ static int tall_rows(int cols)
         return 0;
     }
     if (fill_now()) {
-        /* Filled, upright: with the lower-screen view on, the picture across the window's width at its top and
-         * the view in the room below it (view_below), the rest of that room covered by the lower screen, dimmed
-         * (draw_fill); with the view off, no room below: the picture covers the whole window (0 here) */
-        if (!lower_view) {
-            return 0;
-        }
+        /* Filled, upright: the picture across the window's width at its top -- all of the DS's 256 columns,
+         * not a covering by height cut down to 135 of them -- and the room below it covered by the lower
+         * screen, dimmed (draw_fill), the lower-screen view there when it is asked for (view_below). It used
+         * to be the covering that the *view being off* chose; that also made the 2D and the picture 1.9x
+         * landscape's pixels for the same display, the phone's 40 pictures a second upright (owner,
+         * 2026-11-22). 0 only when there is no room: the picture then covers the window as in landscape. */
         rows = (int)((double)cols * ph / pw); /* (OVERSCAN covers the window with it: no row to spare) */
         return rows > H ? rows : H;
     }
@@ -511,6 +511,18 @@ static SDL_FRect fill_at(int made, int *rows)
         *rows = tall > H ? tall : H;
     }
     return at;
+}
+
+/* FILL, covering: the same at the presentation's own 192 rows (no room below), for a picture with no lower
+ * screen to cover that room with: OVERSCAN covers the window with it, its overflow cut. */
+static SDL_FRect fill_at_cover(int made, int *rows)
+{
+    const float k = made > 0 && made < columns ? (float)columns / (float)made : 1.0f;
+    if (rows != NULL) {
+        *rows = H;
+    }
+    return (SDL_FRect){((float)columns - (float)made * k) / 2, ((float)H - (float)H * k) / 2, (float)made * k,
+                       (float)H * k};
 }
 
 /* FILL: the HUD's frame for a one-screen picture `made` DS columns wide (ui/composition.h
@@ -2357,6 +2369,17 @@ int khdays_host_graphics_flags(void)
     return graphics_flags;
 }
 
+/* Read by the game thread each VBlank (runtime/display/display.c, khdays_g3d_set_zoom): the factor the 3D's
+ * projection's x and y are drawn at, in thousandths (1000 the game's own field of view, less a wider one:
+ * [video] camera_zoom, a percent, inverted here). */
+static volatile int camera_zoom = 1000;
+
+float khdays_host_camera_zoom(void)
+{
+    const int z = camera_zoom;
+    return z > 0 ? (float)z / 1000.0f : 1.0f;
+}
+
 #ifdef KHDAYS_MOBILE
 static int mobile_layout;
 static SDL_FRect stylus_rect;
@@ -2390,6 +2413,9 @@ void khdays_present_set_video(const KhdaysVideo *v)
         backend_change = 1; /* the window remakes the renderer with it (khdays_present_lost) */
     }
     video = *v;
+    /* [video] camera_zoom, a percent of the game's field of view (115: 15% wider): the game thread draws the
+     * projection at its inverse (100000 / 115 = 870 thousandths) */
+    camera_zoom = video.camera_zoom > 0 ? 100000 / video.camera_zoom : 1000;
     khdays_composition_set_hud_size(video.hud_size);
 #ifdef KHDAYS_MOBILE
     /* the compositions' `phone` sections, their screens whole and their backdrops covering the picture */
@@ -2724,20 +2750,23 @@ static SDL_FRect cover_part(SDL_FRect from, SDL_FRect to)
  * below the picture); `is_lower`: the picture is the lower screen itself (a list's).
  *
  * Lying: the presentation is the picture, `columns` wide (as the window's width takes at 192 rows) and
- * covering the window; the view over it. Upright with the view on: the picture across the width at the
- * top, the view below as large as fits, the rest of the room below covered by the lower screen dimmed;
- * upright with the view off: the picture covers the whole window, its sides cut. */
+ * covering the window; the view over it. Upright: the picture across the window's width at the top (the
+ * DS's 256 columns whole), the room below it covered by the lower screen dimmed, the view there when it
+ * is asked for (below the picture, or over it when the folded phone has no room). */
 static void draw_fill(SDL_Texture *pic, const SDL_FRect *from, int made, int composed, SDL_Texture *lower,
                       SDL_FRect lower_from, int is_lower)
 {
     int rows;
     const int tall = tall_rows(columns);
-    const SDL_FRect at = fill_at(made, &rows); /* (as wide as the presentation, its overflow cut) */
+    /* upright, the room below the picture is covered by the lower screen: without one to cover it (the
+     * first pictures, before its texture is drawn) the picture covers the window as it does lying */
+    const int room = tall > H && lower != NULL;
+    const SDL_FRect at = room ? fill_at(made, &rows) : fill_at_cover(made, &rows);
     const float k = made > 0 && made < columns ? (float)columns / (float)made : 1.0f;
     SDL_FRect view, vis;
     present_size_as(columns, rows, 1);
     picture_at = at;
-    if (tall > H && lower != NULL) {
+    if (room) {
         /* the room below the picture, covered by the lower screen, dimmed: no black (the view goes over it) */
         const SDL_FRect room = {0.0f, (float)H, (float)columns, (float)(rows - H)};
         const SDL_FRect part = cover_part(lower_from, room);

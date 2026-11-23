@@ -520,6 +520,10 @@ static void build_video(Builder *b, KhdaysProfile *w)
      * or inside its safe area (fit); takes at once (host/render/gpu_present.c) */
     needs_graphics_card(b, add_choice(b, KHDAYS_SET_PICTURE_FIT, TXT_VIDEO_PICTURE_FILL, &v->picture_fit, fill_fit, 2),
                         TXT_VIDEO_FILL_NOTE);
+    /* the game's 3D field of view, a percent (the camera further away on the phone's display): takes at once
+     * (runtime/display/display.c reads it each VBlank) */
+    needs_graphics_card(b, add_number(b, KHDAYS_SET_CAMERA_ZOOM, TXT_VIDEO_CAMERA_ZOOM, &v->camera_zoom, 100, 160, 5),
+                        TXT_VIDEO_CAMERA_ZOOM_NOTE);
     static const char *touch_choices[3];
     touch_choices[0] = khdays_text(TXT_TOUCH_AUTO);
     touch_choices[1] = khdays_text(TXT_ON);

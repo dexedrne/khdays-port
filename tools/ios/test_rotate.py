@@ -21,8 +21,9 @@ picture report after each turn ("!report"). Nothing restarts between the turns.
           under the settings menu.
 
 Checked after each turn: the picture read back has the window's new size, is lit, and lies inside the
-safe area; the console says the new orientation; the game's picture spans the safe area's width upright
-(at its top) and its height lying (in its middle); the lower-screen view is below the picture upright and
+safe area; the console says the new orientation; the game's picture spans the window's width upright
+(at its top, the room below it covered by the lower screen dimmed) and the window lying (in its middle);
+the lower-screen view is below the picture upright and
 over it lying, inside the safe area, and the stylus rectangle is the view's; the camera keeps turning
 while the stick is held across the turns; the sound stream is opened once and never closed; the game is
 still running at the end.
@@ -208,9 +209,9 @@ def check_shape(c, lines, what, shape, at, view, least, one_picture, inset=False
     c.check(f"{what}: at least {least}% is lit", r.share >= least, detail)
     edges = (r.box[0] <= FILL_SLACK and r.box[1] <= FILL_SLACK and r.box[2] >= w - 1 - FILL_SLACK and
              r.box[3] >= h - 1 - FILL_SLACK)
-    if black_edges is None and upright and view == "below":
-        # the room under the view: the lower screen, dimmed, covering it -- its own dark rows (the field's DAY panel,
-        # black on the DS) may leave the window's foot unlit; the other three edges must be lit
+    if black_edges is None and upright:
+        # the room under the picture (the view below it, or the lower screen dimmed when the view is off): its own dark
+        # rows (the field's DAY panel, black on the DS) may leave the window's foot unlit; the other three edges lit
         c.check(f"{what}: what is lit reaches the window's top and sides", r.box[0] <= FILL_SLACK and r.box[1] <= FILL_SLACK and
                 r.box[2] >= w - 1 - FILL_SLACK, detail)
         if not edges:
@@ -222,9 +223,10 @@ def check_shape(c, lines, what, shape, at, view, least, one_picture, inset=False
         print(f"{c.name}: {what}: not lit to every edge, allowed: {black_edges} ({detail})")
     c.check(f"{what}: the console says the picture covers the window", r.fill.startswith(f"fill: ") and
             f"covering the window {w}x{h} " in r.fill, r.fill)
-    if upright and view is not None:
-        # (the view below it, or over it when played by touch and the keys leave too little room below)
-        c.check(f"{what}: upright with the view, the picture spans the window's width at its top",
+    if upright:
+        # the picture across the window's whole width at its top -- all of the DS's 256 columns, the room below it
+        # covered by the lower screen (the view there when it is asked for, or under it when the keys leave room)
+        c.check(f"{what}: upright, the picture spans the window's width at its top",
                 r.picture[0] <= 1 and r.picture[0] + r.picture[2] >= w - 1 and r.picture[1] <= 1, detail)
     else:
         c.check(f"{what}: the game's picture covers the window",

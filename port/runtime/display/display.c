@@ -1613,6 +1613,8 @@ void khdays_display_vblank(u32 frame)
             }
         }
         khdays_g3d_set_widen(widen);
+        /* the field of view ([video] camera_zoom): the game's camera further away on the phone's display */
+        khdays_g3d_set_zoom(khdays_host_camera_zoom());
     }
     khdays_ui_hud_settings_frame();
     khdays_ui_kh2_hp_frame(frame);

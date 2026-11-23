@@ -1167,6 +1167,12 @@ if(NOT WIN32)
         target_link_libraries(khdays-movie-hd-core-test PRIVATE SDL3::SDL3 m)
         add_test(NAME khdays-movie-hd-core COMMAND khdays-movie-hd-core-test)
         set_tests_properties(khdays-movie-hd-core PROPERTIES TIMEOUT 120 ENVIRONMENT "SDL_AUDIODRIVER=dummy")
+        # [video] camera_zoom (gfx/g3d.h khdays_g3d_set_zoom): a wider field of view takes the perspective
+        # projection's x and y smaller (the game's own vertices and mods' models alike); the HUD's own 3D and
+        # an orthographic picture keep their size and place.
+        add_executable(khdays-g3d-zoom-test tests/g3d_zoom_test.c)
+        target_link_libraries(khdays-g3d-zoom-test PRIVATE khdays-gfx m)
+        add_test(NAME khdays-g3d-zoom COMMAND khdays-g3d-zoom-test)
     endif()
     # Upstream's tests listed below for Windows that need none of it, on Linux too: the same statements,
     # written out by tools/ios/upstream_tests.py (make khdays-upstream-tests, then ctest).

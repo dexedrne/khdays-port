@@ -646,6 +646,19 @@ static const char *const texts[TXT_COUNT][5] = {
          "restano uguali.",
          "Una pantalla: el tamaño de las piezas del HUD, de 1 a 8 (4 por defecto); los diálogos "
          "conservan el suyo."},
+    [TXT_VIDEO_CAMERA_ZOOM] = {"Camera: wider", "Caméra : plus large", "Kamera: weiter", "Camera: più ampia",
+                               "Cámara: más amplia"},
+    [TXT_VIDEO_CAMERA_ZOOM_NOTE] =
+        {"The game's 3D field of view, a percent of the DS's own: 100 is the DS's camera, 115 the phone's "
+         "first run. The HUD, the menus and the touch keys keep their place.",
+         "Le champ de la 3D du jeu, en pourcentage de celui de la DS : 100 est la caméra de la DS, 115 au "
+         "premier lancement sur téléphone. Le HUD, les menus et les touches tactiles ne bougent pas.",
+         "Das Blickfeld der 3D des Spiels, in Prozent des DS-eigenen: 100 ist die Kamera der DS, 115 beim "
+         "ersten Start auf dem Telefon. HUD, Menüs und Touch-Tasten bleiben, wo sie sind.",
+         "Il campo visivo della 3D del gioco, in percento di quello del DS: 100 è la camera del DS, 115 al "
+         "primo avvio sul telefono. HUD, menu e tasti touch restano al loro posto.",
+         "El campo de visión de la 3D del juego, en porcentaje del de la DS: 100 es la cámara de la DS, 115 "
+         "en el primer arranque en el teléfono. El HUD, los menús y las teclas táctiles no se mueven."},
     [TXT_VIDEO_ASPECT] = {"Aspect ratio", "Format d'image", "Seitenverhältnis", "Proporzioni", "Proporción"},
     [TXT_VIDEO_ASPECT_NOTE] = {"The 3D view widens; the HUD keeps to the corners, the menus stay in the middle.",
                                "La vue 3D s'élargit ; l'interface reste dans les coins, les menus au milieu.",
