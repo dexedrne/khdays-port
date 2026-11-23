@@ -25,8 +25,8 @@ the settings menu and its hints, the controller notice.
 
 Checked at each report: every HUD piece and overlay is inside the visible safe area; in the field the
 command deck, the party's gauges and the hearts' counter are there (and, lying, the map); the FPS line is
-there; with the view on, the view is a piece inside (lying) or the view below the picture ends above the
-visible area's foot (upright); the settings menu is inside; the game is still running at the end.
+there; with the view on, the view is a piece inside, over the picture, in both orientations (round 9: no
+lower screen below the picture upright); the settings menu is inside; the game is still running at the end.
 """
 import argparse
 from pathlib import Path
@@ -125,13 +125,13 @@ def field_case(exe, rom, out):
     steps = [
         "2400!report",                                   # the console's window lying
         press(2450, "touchpad"), "2520!report",          # the view on, over the picture
-        turn(2560, console_p), "2680!report",            # upright: the view below
+        turn(2560, console_p), "2680!report",            # upright: the view over the picture
         press(2720, "touchpad"), "2790!report",          # upright, the view off: the picture covers
         turn(2830, lying), "2950!report",                # the unfolded phone lying (its side margins)
         turn(2990, upright), "3110!report",              # upright
         turn(3150, folded_l), "3270!report",             # folded lying
         turn(3310, folded_p), "3430!report",             # folded upright
-        press(3470, "touchpad"), "3540!report",          # folded upright, the view below
+        press(3470, "touchpad"), "3540!report",          # folded upright, the view over the picture
         press(3580, "touchpad"),
         turn(3620, console_l), "3740!report",            # the console's window again
         press(3780, "guide"), "3850!report",             # the settings menu
@@ -142,13 +142,13 @@ def field_case(exe, rom, out):
     ]
     plan = [("console lying", console_l, {"field": True}),
             ("console lying, the view on", console_l, {"field": True, "view": "over"}),
-            ("console upright, the view below", console_p, {"field": True, "view": "below"}),
+            ("console upright, the view on", console_p, {"field": True, "view": "over"}),
             ("console upright, the view off", console_p, {"field": True}),
             ("unfolded lying", lying, {"field": True}),
             ("unfolded upright", upright, {"field": True}),
             ("folded lying", folded_l, {"field": True}),
             ("folded upright", folded_p, {"field": True}),
-            ("folded upright, the view below", folded_p, {"field": True, "view": "below"}),
+            ("folded upright, the view on", folded_p, {"field": True, "view": "over"}),
             ("console lying again", console_l, {"field": True}),
             ("console lying, the settings menu", console_l, {"settings": True, "fps": False}),
             ("console upright, the settings menu", console_p, {"settings": True, "fps": False}),

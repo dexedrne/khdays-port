@@ -26,6 +26,9 @@
 #include <mach/vm_map.h>
 #else
 #include <fcntl.h>
+#if defined(__linux__)
+#include <sys/syscall.h>
+#endif
 #endif
 #endif
 
@@ -474,11 +477,25 @@ int khdays_memory_map(void)
     int mapped = map_ram(ram);
     CloseHandle(ram);
 #else
+#if defined(__linux__) && defined(SYS_memfd_create)
+    /* Main RAM in an anonymous memory file, not a tmpfile: tmpfile() lands in TMPDIR (on this machine a
+     * tmpfs whose user quota other processes can fill), and when that backing store cannot take a page
+     * the emulated RAM's first write is a SIGBUS -- seen at boot, 2026-11-23, with the quota used up by
+     * unrelated scratch files. memfd never touches a filesystem. */
+    int mapped;
+    {
+        const int fd = (int)syscall(SYS_memfd_create, "khdays main RAM", 1 /* MFD_CLOEXEC */);
+        if (fd < 0) return fail("main RAM memory file", 0x02000000);
+        mapped = (ftruncate(fd, MAIN_RAM_SIZE) == 0 || fail("size main RAM", 0x02000000)) && map_ram(fd);
+        close(fd);
+    }
+#else
     FILE *ram = tmpfile();
     if (!ram) return fail("main RAM backing file", 0x02000000);
     int mapped = (ftruncate(fileno(ram), MAIN_RAM_SIZE) == 0 || fail("size main RAM", 0x02000000)) &&
                  map_ram(fileno(ram));
     fclose(ram);
+#endif
 #endif
     if (!mapped) return 0;
     /* The I/O registers' and the IPC/card ports' DS ranges stay inaccessible: the port reaches them. */

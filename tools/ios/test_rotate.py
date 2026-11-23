@@ -12,19 +12,19 @@ picture report after each turn ("!report"). Nothing restarts between the turns.
           pixels: the CPU graphics driver is slow), then: the lower-screen view on and off, lying and
           upright, unfolded and folded, with the right stick held through two turns. Then the
           controller is pulled out: the phone turned upright while the game waits (the picture made for
-          the lying phone is shown whole, not with its sides cut off), a tap plays by touch, and the
-          Screen key shows the view -- which stays clear of the touch keys upright (over the picture
-          unfolded, below it folded).
+          the lying phone is re-laid for the new shape at once), a tap plays by touch, and the
+          Screen key shows the view -- over the picture in both orientations (round 9: no lower screen
+          below the picture upright any more, the owner's single-screen rule).
   inset   the same field with `lower_view = inset` in the settings file: the view smaller, at the right.
   waits   on the title, the phone turned while the game stands still: under the notice of a lost
           controller -- also while the app is in the background, where nothing is presented -- and
           under the settings menu.
 
 Checked after each turn: the picture read back has the window's new size, is lit, and lies inside the
-safe area; the console says the new orientation; the game's picture spans the window's width upright
-(at its top, the room below it covered by the lower screen dimmed) and the window lying (in its middle);
-the lower-screen view is below the picture upright and
-over it lying, inside the safe area, and the stylus rectangle is the view's; the camera keeps turning
+safe area; the console says the new orientation; the game's picture covers the window in both
+orientations (fill: scaled to cover, its sides cut, centred), with no lower screen below it upright;
+the lower-screen view is over the picture, inside the safe area, and the stylus rectangle is the view's;
+the camera keeps turning
 while the stick is held across the turns; the sound stream is opened once and never closed; the game is
 still running at the end.
 """
@@ -183,8 +183,8 @@ def check_shape(c, lines, what, shape, at, view, least, one_picture, inset=False
     `inset`: the settings file's smaller view at the right, else the full one in the middle; `touch`:
     played by touch (no controller: the touch keys are drawn). Single screen FILLS the window (the owner's
     rule, 2026-11-21): what is lit is the whole window, edge to edge, under the unsafe margins too (`black_edges`:
-    the reason the game's own black may leave an edge unlit, None for none), the game's picture covers it (upright
-    with the view on: across its width at its top, the view below), and only the touch keys keep to the safe area.
+    the reason the game's own black may leave an edge unlit, None for none), the game's picture covers it both ways
+    up (round 9: no room below it upright any more), and only the touch keys keep to the safe area.
     `one_picture`: the one-screen picture, else the upper screen of a scene that shows both. Returns the line the
     report ended at."""
     (w, h), margins = shape
@@ -209,25 +209,18 @@ def check_shape(c, lines, what, shape, at, view, least, one_picture, inset=False
     c.check(f"{what}: at least {least}% is lit", r.share >= least, detail)
     edges = (r.box[0] <= FILL_SLACK and r.box[1] <= FILL_SLACK and r.box[2] >= w - 1 - FILL_SLACK and
              r.box[3] >= h - 1 - FILL_SLACK)
-    if black_edges is None and upright:
-        # the room under the picture (the view below it, or the lower screen dimmed when the view is off): its own dark
-        # rows (the field's DAY panel, black on the DS) may leave the window's foot unlit; the other three edges lit
-        c.check(f"{what}: what is lit reaches the window's top and sides", r.box[0] <= FILL_SLACK and r.box[1] <= FILL_SLACK and
-                r.box[2] >= w - 1 - FILL_SLACK, detail)
-        if not edges:
-            print(f"{c.name}: {what}: the foot not lit to the edge, allowed: the dimmed lower screen's own black rows "
-                  f"under the view ({detail})")
-    elif black_edges is None:
+    if black_edges is None:
         c.check(f"{what}: what is lit is the whole window, edge to edge", edges, detail)
     elif not edges:
         print(f"{c.name}: {what}: not lit to every edge, allowed: {black_edges} ({detail})")
     c.check(f"{what}: the console says the picture covers the window", r.fill.startswith(f"fill: ") and
             f"covering the window {w}x{h} " in r.fill, r.fill)
     if upright:
-        # the picture across the window's whole width at its top -- all of the DS's 256 columns, the room below it
-        # covered by the lower screen (the view there when it is asked for, or under it when the keys leave room)
-        c.check(f"{what}: upright, the picture spans the window's width at its top",
-                r.picture[0] <= 1 and r.picture[0] + r.picture[2] >= w - 1 and r.picture[1] <= 1, detail)
+        # round 9 (the owner: a single screen, no bottom screen below the picture): upright is laid out as lying --
+        # the 4:3 picture scaled to cover the window, its sides cut, centred
+        c.check(f"{what}: upright, the game's picture covers the window",
+                r.picture[0] <= 1 and r.picture[1] <= 1 and r.picture[0] + r.picture[2] >= w - 1 and
+                r.picture[1] + r.picture[3] >= h - 1, detail)
     else:
         c.check(f"{what}: the game's picture covers the window",
                 r.picture[0] <= 1 and r.picture[1] <= 1 and r.picture[0] + r.picture[2] >= w - 1 and
@@ -276,8 +269,8 @@ def check_shape(c, lines, what, shape, at, view, least, one_picture, inset=False
         ok = hasattr(r, "keys")
         c.check(f"{what}: the touch keys are drawn (no controller)", ok and r.keys == "drawn" and r.controller == "not connected",
                 f"{r.keys}, a controller {r.controller}" if ok else "no line about the keys")
-        if ok and view is not None and upright:
-            # upright, the view is the DS's lower screen to a finger: no key or stick zone lies over it
+        if ok and view == "below" and upright:
+            # (round 8's layout only: the view below the picture kept clear of the keys)
             c.check(f"{what}: the view ends above the touch keys", r.view[1] + r.view[3] <= r.keys_top + 1,
                     f"the view's foot at {r.view[1] + r.view[3]}, the keys' top at {r.keys_top}")
         if ok:
@@ -363,22 +356,22 @@ def field(exe, rom, pictures, name, settings):
     steps = [
         "2400!report",                                    # lying, no view
         press(2450, "touchpad"), "2520!report",           # lying, the view over the picture
-        turn(2560, upright), "2680!report",               # upright, the view below it
+        turn(2560, upright), "2680!report",               # upright, the view over the picture
         press(2720, "touchpad"), "2790!report",           # upright, no view
         "2820>rx:25000",                                  # the right stick held from here ...
         turn(2880, lying), "3000!report",                 # lying
         turn(3040, folded_up), "3160!report",             # folded upright
         "3200>rx:0",                                      # ... to here, through two turns
-        press(3230, "touchpad"), "3300!report",           # folded upright, the view below
+        press(3230, "touchpad"), "3300!report",           # folded upright, the view over the picture
         turn(3340, folded_lying), "3460!report",          # folded lying, the view over the picture
-        turn(3500, upright), "3620!report",               # unfolded upright, the view below again
+        turn(3500, upright), "3620!report",               # unfolded upright, the view over the picture again
         press(3660, "touchpad"), "3730!report",           # no view
         turn(3770, lying), "3890!report",                 # as it began
         "3930/",                                          # the controller pulled out: the game waits
         turn(3960, upright), "4050!report",               # turned upright while it waits
         "4090!touch=334,300", "4170!report",              # a tap (on no key): played by touch
         "4200!touch=366,911", "4280!report",              # the Screen key (unfolded upright): the view on
-        turn(4320, folded_up), "4440!report",             # folded upright: the view below, above the keys
+        turn(4320, folded_up), "4440!report",             # folded upright: the view over the picture
         turn(4480, lying), "4600!report",                 # lying: over the picture
     ]
     c = Checks(name, play(exe, rom, into_field + " " + " ".join(steps), lying, 900,
@@ -389,24 +382,23 @@ def field(exe, rom, pictures, name, settings):
             "scenes " + " ".join(map(str, scenes)))
     at = c.expect("the tutorial closes", r"situation: frame \d+, tutorial 0x[\da-f]+ -> 0x0")
     inset = settings is not None and "lower_view = inset" in settings
-    plan = [("lying", lying, None), ("lying, the view on", lying, "over"), ("turned upright, the view on", upright, "below"),
+    plan = [("lying", lying, None), ("lying, the view on", lying, "over"), ("turned upright, the view on", upright, "over"),
             ("upright, the view off", upright, None), ("turned lying, the stick held", lying, None),
-            ("folded upright, the stick held", folded_up, None), ("folded upright, the view on", folded_up, "below"),
+            ("folded upright, the stick held", folded_up, None), ("folded upright, the view on", folded_up, "over"),
             ("folded, turned lying, the view on", folded_lying, "over"),
-            ("unfolded upright, the view on", upright, "below"), ("upright, the view off again", upright, None),
+            ("unfolded upright, the view on", upright, "over"), ("upright, the view off again", upright, None),
             ("lying at the end", lying, None)]
     for what, shape, view in plan:
         at = check_shape(c, c.lines, what, shape, at, view, 25.0, True, inset)
     # the controller pulled out with the phone lying; turned upright while the game waits (it sends no
-    # frame of the new width): its picture is shown whole across the safe area, not cut at the sides
+    # frame of the new width): the picture made for the old shape is laid out again for the new one
     at = c.expect("the controller is pulled out: the game waits", r"the gamepad is gone: the game waits", at)
     at = check_shape(c, c.lines, "turned upright while the game waits", upright, at, None, 8.0, True)
     at = c.expect("a tap: played by touch from here", r"host: the game goes on", at)
     at = check_shape(c, c.lines, "upright, by touch", upright, at, None, 25.0, True, inset, True)
     at = c.expect("the Screen key shows the view", r"lower view: on", at)
-    # unfolded upright the room between the picture and the keys is too small for the view: over the picture
     at = check_shape(c, c.lines, "upright, by touch, the view on", upright, at, "over", 25.0, True, inset, True)
-    at = check_shape(c, c.lines, "folded upright, by touch, the view on", folded_up, at, "below", 25.0, True, inset, True)
+    at = check_shape(c, c.lines, "folded upright, by touch, the view on", folded_up, at, "over", 25.0, True, inset, True)
     at = check_shape(c, c.lines, "lying, by touch, the view on", lying, at, "over", 25.0, True, inset, True)
     # the right stick held through two turns: the camera turns before the first, between them and after the second
     held = c.index(r"pad 1 >rx:25000")

@@ -106,7 +106,7 @@ void khdays_present_draw(void);
 const char *khdays_present_note(void);
 #if defined(KHDAYS_IOS) || defined(KHDAYS_MOBILE_TEST)
 /* The phone: the orientation the last picture was laid out for and where it put the game's picture,
- * the lower-screen view (below the picture upright, else over it) and the stylus, in window pixels. */
+ * the lower-screen view (over the picture; round 9: never below it) and the stylus, in window pixels. */
 const char *khdays_present_layout_note(void);
 /* The pieces the last one-screen composition laid out inside the HUD's frame on the filled display (the HUD,
  * the lower-screen view, a dialog's or a list's screen, the title's small menu), in window pixels: how many,

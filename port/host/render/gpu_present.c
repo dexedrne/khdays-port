@@ -443,45 +443,21 @@ static void picture_area(int *pw, int *ph)
 }
 
 #ifdef KHDAYS_MOBILE
-/* The phone held upright (the safe area taller than wide), on one screen: the game's picture goes across
- * the safe area's whole width at its top, and the logical presentation is as tall as the safe area at
- * that size -- `columns` wide, this many rows, the picture in its first 192 -- so that what is below the
- * picture can be drawn on. 0 in landscape: the picture fills the height, in the middle. */
-#define VIEW_GAP 4.0f   /* DS dots between the picture and the lower-screen view below it */
-#define VIEW_LEAST 0.5f /* the view goes below only if it fits there at half the DS's size or more */
-
-static int tall_rows(int cols)
-{
-    int pw = 0, ph = 0, rows;
-    picture_area(&pw, &ph);
-    if (pw <= 0 || ph <= pw) {
-        return 0;
-    }
-    if (fill_now()) {
-        /* Filled, upright: the picture across the window's width at its top -- all of the DS's 256 columns,
-         * not a covering by height cut down to 135 of them -- and the room below it covered by the lower
-         * screen, dimmed (draw_fill), the lower-screen view there when it is asked for (view_below). It used
-         * to be the covering that the *view being off* chose; that also made the 2D and the picture 1.9x
-         * landscape's pixels for the same display, the phone's 40 pictures a second upright (owner,
-         * 2026-11-22). 0 only when there is no room: the picture then covers the window as in landscape. */
-        rows = (int)((double)cols * ph / pw); /* (OVERSCAN covers the window with it: no row to spare) */
-        return rows > H ? rows : H;
-    }
-    /* (a row less than fits: the fit to the safe area keeps one to place the picture by whole rows,
-     * host/app/mobile_touch.c, and the width must stay the safe area's) */
-    rows = (int)((double)cols * ph / pw) - 1;
-    return rows > H ? rows : H;
-}
+/* Round 9 (owner, 2026-11-23: "i dont really care for the bottom screen, i want a single screen
+ * experience"): round 8's presentation with room below the picture upright is gone -- the logical
+ * presentation is the picture's own `columns` x 192 in both orientations. Portrait is laid out as
+ * landscape: [video] picture = fill covers the window, Fit centres it whole inside the safe area; the
+ * lower screen appears only when it is asked for, over the picture (view_below, ui/composition.c's
+ * add_lower_view). */
 
 /* FILL: the window's visible safe area (host/app/mobile_touch.h khdays_mobile_visible: inside the notch, the
- * home bar and clear of the rounded corners) in the units of the presentation `cols` wide that covers the
- * window (its rows those of tall_rows, else the picture's 192), as OVERSCAN places it: centred, its
- * overflow cut. 0 when not filling or with no safe area to say. */
+ * home bar and clear of the rounded corners) in the units of the presentation `cols` x 192 that covers the
+ * window, as OVERSCAN places it: centred, its overflow cut. 0 when not filling or with no safe area. */
 static int visible_presented(int cols, SDL_FRect *r)
 {
     SDL_FRect vis;
     int ow = 0, oh = 0;
-    const int tall = fill_now() ? tall_rows(cols) : 0, rows = tall > H ? tall : H;
+    const int rows = H;
     if (!fill_now() || window == NULL || cols <= 0 || !khdays_mobile_visible(window, &vis, NULL) ||
         !SDL_GetWindowSizeInPixels(window, &ow, &oh) || ow <= 0 || oh <= 0) {
         return 0;
@@ -499,23 +475,9 @@ static int visible_presented(int cols, SDL_FRect *r)
 
 /* FILL: where draw_fill puts a picture `made` DS columns wide in the presentation (`columns` wide, `*rows`
  * high): as wide as the presentation -- made wider (a turn while the game stands still) its sides cut,
- * narrower (a screen of the DS's 256 in a wider presentation) its top and bottom -- lying in its middle,
- * upright with the view at its top. */
+ * narrower (a screen of the DS's 256 in a wider presentation) its top and bottom -- centred both ways, on
+ * the presentation's own 192 rows in either orientation (round 9: no room below the picture upright). */
 static SDL_FRect fill_at(int made, int *rows)
-{
-    const int tall = tall_rows(columns);
-    const float k = made > 0 && made < columns ? (float)columns / (float)made : 1.0f;
-    const SDL_FRect at = {((float)columns - (float)made * k) / 2, tall > H ? 0.0f : ((float)H - (float)H * k) / 2,
-                          (float)made * k, (float)H * k};
-    if (rows != NULL) {
-        *rows = tall > H ? tall : H;
-    }
-    return at;
-}
-
-/* FILL, covering: the same at the presentation's own 192 rows (no room below), for a picture with no lower
- * screen to cover that room with: OVERSCAN covers the window with it, its overflow cut. */
-static SDL_FRect fill_at_cover(int made, int *rows)
 {
     const float k = made > 0 && made < columns ? (float)columns / (float)made : 1.0f;
     if (rows != NULL) {
@@ -630,48 +592,15 @@ static void note_hud_pieces(const KhdaysComposition *c, int made, int framed)
     }
 }
 
-/* Whether the lower-screen view goes below the picture (portrait, with room for it), and where in that
- * presentation: as large as fits, in the middle; the inset style 0.62 of that, at the right. Without
- * the room (a nearly square window) it goes over the picture, as in landscape.
- *
- * Played by touch (no gamepad: the touch keys and the stick's zone are at the safe area's foot), the
- * room ends where they begin: the view is the DS's lower screen to a finger, and a key over it would
- * take the finger first, leaving that part of the lower screen out of reach. Where that leaves less
- * than VIEW_LEAST (the unfolded phone upright), the view goes over the picture, clear of every key. */
+/* The lower-screen view never goes below the picture any more (round 9: portrait has no room for it, the
+ * owner wants a single screen). Everywhere it is asked for, it is drawn over the picture, whole in the
+ * middle or the 0.62 inset at the right, inside the visible safe area -- the composition's own placement
+ * (ui/composition.c add_lower_view), or draw_fill's / draw_screens' for a scene showing both screens. */
 static int view_below(int cols, SDL_FRect *at)
 {
-    float room = (float)tall_rows(cols) - (float)H - VIEW_GAP;
-    float k;
-    if (khdays_mobile_keys_visible() && window != NULL) {
-        SDL_Rect safe;
-        const float keys = khdays_mobile_keys_top(window);
-        if (keys >= 0 && khdays_mobile_safe(window, &safe) && safe.w > 0) {
-            /* the keys' top in this presentation's rows: it is `cols` wide across the safe area, from its top */
-            room = SDL_min(room, (keys - (float)safe.y) * (float)cols / (float)safe.w - (float)H - VIEW_GAP);
-        }
-    }
-    /* filling: the room ends at the visible safe area's foot (the home bar) and its sides (the rounded corners) */
-    float left = 0.0f, across = (float)cols;
-    SDL_FRect vis;
-    if (visible_presented(cols, &vis)) {
-        room = SDL_min(room, vis.y + vis.h - (float)H - VIEW_GAP);
-        left = SDL_max(0.0f, vis.x);
-        across = SDL_min((float)cols, vis.x + vis.w) - left;
-    }
-    k = SDL_min(across / (float)W, room / (float)H);
-    if (!video.one_screen || k < VIEW_LEAST) {
-        return 0;
-    }
-    if (video.lower_view == KHDAYS_LOWER_VIEW_INSET) {
-        k *= 0.62f;
-    }
-    if (at != NULL) {
-        at->w = (float)W * k;
-        at->h = (float)H * k;
-        at->x = video.lower_view == KHDAYS_LOWER_VIEW_INSET ? left + across - at->w - 4.0f : left + (across - at->w) / 2.0f;
-        at->y = (float)H + VIEW_GAP;
-    }
-    return 1;
+    (void)cols;
+    (void)at;
+    return 0;
 }
 #endif
 
@@ -709,9 +638,9 @@ static float shown_scale(void)
     sy = (float)ph / (float)rows;
 #ifdef KHDAYS_MOBILE
     if (fill_now()) {
-        /* covering the window (OVERSCAN): the larger of the two, over the presentation's rows upright */
-        const int tall = tall_rows(across);
-        sy = (float)ph / (float)(tall > H ? tall : H);
+        /* covering the window (OVERSCAN): the larger of the two, over the presentation's 192 rows (round 9:
+         * no room below the picture in either orientation) */
+        sy = (float)ph / (float)H;
         return sx > sy ? sx : sy;
     }
 #endif
@@ -830,7 +759,7 @@ static void layout(void)
 {
     const KhdaysTwoScreensLayout two = khdays_two_screens_layout(side_by_side(), khdays_present_columns(), W, W);
     columns = khdays_present_columns();
-    lower_view_apply(); /* (the phone turned: the view below the picture, or over it) */
+    lower_view_apply(); /* (the phone turned: the view over the picture, always) */
     /* one screen: each frame sets what it shows (khdays_present_draw); until then, leave it */
     presented_w = presented_h = 0;
     present_size(video.one_screen ? columns : two.width, video.one_screen ? H : two.height);
@@ -1701,7 +1630,7 @@ int khdays_present_lower_view(void)
 }
 
 /* Tells the composition of the lower-screen view: whether it is on, its style, and whether the window
- * draws it apart (the phone held upright with room below the picture) instead of in the picture. */
+ * draws it apart instead of in the picture (round 9: never -- it is always drawn over the picture). */
 static void lower_view_apply(void)
 {
     khdays_composition_set_lower_view(lower_view, video.lower_view == KHDAYS_LOWER_VIEW_INSET);
@@ -2492,8 +2421,9 @@ static void present_size_as(int w, int h, int cover)
                          (double)SDL_max(0.0f, ((float)w * k - (float)ow) / 2), (double)SDL_max(0.0f, ((float)h * k - (float)oh) / 2));
         }
     } else if (drawing_mobile && renderer && khdays_mobile_safe(window, &safe)) {
-        /* upright, every picture sits at the safe area's top (the free space below it); else in its middle */
-        khdays_mobile_view_at(renderer, safe, w, h, khdays_mobile_portrait(window));
+        /* a picture that does not fill the window is centred in the safe area, both ways up (round 9: no
+         * room below it upright any more; the owner asked for the game picture centred, letterboxed) */
+        khdays_mobile_view_at(renderer, safe, w, h, false);
         picture_at = (SDL_FRect){0, 0, (float)w, (float)h};
         SDL_snprintf(fill_note, sizeof(fill_note), "fit: %dx%d inside the safe area", w, h);
     }
@@ -2724,60 +2654,31 @@ const char *khdays_present_note(void)
 }
 
 #ifdef KHDAYS_MOBILE
-/* Of `from` (a texture's rectangle), the middle part with the shape of `to`: the texture covering `to`. */
-static SDL_FRect cover_part(SDL_FRect from, SDL_FRect to)
-{
-    if (from.w > 0 && from.h > 0 && to.w > 0 && to.h > 0) {
-        if (from.w / from.h > to.w / to.h) {
-            const float w = from.h * to.w / to.h;
-            from.x += (from.w - w) / 2;
-            from.w = w;
-        } else {
-            const float h = from.w * to.h / to.w;
-            from.y += (from.h - h) / 2;
-            from.h = h;
-        }
-    }
-    return from;
-}
-
 /* FILL (fill_now): the picture `pic` (its rectangle `from`, `made` DS columns wide) over the whole window.
  * `composed`: it is the one-screen picture, whose composition may hold the lower-screen view; else the
  * upper screen of a scene that shows both (a composition's "side by side" or "stacked": the boot logos and
  * the title without a mod's HD pictures, the camp's menu, the shop, a mission's results, the credits, the
  * field with the 3D on both screens and the view on) -- single screen there too, the lower screen whole
- * with the lower-screen view. `lower` / `lower_from`: the lower screen (the view, and upright the room
- * below the picture); `is_lower`: the picture is the lower screen itself (a list's).
+ * with the lower-screen view. `lower` / `lower_from`: the lower screen (the view); `is_lower`: the picture
+ * is the lower screen itself (a list's).
  *
- * Lying: the presentation is the picture, `columns` wide (as the window's width takes at 192 rows) and
- * covering the window; the view over it. Upright: the picture across the window's width at the top (the
- * DS's 256 columns whole), the room below it covered by the lower screen dimmed, the view there when it
- * is asked for (below the picture, or over it when the folded phone has no room). */
+ * Both orientations (round 9): the presentation is the picture, `columns` wide (as the window's width
+ * takes at 192 rows) and covering the window, centred; the lower-screen view, when asked for, over it.
+ * The one exception: upright, a scene that shows the two DS screens raw (a game menu: the camp's, the
+ * shop's, a mission's results -- `composed` 0) cannot cover a portrait window without cutting its left
+ * and right content (the camp menu's list starts at the DS screen's left edge, the pause's item), so it
+ * is fitted by width, whole and centred ("as large as fits", the owner, 2026-11-23), its bars black;
+ * the field's own one-screen picture still covers and crops per the Picture setting. */
 static void draw_fill(SDL_Texture *pic, const SDL_FRect *from, int made, int composed, SDL_Texture *lower,
                       SDL_FRect lower_from, int is_lower)
 {
     int rows;
-    const int tall = tall_rows(columns);
-    /* upright, the room below the picture is covered by the lower screen: without one to cover it (the
-     * first pictures, before its texture is drawn) the picture covers the window as it does lying */
-    const int room = tall > H && lower != NULL;
-    const SDL_FRect at = room ? fill_at(made, &rows) : fill_at_cover(made, &rows);
+    const SDL_FRect at = fill_at(made, &rows);
     const float k = made > 0 && made < columns ? (float)columns / (float)made : 1.0f;
+    const int fit_screen = !composed && khdays_mobile_portrait(window);
     SDL_FRect view, vis;
-    present_size_as(columns, rows, 1);
+    present_size_as(columns, rows, !fit_screen);
     picture_at = at;
-    if (room) {
-        /* the room below the picture, covered by the lower screen, dimmed: no black (the view goes over it) */
-        const SDL_FRect room = {0.0f, (float)H, (float)columns, (float)(rows - H)};
-        const SDL_FRect part = cover_part(lower_from, room);
-        SDL_SetTextureScaleMode(lower, video.smooth_scaling ? SDL_SCALEMODE_LINEAR : SDL_SCALEMODE_NEAREST);
-        SDL_RenderTexture(renderer, lower, &part, &room);
-        SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND);
-        SDL_SetRenderDrawColor(renderer, 0, 0, 0, 110); /* (dimmed: the view over it stands out) */
-        SDL_RenderFillRect(renderer, &room);
-        SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_NONE);
-        SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
-    }
     if (is_lower) {
         stylus_rect = (SDL_FRect){at.x + ((float)made - (float)W) / 2 * k, at.y, (float)W * k, (float)H * k};
     }
@@ -2811,7 +2712,14 @@ static void draw_fill(SDL_Texture *pic, const SDL_FRect *from, int made, int com
          * inset (0.62 of that) at the right */
         float kv = video.lower_view == KHDAYS_LOWER_VIEW_INSET ? 0.62f : 1.0f;
         float x0 = 0.0f, y0 = 0.0f, across = (float)columns, high = (float)H;
-        if (visible_presented(columns, &vis)) {
+        if (fit_screen) {
+            /* upright, on the picture's own place (the same whole screen, there): the picture is fitted
+             * inside the safe area and this is its box in the presentation's units */
+            x0 = at.x;
+            y0 = at.y;
+            across = at.w;
+            high = at.h;
+        } else if (visible_presented(columns, &vis)) {
             /* inside the visible safe area (as the composition's view: ui/composition.c add_lower_view) */
             x0 = SDL_max(0.0f, vis.x);
             y0 = SDL_max(0.0f, vis.y);
@@ -2879,7 +2787,7 @@ static void draw_screens(void)
     if (fill_now() && one_drawn) {
         int made = 0, wl = 0;
         SDL_Texture *picture = khdays_gfx_render_picture(renderer, &made);
-        /* the other screen, for the view and the room below the picture upright */
+        /* the other screen, for the lower-screen view */
         SDL_Texture *other = screen_texture(one_kind == KHDAYS_SCREENS_LOWER ? port2d_upper : !port2d_upper, &wl);
         draw_way = picture != NULL ? "the one-screen picture" : "nothing (no one-screen picture)";
         if (picture != NULL) {
@@ -2896,8 +2804,9 @@ static void draw_screens(void)
         return;
     }
     if (fill_now() && (port2d_drawn || screens != NULL)) {
-        /* a scene that shows both screens: on the phone's single screen the upper one fills the window and the
-         * lower one shows whole with the lower-screen view (the 1x screens alike, before the port's 2D draws) */
+        /* a scene that shows both screens: on the phone's single screen the upper one covers the window and
+         * the lower one shows whole with the lower-screen view, over it (the 1x screens alike, before the
+         * port's 2D draws) */
         int wu = W, wl = W;
         SDL_Texture *upper = port2d_drawn ? screen_texture(port2d_upper, &wu) : screens;
         SDL_Texture *lower = port2d_drawn ? screen_texture(!port2d_upper, &wl) : screens;
@@ -2920,8 +2829,8 @@ static void draw_screens(void)
         int made = 0;
         SDL_Texture *picture = khdays_gfx_render_picture(renderer, &made);
 #ifdef KHDAYS_MOBILE
-        const int tall = tall_rows(columns); /* upright: the picture at the top, room below it */
-        present_size(columns, tall > H ? tall : H);
+        /* (round 9: no room below the picture upright either: the picture's 192 rows, centred) */
+        present_size(columns, H);
 #else
         present_size(columns, H);
 #endif
@@ -2931,9 +2840,9 @@ static void draw_screens(void)
             /* A picture made wider than the presentation is now (the phone turned upright, or unfolded,
              * while the game stands still -- the settings menu, the wait for a gamepad -- and sends no
              * frame of the new width): shown whole at the size that fits, not with its sides (the HUD's)
-             * cut off; at the top upright, in the middle lying. The game's next frame has the new width. */
+             * cut off, in the middle both ways up. The game's next frame has the new width. */
             const float k = made > columns ? (float)columns / (float)made : 1.0f;
-            const SDL_FRect at = {((float)columns - (float)made * k) / 2, tall > H ? 0.0f : ((float)H - (float)H * k) / 2,
+            const SDL_FRect at = {((float)columns - (float)made * k) / 2, ((float)H - (float)H * k) / 2,
                                   (float)made * k, (float)H * k};
             picture_at = at;
             if (one_kind == KHDAYS_SCREENS_LOWER) {
@@ -2965,8 +2874,7 @@ static void draw_screens(void)
             }
 #ifdef KHDAYS_MOBILE
             {
-                /* upright with room below: the lower-screen view there, the lower screen as the DS has it
-                 * (its 256 columns), not in the picture (ui/composition.h "apart") */
+                /* (round 9: nothing goes below the picture; the composition holds the view over it) */
                 SDL_FRect below;
                 int wl = 0;
                 SDL_Texture *lower = lower_view && one_kind == KHDAYS_SCREENS_UPPER && view_below(columns, &below)
@@ -2986,12 +2894,33 @@ static void draw_screens(void)
             }
 #endif
         }
-    } else if (port2d_drawn && video.one_screen && one_kind == KHDAYS_SCREENS_SIDE_BY_SIDE
 #ifdef KHDAYS_MOBILE
-               /* (upright, the two screens whole are one above the other, as the DS's) */
-               && !khdays_mobile_portrait(window)
+    } else if (port2d_drawn && video.one_screen && one_kind == KHDAYS_SCREENS_SIDE_BY_SIDE &&
+               khdays_mobile_portrait(window)) {
+        /* Fit mode, upright: still one screen (round 9) -- the upper whole, centred, the lower over it on
+         * demand (no two-screen picture in single-screen play) */
+        int wu = 0, wl = 0;
+        SDL_Texture *upper = screen_texture(port2d_upper, &wu);
+        SDL_Texture *lower = screen_texture(!port2d_upper, &wl);
+        present_size(W, H);
+        draw_way = upper != NULL ? "the upper screen alone, both screens' scene" : "nothing (a screen's texture is missing)";
+        if (upper != NULL) {
+            const SDL_FRect screen_from = ds_columns(upper, wu), screen_at = {0, 0, W, H};
+            SDL_SetTextureScaleMode(upper, video.smooth_scaling ? SDL_SCALEMODE_LINEAR : SDL_SCALEMODE_NEAREST);
+            SDL_RenderTexture(renderer, upper, &screen_from, &screen_at);
+            /* (the lower screen is not in reach without the view; the menu itself is played by the pad) */
+            if (lower_view && lower != NULL) {
+                const SDL_FRect lower_from = ds_columns(lower, wl);
+                SDL_SetTextureScaleMode(lower, video.smooth_scaling ? SDL_SCALEMODE_LINEAR : SDL_SCALEMODE_NEAREST);
+                SDL_RenderTexture(renderer, lower, &lower_from, &screen_at);
+                lower_view_shown = 1;
+                lower_view_at = screen_at;
+                stylus_rect = screen_at;
+                view_where = "over the picture";
+            }
+        }
 #endif
-    ) {
+    } else if (port2d_drawn && video.one_screen && one_kind == KHDAYS_SCREENS_SIDE_BY_SIDE) {
         /* Both screens whole, side by side, each as the DS's 256 columns, touching: the upper on the left,
          * the lower at its right. Engine A drawn wider keeps only its middle 256 (its extra columns showed
          * as a band between the two). */

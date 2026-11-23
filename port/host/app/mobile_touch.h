@@ -63,8 +63,8 @@ void khdays_mobile_stylus_window(SDL_FRect *);
 void khdays_mobile_draw(SDL_Renderer *);
 /* The top of everything a finger plays with when no controller does -- the keys and the stick's zone --
  * as a y of the window (they reach from there to the safe area's foot); negative with no window to lay
- * them out in. What is to be touched as the DS's lower screen is kept above it (the lower-screen view
- * below the picture, host/render/gpu_present.c). */
+ * them out in. (Round 9: the DS's lower screen is only ever drawn over the picture, so no part of it is
+ * kept clear of the keys; host/render/gpu_present.c.) */
 float khdays_mobile_keys_top(SDL_Window *);
 void khdays_mobile_finger(const SDL_Event *, SDL_Renderer *, bool keys_visible);
 bool khdays_mobile_keys_visible(void);
