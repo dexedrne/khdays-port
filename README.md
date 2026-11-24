@@ -14,7 +14,7 @@ game code is the original's, readable and moddable; the platform layer is new.
 
 ## iPhone and iPad (work in progress)
 
-The native port runs on iPhone and iPad too. That work lives on the [`ios` branch](https://github.com/dexedrne/khdays-port/tree/ios): single screen, DualSense and Switch Pro controllers, touch controls (auto, on or off), the HD cutscenes and 60 to 120 fps. Its README has the build steps.
+The native port runs on iPhone and iPad too. That work lives on the [`ios` branch](https://github.com/dexedrne/khdays-port/tree/ios): single screen, DualSense and Switch Pro controllers, touch controls (auto, on or off), the HD cutscenes and 60 to 120 fps. Its README covers the controllers, touch keys and controls.
 
 > [!IMPORTANT]
 > This repository contains no ROM, game assets, audio, video, text, SDK files or
