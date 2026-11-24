@@ -3,6 +3,7 @@
  * calls into an SDL stream while holding `decoder`: the audio thread holds the stream's lock while it
  * waits for `decoder`. */
 #include "theater_music.h"
+#include "../app/fs_path.h"
 
 #include "music_schedule.h"
 
@@ -174,7 +175,7 @@ static Track *track_start(const KhdaysMusicCue *cue, double frame)
     snprintf(path, sizeof(path), "%s%s.ogg", folder, cue->track);
     snprintf(t->name, sizeof(t->name), "%s", cue->track);
     t->loop = cue->loop;
-    t->file = SDL_LoadFile(path, &size);
+    t->file = khdays_fs_load_file(path, &size);
     t->ogg = t->file != NULL && size <= 0x7fffffff
                  ? stb_vorbis_open_memory((const unsigned char *)t->file, (int)size, &error, NULL)
                  : NULL;

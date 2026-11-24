@@ -4,6 +4,7 @@
  * option chosen, the DS's lower screen (the list, its dialogs) floats in under the upper screen's counter, and
  * Synthesize's recipe in the moogle's place. The game's fade over all. */
 #include "shop_screen.h"
+#include "../app/fs_path.h"
 
 #include "layout_screen.h"
 #include "ui_text.h"
@@ -113,7 +114,7 @@ static int find_file(char *path, int size, char *folder, int folder_size)
 static int each_line(const char *path, void (*line)(char *text, const char *folder), const char *folder)
 {
     size_t size = 0;
-    char *text = (char *)SDL_LoadFile(path, &size), *next;
+    char *text = (char *)khdays_fs_load_file(path, &size), *next;
     if (text == NULL) {
         return 0;
     }

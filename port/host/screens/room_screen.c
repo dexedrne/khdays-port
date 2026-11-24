@@ -4,6 +4,7 @@
  * members' cards in the places' colours. Typing: the system's text input, or a gamepad as the settings
  * menu's text entry. */
 #include "room_screen.h"
+#include "../app/fs_path.h"
 
 #include "../app/devices.h"
 #include "layout_screen.h"
@@ -77,7 +78,7 @@ static int load(SDL_Renderer *renderer, int language)
     }
     snprintf(relative, sizeof(relative), "layouts/rooms/%s/rooms.txt", codes[language]);
     if (!khdays_mods_find(relative, path, (int)sizeof(path)) ||
-        (file_text = (char *)SDL_LoadFile(path, &file_size)) == NULL) {
+        (file_text = (char *)khdays_fs_load_file(path, &file_size)) == NULL) {
         return 0;
     }
     snprintf(folder, sizeof(folder), "%s", path);

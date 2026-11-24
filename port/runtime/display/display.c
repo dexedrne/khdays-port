@@ -340,8 +340,7 @@ void khdays_display_init(void)
     scene_shot_dir = getenv("KHDAYS_SCENE_SHOTS");
     if (scene_shot_dir != NULL) {
         {
-            char whole_[KHDAYS_FS_PATH_MAX];
-            SDL_CreateDirectory(khdays_fs_path(scene_shot_dir, whole_, sizeof(whole_)));
+            khdays_fs_create_directory(scene_shot_dir);
         }
     }
     profile = getenv("KHDAYS_PROFILE") != NULL;
@@ -354,8 +353,7 @@ void khdays_display_init(void)
     trace_3d_frame = getenv("KHDAYS_TRACE_3D_CALLERS") != NULL ? (u32)atoi(getenv("KHDAYS_TRACE_3D_CALLERS")) : 0;
     if (record_dir != NULL) {
         {
-            char whole_[KHDAYS_FS_PATH_MAX];
-            SDL_CreateDirectory(khdays_fs_path(record_dir, whole_, sizeof(whole_)));
+            khdays_fs_create_directory(record_dir);
         }
     }
     khdays_ui_parts_init();
@@ -382,8 +380,7 @@ void khdays_display_init(void)
             p = end;
         }
         {
-            char whole_[KHDAYS_FS_PATH_MAX];
-            SDL_CreateDirectory(khdays_fs_path(shot_dir, whole_, sizeof(whole_)));
+            khdays_fs_create_directory(shot_dir);
         }
     }
 }
@@ -460,8 +457,7 @@ static void save_mark(u32 frame, const uint32_t *upper, const uint32_t *lower)
     KhdaysPauseView pv;
     snprintf(dir, sizeof(dir), "%s/marks", khdays_host_user_folder());
     {
-        char whole_[KHDAYS_FS_PATH_MAX];
-        SDL_CreateDirectory(khdays_fs_path(dir, whole_, sizeof(whole_)));
+        khdays_fs_create_directory(dir);
     }
     snprintf(path, sizeof(path), "%s/mark_%u_frame_%05u.bmp", dir, ++mark_count, frame);
     if (write_bmp(path, upper, lower)) {
@@ -1613,8 +1609,18 @@ void khdays_display_vblank(u32 frame)
             }
         }
         khdays_g3d_set_widen(widen);
-        /* the field of view ([video] camera_zoom): the game's camera further away on the phone's display */
-        khdays_g3d_set_zoom(khdays_host_camera_zoom());
+        /* the field of view ([video] camera_zoom): the game's field and battle camera further away on the phone's
+         * display. Not the cutscenes' cameras, the menus', character select's or the title's 3D. */
+        float zoom = khdays_host_camera_zoom();
+        if (zoom != 1.0f) {
+            static KhdaysSituationInputs field;
+            khdays_situation_take(&field, frame);
+            field.engine_swaps = engine_swaps;
+            if (!khdays_situation_field_camera(&field)) {
+                zoom = 1.0f;
+            }
+        }
+        khdays_g3d_set_zoom(zoom);
     }
     khdays_ui_hud_settings_frame();
     khdays_ui_kh2_hp_frame(frame);

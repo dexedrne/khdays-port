@@ -2,6 +2,7 @@
  * reader (assets/kh2_sequence.h), drawn here with the window's renderer. */
 extern "C" {
 #include "kh2_seq.h"
+#include "../app/fs_path.h"
 #include "../render/png_io.h"
 #include "../../runtime/core/rom.h"
 }
@@ -81,7 +82,7 @@ extern "C" int khdays_kh2_seq_load(KhdaysKh2Seq *seq, const char *relative, floa
     size_t size = 0;
     void *bytes;
     *seq = KhdaysKh2Seq{};
-    if (!khdays_mods_find(relative, path, sizeof(path)) || (bytes = SDL_LoadFile(path, &size)) == nullptr)
+    if (!khdays_mods_find(relative, path, sizeof(path)) || (bytes = khdays_fs_load_file(path, &size)) == nullptr)
         return 0;
     try {
         auto *d = new kh2::SequenceData(kh2::read_sequence(static_cast<const std::uint8_t *>(bytes), size));

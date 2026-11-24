@@ -2,6 +2,7 @@
  * names one (layouts/<name>.txt, docs/HD_SCREENS.md), else in the HD PACK's room list layout, else
  * plainly in the game's own font over a veil. docs/SCRIPTING.md lists the pieces a layout gives. */
 #include "mod_screen.h"
+#include "../app/fs_path.h"
 
 #include "layout_screen.h"
 #include "ui_font.h"
@@ -66,7 +67,7 @@ static int load_layout(SDL_Renderer *renderer, const char *path)
     forget_layout();
     s.layout.who = "a mod's screen";
     s.layout.renderer = renderer;
-    if ((text = (char *)SDL_LoadFile(path, &size)) == NULL) {
+    if ((text = (char *)khdays_fs_load_file(path, &size)) == NULL) {
         return 0;
     }
     SDL_snprintf(folder, sizeof(folder), "%s", path);

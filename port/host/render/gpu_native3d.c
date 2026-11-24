@@ -477,8 +477,8 @@ static void remember(char what, int value, int made)
         return;
     }
     if (pipeline_list == NULL) {
-        char whole[KHDAYS_FS_PATH_MAX], line[128];
-        SDL_CreateDirectory(khdays_fs_path("caches", whole, sizeof(whole)));
+        char line[128];
+        khdays_fs_create_directory("caches");
         pipeline_list = fopen(PIPELINE_LIST, "a");
         if (pipeline_list == NULL) {
             warming = 1; /* (not again: the folder cannot be written) */
@@ -805,6 +805,16 @@ int khdays_native3d_count(const KhdaysG3dList *list, int32_t hidden)
         if (list->polys[i].flags & raster3d_only) {
             stop = i;
             break;
+        }
+    }
+    if (clip_first < 0) {
+        /* volumes the card cannot take (not one run, or an owner after the rest): they and everything after them
+         * stay raster3d.hlsl's -- never drawn here as ordinary polygons (solid shapes over the character) */
+        for (int i = 0; i < stop; ++i) {
+            if (list->polys[i].flags & KHDAYS_G3D_CLIP) {
+                stop = i;
+                break;
+            }
         }
     }
     if (clip_first >= 0) {
@@ -1270,6 +1280,9 @@ void khdays_native3d_draw(SDL_GPUCommandBuffer *cmd, const KhdaysNative3dFrame *
         if (draws[i].key == CLIP_FILL) {
             written[0] = written[5] = 1; /* the inside's depth and colour are the composition's, whatever it reads */
             colours[0].store_op = colours[5].store_op = SDL_GPU_STOREOP_STORE;
+            /* the split ends this pass and the next loads the stencil (the polygon IDs): it must be stored, or
+             * Metal and Vulkan hand the second pass undefined IDs (shadows and translucency go wrong) */
+            ds.stencil_store_op = SDL_GPU_STOREOP_STORE;
             break;
         }
     }

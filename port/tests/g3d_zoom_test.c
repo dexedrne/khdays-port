@@ -116,6 +116,41 @@ int main(void)
         CHECK(fabsf(proj[0] - 0.5f) < 0.001f && fabsf(proj[5] - 0.5f) < 0.001f);
     }
 
+    /* what the game itself computes with the clip matrix (POS_TEST, the clip-matrix registers: its lock-on
+     * reticles and markers are placed from them) is the zoomed one too, so it lands on what is drawn */
+    for (int k = 0; k < 2; ++k) {
+        const float zoom = k == 0 ? 1.0f : 0.87f;
+        uint32_t mode = 0, test[2] = {4096u | (4096u << 16), (uint32_t)-32768};
+        khdays_g3d_reset();
+        khdays_g3d_set_zoom(zoom);
+        khdays_g3d_command(0x10, &mode);
+        khdays_g3d_command(0x16, perspective);
+        khdays_g3d_command(0x71, test);
+        {
+            const float x = (float)(int32_t)khdays_g3d_read(0x620) / 4096.0f; /* 20.12 clip x, 1.5 in the game's own */
+            const float y = (float)(int32_t)khdays_g3d_read(0x624) / 4096.0f; /* 2.0 */
+            const float w = (float)(int32_t)khdays_g3d_read(0x62c) / 4096.0f; /* the depth, 8.0 */
+            CHECK(fabsf(x - 1.5f * zoom) < 0.01f);
+            CHECK(fabsf(y - 2.0f * zoom) < 0.01f);
+            CHECK(fabsf(w - 8.0f) < 0.01f);
+            /* the clip matrix's registers: the x and y outputs' first row */
+            CHECK(fabsf((float)(int32_t)khdays_g3d_read(0x640) / 4096.0f - 1.5f * zoom) < 0.01f);
+            CHECK(fabsf((float)(int32_t)khdays_g3d_read(0x654) / 4096.0f - 2.0f * zoom) < 0.01f);
+        }
+    }
+    /* the zoom set after the matrices were loaded and used still takes effect (the cached clip matrix) */
+    {
+        uint32_t mode = 0, test[2] = {4096u | (4096u << 16), (uint32_t)-32768};
+        khdays_g3d_reset();
+        khdays_g3d_set_zoom(1.0f);
+        khdays_g3d_command(0x10, &mode);
+        khdays_g3d_command(0x16, perspective);
+        khdays_g3d_command(0x71, test);
+        khdays_g3d_set_zoom(0.87f);
+        khdays_g3d_command(0x71, test);
+        CHECK(fabsf((float)(int32_t)khdays_g3d_read(0x620) / 4096.0f - 1.5f * 0.87f) < 0.01f);
+    }
+
     if (failed != 0) {
         fprintf(stderr, "g3d zoom: %d failed\n", failed);
         return 1;

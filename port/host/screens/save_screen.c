@@ -3,6 +3,7 @@
  * the game reads them, their DS buttons drawn as the player's inputs' icons; the glove points at the
  * selected row. With the guest's row (Mission Mode's) Y plays as the guest from anywhere. */
 #include "save_screen.h"
+#include "../app/fs_path.h"
 
 #include "camp_screen.h"
 #include "layout_screen.h"
@@ -83,7 +84,7 @@ static int load(SDL_Renderer *renderer, int language)
     }
     snprintf(relative, sizeof(relative), "layouts/save/%s/save.txt", codes[language]);
     if (!khdays_mods_find(relative, path, (int)sizeof(path)) ||
-        (file_text = (char *)SDL_LoadFile(path, &file_size)) == NULL) {
+        (file_text = (char *)khdays_fs_load_file(path, &file_size)) == NULL) {
         return 0;
     }
     snprintf(folder, sizeof(folder), "%s", path);

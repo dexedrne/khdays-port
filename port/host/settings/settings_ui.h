@@ -40,6 +40,8 @@ int khdays_settings_is_open(void);
  * closed: khdays_settings_changed() then says whether the profile changed
  * since it opened, and khdays_settings_profile() gives it. */
 int khdays_settings_handle(const SDL_Event *event, SDL_Window *window);
+/* The menu forgets the finger it follows (a gesture took the touch: its lift is no tap on a row). */
+void khdays_settings_touch_reset(void);
 
 /* Lets time pass (for repeating a held direction, and for the time limit
  * when waiting for a key or button). */

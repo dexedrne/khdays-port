@@ -1,5 +1,6 @@
 /* The replacement graphics on the graphics card (see gpu_hd.h). */
 #include "gpu_hd.h"
+#include "../app/fs_path.h"
 #include "../../gfx/mips.h"
 
 #include "../../runtime/core/session_log.h"
@@ -37,7 +38,7 @@ void *khdays_metal_library(SDL_GPUDevice *device, SDL_GPUShaderFormat format, co
     char path[1024];
     const unsigned hash = SDL_crc32(0, source, length);
     if (SDL_snprintf(path, sizeof(path), "%sShaders/%08x.metallib", base, hash) >= (int)sizeof(path)) return NULL;
-    void *data = SDL_LoadFile(path, bytes);
+    void *data = khdays_fs_load_file(path, bytes);
     SDL_Log("shaders: %08x using %s", hash, data ? "bundled Metal library" : "embedded Metal source");
     return data;
 }
@@ -595,7 +596,7 @@ static void say_full(const char *what)
     }
 }
 
-static int sync(SDL_GPUCommandBuffer *cmd, const KhdaysG3dPolygon *polys, int32_t npolys)
+static int sync_pictures(SDL_GPUCommandBuffer *cmd, const KhdaysG3dPolygon *polys, int32_t npolys)
 {
     const uint32_t count = (uint32_t)khdays_textures_replacements();
     uint32_t entries = count; /* the pictures with an entry in the table */
@@ -789,10 +790,10 @@ static int sync(SDL_GPUCommandBuffer *cmd, const KhdaysG3dPolygon *polys, int32_
 
 int khdays_gpu_hd_sync(SDL_GPUCommandBuffer *cmd)
 {
-    return sync(cmd, NULL, 0);
+    return sync_pictures(cmd, NULL, 0);
 }
 
 int khdays_gpu_hd_sync_drawn(SDL_GPUCommandBuffer *cmd, const KhdaysG3dPolygon *polys, int32_t npolys)
 {
-    return sync(cmd, polys, npolys);
+    return sync_pictures(cmd, polys, npolys);
 }

@@ -1,6 +1,7 @@
 /* Reading and writing PNG files (see png_io.h). stb's code is compiled here
  * with its warnings turned off, since it is not the port's code. */
 #include "png_io.h"
+#include "../app/fs_path.h"
 
 #if defined(_MSC_VER)
 #pragma warning(push, 0)
@@ -97,7 +98,7 @@ uint8_t *khdays_png_read_indexed(const char *path, int *width, int *height, uint
                                  const char **error)
 {
     size_t size = 0, idat_size = 0;
-    uint8_t *file = (uint8_t *)SDL_LoadFile(path, &size);
+    uint8_t *file = (uint8_t *)khdays_fs_load_file(path, &size);
     uint8_t *idat = NULL, *raw = NULL, *out = NULL;
     uint32_t w = 0, h = 0, depth = 0, type = 0, interlace = 0;
     int raw_len = 0;
@@ -287,7 +288,7 @@ const char *khdays_png_write_indexed(const char *path, const uint8_t *indices, i
     at += put_chunk(file + at, "IDAT", zipped, (uint32_t)zipped_len);
     at += put_chunk(file + at, "IEND", NULL, 0);
     STBIW_FREE(zipped);
-    if (!SDL_SaveFile(path, file, at))
+    if (!khdays_fs_save_file(path, file, at))
         why = "the file could not be written";
     free(file);
     return why;

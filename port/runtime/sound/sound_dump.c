@@ -116,8 +116,7 @@ static void make_directories(const char *path)
             const char c = *p;
             *p = '\0';
             {
-                char whole_[KHDAYS_FS_PATH_MAX];
-                SDL_CreateDirectory(khdays_fs_path(at, whole_, sizeof(whole_)));
+                khdays_fs_create_directory(at);
             }
             *p = c;
         }

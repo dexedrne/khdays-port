@@ -205,6 +205,10 @@ void khdays_situation_decide(const KhdaysSituationFrame *frame, KhdaysSituation 
  * thread that took them). */
 int khdays_situation_widens(const KhdaysSituationInputs *in);
 
+/* Whether the 3D is the field's own camera (the field and its battles; not an event's cutscene, the shop, the game over,
+ * the camp, the title, character select, a movie or the credits): where [video] camera_zoom widens the view. */
+int khdays_situation_field_camera(const KhdaysSituationInputs *in);
+
 /* Whether a frame decided again may decide otherwise (a picture standing still is then decided
  * again as its VBlanks pass): never, as the decision reads the game's state, not its pictures'
  * history. */

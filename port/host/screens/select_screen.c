@@ -3,6 +3,7 @@
  * runtime/menus/charselect.c reads it: the characters in the game's order, this copy's character with
  * its gauges, and each place's plate, ringed once its player has chosen. */
 #include "select_screen.h"
+#include "../app/fs_path.h"
 
 #include "layout_screen.h"
 #include "../app/places.h"
@@ -72,7 +73,7 @@ static int load(SDL_Renderer *renderer, int language)
         return 0;
     }
     snprintf(relative, sizeof(relative), "layouts/select/%s/select.txt", codes[language]);
-    if (!khdays_mods_find(relative, path, (int)sizeof(path)) || (text = (char *)SDL_LoadFile(path, &size)) == NULL) {
+    if (!khdays_mods_find(relative, path, (int)sizeof(path)) || (text = (char *)khdays_fs_load_file(path, &size)) == NULL) {
         return 0;
     }
     snprintf(folder, sizeof(folder), "%s", path);

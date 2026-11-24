@@ -386,6 +386,19 @@ static const Mtx *clip_matrix(void)
 {
     if (g.clip_dirty) {
         g.clip = mul(&g.pos, &g.proj);
+        {
+            /* the field of view ([video] camera_zoom): the clip x and y taken smaller, a wider camera. In the
+             * matrix itself, not on the polygons' corners after it: the game reads this matrix (POS_TEST and
+             * the clip-matrix registers place its lock-on reticles, markers and the like on the screen), so
+             * what it computes lands on what is drawn. The game's world only (zoom_now). */
+            const int32_t zk = zoom_now();
+            if (zk != WIDEN_ONE) {
+                for (int r = 0; r < 4; ++r) {
+                    g.clip.m[r * 4 + 0] = (int32_t)(((int64_t)g.clip.m[r * 4 + 0] * zk) >> 12);
+                    g.clip.m[r * 4 + 1] = (int32_t)(((int64_t)g.clip.m[r * 4 + 1] * zk) >> 12);
+                }
+            }
+        }
         g.clip_dirty = 0;
     }
     return &g.clip;
@@ -853,14 +866,7 @@ static void vertex(int32_t x, int32_t y, int32_t z)
                     12);
     c.w = (int32_t)(((int64_t)x * m->m[3] + (int64_t)y * m->m[7] + (int64_t)z * m->m[11] + ((int64_t)m->m[15] << 12)) >>
                     12);
-    {
-        /* the field of view ([video] camera_zoom): the clip x and y taken smaller, a wider camera */
-        const int32_t zk = zoom_now();
-        if (zk != WIDEN_ONE) {
-            c.x = (int32_t)(((int64_t)c.x * zk) >> 12);
-            c.y = (int32_t)(((int64_t)c.y * zk) >> 12);
-        }
-    }
+    /* (the field of view is in clip_matrix) */
     c.r = expand5(g.color[0]);
     c.g = expand5(g.color[1]);
     c.b = expand5(g.color[2]);
@@ -1601,6 +1607,9 @@ const KhdaysG3dList *khdays_g3d_shown(void)
 
 void khdays_g3d_set_hud(int on)
 {
+    if (g.hud != on && g.zoom != WIDEN_ONE) {
+        g.clip_dirty = 1; /* the HUD's 3D has no field of view (zoom_now) */
+    }
     g.hud = on;
 }
 
@@ -1624,6 +1633,9 @@ void khdays_g3d_set_zoom(float k)
     }
     if (z > WIDEN_ONE * 2) {
         z = WIDEN_ONE * 2;
+    }
+    if (g.zoom != z) {
+        g.clip_dirty = 1;
     }
     g.zoom = z;
 }

@@ -191,7 +191,7 @@ static void take_working_folder(void)
     snprintf(working_folder_note, sizeof(working_folder_note), "working folder: launch directory");
 #else
     const char *own = SDL_GetBasePath();
-    if (SDL_GetPathInfo("data/extracted", NULL)) {
+    if (khdays_fs_get_path_info("data/extracted", NULL)) {
         snprintf(working_folder_note, sizeof(working_folder_note),
                  "working folder: the one it was started in (it has data/extracted)");
     } else if (own != NULL && change_folder(own) == 0) {
@@ -221,10 +221,9 @@ static void make_folders(void)
     want[1] = user;
     want[2] = logs;
     for (int i = 0; i < 3; ++i) {
-        char whole[KHDAYS_FS_PATH_MAX];
-        const char *at = khdays_fs_path(want[i], whole, sizeof(whole));
-        if ((i == 0 || strcmp(want[i], want[i - 1]) != 0) && !SDL_GetPathInfo(at, NULL)) {
-            const int ok = SDL_CreateDirectory(at);
+        const char *at = want[i];
+        if ((i == 0 || strcmp(want[i], want[i - 1]) != 0) && !khdays_fs_get_path_info(at, NULL)) {
+            const int ok = khdays_fs_create_directory(at);
             snprintf(made + strlen(made), sizeof(made) - strlen(made), "%s%s%s", made[0] != '\0' ? ", " : "", want[i],
                      ok ? "" : " (FAILED)");
         }

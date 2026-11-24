@@ -2289,16 +2289,27 @@ void khdays_settings_set_graphics_card(int available)
     m.graphics_card = available;
 }
 
+#ifdef KHDAYS_MOBILE
+// The finger the menu follows (iOS disables touch-generated mouse events during play: taps are translated here).
+static SDL_FingerID finger;
+static float start_y;
+static bool tracking, scrolling;
+#endif
+
+void khdays_settings_touch_reset(void)
+{
+#ifdef KHDAYS_MOBILE
+    tracking = false; // the finger lifting later is no tap, and no scroll goes on
+    scrolling = false;
+#endif
+}
+
 int khdays_settings_handle(const SDL_Event *e, SDL_Window *window)
 {
     if (!m.open) {
         return 0;
     }
 #ifdef KHDAYS_MOBILE
-    // iOS disables touch-generated mouse events during play. Translate taps only here.
-    static SDL_FingerID finger;
-    static float start_y;
-    static bool tracking, scrolling;
     SDL_Event touch{};
     if (e->type == SDL_EVENT_FINGER_DOWN) {
         tracking = true;
@@ -2685,7 +2696,7 @@ void khdays_settings_draw(SDL_Renderer *renderer, SDL_Window *window)
             const ImVec2 lo = ImGui::GetItemRectMin(), hi = ImGui::GetItemRectMax();
             float line_w = 0, line_h = 0;
             if (khdays_skin_size("line", &line_w, &line_h)) {
-                const float x = hi.x + pad / 2, half = khdays_skin_point(screen, line_w, 0).x / 2;
+                const float x = hi.x + pad / 2, half = (khdays_skin_point(screen, line_w, 0).x - khdays_skin_point(screen, 0, 0).x) / 2; // a width: no origin
                 khdays_skin_piece(ImGui::GetWindowDrawList(), "line", "shown", ImVec2(x - half, lo.y),
                                   ImVec2(x + half, hi.y));
             }

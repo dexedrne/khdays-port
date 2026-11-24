@@ -2,6 +2,7 @@
  * thread brings the movie's events, the window's thread the video's and START; one lock keeps them in
  * order (docs/PLATFORM.md, "HD movies"). */
 #include "movie_hd.h"
+#include "../../host/app/fs_path.h"
 #include "scenes.h"
 
 #include "../core/clock.h"
@@ -573,7 +574,7 @@ void khdays_movie_hd_stream(int slot, const char *path, int replaced)
         return;
     }
     for (int i = 0; i < part_count; ++i) {
-        if (!SDL_GetPathInfo(parts[i].file, NULL)) {
+        if (!khdays_fs_get_path_info(parts[i].file, NULL)) {
             if (tell_once(movie)) {
                 khdays_log("movie %s: no HD video (%s); the game's movie plays", movie, parts[i].file);
                 fprintf(stderr, "movies: %s: no HD video (%s); the game's movie plays\n", movie, parts[i].file);
@@ -924,7 +925,7 @@ static int scene_course(const char *key, uint32_t event_state, char *const *stem
     }
     for (int i = 0; i < count; ++i) {
         khdays_movie_hd_scene_file(stems[i], file, sizeof(file));
-        if (!SDL_GetPathInfo(file, NULL)) {
+        if (!khdays_fs_get_path_info(file, NULL)) {
             if (tell_once(key)) {
                 khdays_log("scene %s: no HD video %s; the game's scene plays", key, file);
                 fprintf(stderr, "scenes: %s: no HD video %s; the game's scene plays\n", key, file);
@@ -1030,7 +1031,7 @@ int khdays_movie_hd_voice(const char *key, char *const *stems, int count)
             break;
         }
         khdays_movie_hd_scene_file(stems[i], files[i], 1024);
-        if (!SDL_GetPathInfo(files[i], NULL)) {
+        if (!khdays_fs_get_path_info(files[i], NULL)) {
             if (tell_once(key)) {
                 khdays_log("scene %s: no HD video %s; the game's page alone", key, files[i]);
                 fprintf(stderr, "scenes: %s: no HD video %s; the game's page alone\n", key, files[i]);
@@ -1063,7 +1064,7 @@ int khdays_movie_hd_subtitles_exist(const char *stem)
         return 1;
     }
     snprintf(path, sizeof(path), "data/cutscenes/cinematics/subtitles/%s/%s.txt", codes[language], stem);
-    return SDL_GetPathInfo(path, NULL);
+    return khdays_fs_get_path_info(path, NULL);
 }
 
 void khdays_movie_hd_voice_stop(void)

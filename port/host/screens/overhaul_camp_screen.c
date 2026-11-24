@@ -3,6 +3,7 @@
  * Panels, Files and save pages, the transitions between them without the game's black -- from the mod's layouts
  * (docs/MENU_OVERHAUL.md), as runtime/menus/camp.c reads the game's menu. */
 #include "camp_screen.h"
+#include "../app/fs_path.h"
 #include "camp_look.h"
 #include "shop_screen.h"
 
@@ -473,7 +474,7 @@ static int load(SDL_Renderer *renderer, int language)
         /* the heart points' word as a picture, when the folder has one (else the game's words) */
         char word[1100];
         snprintf(word, sizeof(word), "%shearts_label.png", folder);
-        if (SDL_GetPathInfo(word, NULL)) {
+        if (khdays_fs_get_path_info(word, NULL)) {
             more.hearts_word = khdays_layout_texture(&s.layout, word, 0, &more.hearts_word_w, &more.hearts_word_h);
         }
     }

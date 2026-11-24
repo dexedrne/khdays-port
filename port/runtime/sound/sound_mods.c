@@ -149,23 +149,20 @@ void khdays_sound_mods_trace(int on)
  * Application Support, never in the Documents the mods are in (host/app/fs_path.h). */
 static char **khdays_glob_whole(const char *path)
 {
-    char whole_[KHDAYS_FS_PATH_MAX];
-    return SDL_GlobDirectory(khdays_fs_path(path, whole_, sizeof(whole_)), "*", 0, NULL);
+    return khdays_fs_glob_directory(path, "*", 0, NULL);
 }
 
 /* Whether `path` is a folder, or a file (SDL's look at it: the same on every system the port runs on). */
 static int is_directory(const char *path)
 {
-    char whole_[KHDAYS_FS_PATH_MAX];
     SDL_PathInfo info;
-    return SDL_GetPathInfo(khdays_fs_path(path, whole_, sizeof(whole_)), &info) && info.type == SDL_PATHTYPE_DIRECTORY;
+    return khdays_fs_get_path_info(path, &info) && info.type == SDL_PATHTYPE_DIRECTORY;
 }
 
 static int is_file(const char *path)
 {
-    char whole_[KHDAYS_FS_PATH_MAX];
     SDL_PathInfo info;
-    return SDL_GetPathInfo(khdays_fs_path(path, whole_, sizeof(whole_)), &info) && info.type == SDL_PATHTYPE_FILE;
+    return khdays_fs_get_path_info(path, &info) && info.type == SDL_PATHTYPE_FILE;
 }
 
 /* Whether a mod on as the game started (runtime/mods/list.h: the folders order.ini turns on, in load order)

@@ -535,9 +535,9 @@ target_compile_options(khdays-kh2-sequence-viewer PRIVATE
     $<$<COMPILE_LANGUAGE:CXX>:/W4 /std:c++20 /EHsc>)
 endif()
 
-# The 3D on a real graphics card (the CPU Vulkan driver on Linux), as the headless test build runs it; the Windows
-# build above has them too.
-if(KHDAYS_HEADLESS_TEST_BUILD)
+# The 3D on a real graphics card (the CPU Vulkan driver on Linux): built and run on Windows and in the Linux headless
+# test build.
+if(WIN32 OR KHDAYS_HEADLESS_TEST_BUILD)
 add_executable(khdays-kh2-gpu-test tests/kh2_sequence_gpu_test.cpp ui/heart_points.cpp host/render/kh2_sequence_gpu.c host/render/gpu_hd.c host/render/gpu_raster3d.c host/render/gpu_native3d.c)
 target_link_libraries(khdays-kh2-gpu-test PRIVATE khdays-kh2-gauge khdays-gpu khdays-gfx SDL3::SDL3)
 if(MSVC)

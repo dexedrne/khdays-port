@@ -3,6 +3,7 @@
  * its pace, measured frame by frame on a capture of it). The game's counter only says the days; its rolling
  * is given the same pace so its card holds on as long, and its fade-out is laid over this one at the end. */
 #include "day_screen.h"
+#include "../app/fs_path.h"
 
 #include "layout_screen.h"
 #include "../app/host.h"
@@ -201,7 +202,7 @@ static int load(SDL_Renderer *renderer, int language)
     }
     snprintf(relative, sizeof(relative), "layouts/day/%s/day.txt", codes[language]);
     if (!khdays_mods_find(relative, path, (int)sizeof(path)) ||
-        (file_text = (char *)SDL_LoadFile(path, &file_size)) == NULL) {
+        (file_text = (char *)khdays_fs_load_file(path, &file_size)) == NULL) {
         return 0;
     }
     snprintf(folder, sizeof(folder), "%s", path);

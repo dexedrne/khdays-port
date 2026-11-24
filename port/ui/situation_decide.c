@@ -186,6 +186,19 @@ int khdays_situation_widens(const KhdaysSituationInputs *in)
     return in->scene == SCENE_FIELD || in->scene == SCENE_TITLE;
 }
 
+/* The field's own camera, where [video] camera_zoom applies: the field scene (its battles, its pause and a tutorial
+ * over it), not an event's cinematic camera (ov023 running: the game's cutscenes), the shop, the game over, the
+ * camp, the title and character select, a movie or the credits. */
+int khdays_situation_field_camera(const KhdaysSituationInputs *in)
+{
+    if (in->movie || in->scene != SCENE_FIELD || in->event_status >= 0 || loaded(in, OV_CREDITS) ||
+        loaded(in, OV_GAME_OVER) || loaded(in, OV_SHOP) ||
+        (in->camp_screen != KHDAYS_CAMP_NONE && (in->scene == SCENE_CAMP || in->camp_story))) {
+        return 0;
+    }
+    return 1;
+}
+
 static uint32_t states_of(const KhdaysSituationInputs *in, int scene)
 {
     uint32_t s = 0;

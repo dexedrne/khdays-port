@@ -3,7 +3,8 @@
  * gpu_raster3d.c, one screen decided by onescreen.c. A graphics card is required. Testing knobs
  * (KHDAYS_SHOTS_HD, KHDAYS_GFX=reference|check, KHDAYS_PROFILE): docs/RENDERING.md. */
 #include "gpu_present.h"
-#include "../app/fs_path.h" /* (SDL on iOS: relative paths from Application Support) */
+#include "../app/fs_path.h"
+#include "../app/instance.h"
 #include "../app/devices.h"
 #include "../app/mobile_touch.h"
 #include "gfx_render.h"
@@ -375,8 +376,7 @@ SDL_Renderer *khdays_present_open(SDL_Window *w, KhdaysNotice tell)
     }
     if (shot_dir != NULL) {
         {
-            char whole_[KHDAYS_FS_PATH_MAX];
-            SDL_CreateDirectory(khdays_fs_path(shot_dir, whole_, sizeof(whole_)));
+            khdays_fs_create_directory(shot_dir);
         }
     }
     if (!make_renderer()) {
@@ -1206,17 +1206,16 @@ static void log_picture(const char *what, double alpha)
     if (!frame_log_tried) {
         frame_log_tried = 1;
         if (SDL_getenv("KHDAYS_FRAME_LOG") != NULL) {
-            char path[160];
+            char path[256];
             SDL_Time now;
             SDL_DateTime t;
             SDL_GetCurrentTime(&now);
             SDL_TimeToDateTime(now, &t, true);
-            SDL_snprintf(path, sizeof(path), "saves/logs/frames-%04d%02d%02d-%02d%02d%02d.log", t.year, t.month, t.day,
+            char logs[160];
+            SDL_snprintf(logs, sizeof(logs), "%s/logs", khdays_host_user_folder()); /* the user's, as the session log */
+            SDL_snprintf(path, sizeof(path), "%s/frames-%04d%02d%02d-%02d%02d%02d.log", logs, t.year, t.month, t.day,
                          t.hour, t.minute, t.second);
-            {
-                char whole_[KHDAYS_FS_PATH_MAX];
-                SDL_CreateDirectory(khdays_fs_path("saves/logs", whole_, sizeof(whole_)));
-            }
+            khdays_fs_create_directory(logs);
             frame_log = fopen(path, "w");
             if (frame_log != NULL) {
                 fprintf(frame_log, "# ms (the game's time), logic frame, alpha, polygons placed between / all, what, "

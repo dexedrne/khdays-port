@@ -17,6 +17,7 @@
 #ifndef KHDAYS_HOST_FS_PATH_H
 #define KHDAYS_HOST_FS_PATH_H
 
+#include <SDL3/SDL.h>
 #include <stddef.h>
 #include <string.h>
 #ifndef _WIN32
@@ -55,5 +56,63 @@ static inline const char *khdays_fs_path(const char *path, char *out, size_t siz
 
 /* The size of a buffer for khdays_fs_path. */
 #define KHDAYS_FS_PATH_MAX 1024
+
+/* The one wrapper: SDL's file functions on a path from the working folder. Use these, never the SDL ones, for any
+ * path of the game's own (data, saves, mods, caches, logs, pictures); a path built from SDL_GetBasePath or
+ * SDL_GetPrefPath (absolute) goes through unchanged. */
+#define KHDAYS_FS_WHOLE(path) char whole_[KHDAYS_FS_PATH_MAX]; const char *at_ = khdays_fs_path((path), whole_, sizeof(whole_))
+
+static inline void *khdays_fs_load_file(const char *path, size_t *size)
+{
+    KHDAYS_FS_WHOLE(path);
+    return SDL_LoadFile(at_, size);
+}
+static inline bool khdays_fs_save_file(const char *path, const void *data, size_t size)
+{
+    KHDAYS_FS_WHOLE(path);
+    return SDL_SaveFile(at_, data, size);
+}
+static inline SDL_IOStream *khdays_fs_io_from_file(const char *path, const char *mode)
+{
+    KHDAYS_FS_WHOLE(path);
+    return SDL_IOFromFile(at_, mode);
+}
+static inline bool khdays_fs_create_directory(const char *path)
+{
+    KHDAYS_FS_WHOLE(path);
+    return SDL_CreateDirectory(at_);
+}
+static inline bool khdays_fs_get_path_info(const char *path, SDL_PathInfo *info)
+{
+    KHDAYS_FS_WHOLE(path);
+    return SDL_GetPathInfo(at_, info);
+}
+static inline bool khdays_fs_remove_path(const char *path)
+{
+    KHDAYS_FS_WHOLE(path);
+    return SDL_RemovePath(at_);
+}
+static inline bool khdays_fs_rename_path(const char *from, const char *to)
+{
+    char whole_to[KHDAYS_FS_PATH_MAX];
+    KHDAYS_FS_WHOLE(from);
+    return SDL_RenamePath(at_, khdays_fs_path(to, whole_to, sizeof(whole_to)));
+}
+static inline bool khdays_fs_copy_file(const char *from, const char *to)
+{
+    char whole_to[KHDAYS_FS_PATH_MAX];
+    KHDAYS_FS_WHOLE(from);
+    return SDL_CopyFile(at_, khdays_fs_path(to, whole_to, sizeof(whole_to)));
+}
+static inline char **khdays_fs_glob_directory(const char *path, const char *pattern, SDL_GlobFlags flags, int *count)
+{
+    KHDAYS_FS_WHOLE(path);
+    return SDL_GlobDirectory(at_, pattern, flags, count);
+}
+static inline bool khdays_fs_enumerate_directory(const char *path, SDL_EnumerateDirectoryCallback callback, void *userdata)
+{
+    KHDAYS_FS_WHOLE(path);
+    return SDL_EnumerateDirectory(at_, callback, userdata);
+}
 
 #endif

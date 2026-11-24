@@ -3,6 +3,7 @@
  * Icon.tm2: "icon xbox:east u v w h" in its atlas), cut out once; Kenney's from the executable
  * (the settings menu's). */
 #include "button_icons.h"
+#include "../host/app/fs_path.h"
 
 #include "../host/app/devices.h"
 #include "../host/app/profile.h"
@@ -59,7 +60,7 @@ static Icon *add_icon(const char *name, uint8_t *rgba, int width, int height)
  * before them); 0 when it has none. */
 static int read_layout(const char *path)
 {
-    char *text = (char *)SDL_LoadFile(path, NULL);
+    char *text = (char *)khdays_fs_load_file(path, NULL);
     const char *slash = strrchr(path, '/'), *back = strrchr(path, '\\');
     const int dir = back != NULL && (slash == NULL || back > slash) ? (int)(back - path + 1)
                     : slash != NULL                                 ? (int)(slash - path + 1)

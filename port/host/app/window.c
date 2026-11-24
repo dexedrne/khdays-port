@@ -4,6 +4,7 @@
  * Closing the window ends the process (docs/PLATFORM.md, "The PC's side"). */
 #include "host.h"
 #include "fs_path.h"
+#include "instance.h"
 #include "hud_settings.h"
 #include "mobile_touch.h"
 #if defined(KHDAYS_MOBILE_TEST) || defined(KHDAYS_IOS)
@@ -510,13 +511,16 @@ static void picture_report(SDL_Window *window, SDL_Renderer *renderer)
         shot_dir = SDL_getenv("KHDAYS_SHOT_WINDOW");
 #ifdef KHDAYS_IOS
         if (shot_dir == NULL) {
-            shot_dir = "saves/logs";
+            /* the player's (or the test run's, KHDAYS_USER_FOLDER) logs folder, not a fixed saves/logs: a test run
+             * keeps its pictures with its own logs, where device_movie_test.sh fetches them */
+            static char logs[256];
+            SDL_snprintf(logs, sizeof(logs), "%s/logs", khdays_host_user_folder());
+            shot_dir = logs;
         }
 #endif
         if (shot_dir != NULL) {
             /* (a whole path: SDL on iOS would make a relative one in Application Support, fs_path.h) */
-            char whole[KHDAYS_FS_PATH_MAX];
-            SDL_CreateDirectory(khdays_fs_path(shot_dir, whole, sizeof(whole)));
+            khdays_fs_create_directory(shot_dir);
         }
     }
     if (picture_report_due > 0) {
@@ -1238,8 +1242,7 @@ static int host_thread(void *unused)
              * right one (Circle), the camera on the right stick -- instead of the DS's positions,
              * and the picture as wide as the phone's screen, folded (about 2.2:1) or unfolded
              * (1.42:1), not 16:9 with bars. Settings changes both, and the file then says. */
-            char whole[KHDAYS_FS_PATH_MAX];
-            char *text = (char *)SDL_LoadFile(khdays_fs_path(path, whole, sizeof(whole)), NULL);
+            char *text = (char *)khdays_fs_load_file(path, NULL);
             const int pad_said = text != NULL && (SDL_strstr(text, "[gamepad") != NULL || SDL_strstr(text, "preset") != NULL);
             const int aspect_said = text != NULL && SDL_strstr(text, "aspect") != NULL;
             const int resolution_said = text != NULL && SDL_strstr(text, "internal_resolution") != NULL;
@@ -1260,6 +1263,24 @@ static int host_thread(void *unused)
                         text == NULL ? "no settings file yet" : "the settings file names no internal resolution");
             }
             SDL_free(text);
+            {
+                /* Builds before the phone's faster default wrote "internal_resolution = window" into every
+                 * settings file they made, so the default never reached an existing install. Once (a marker
+                 * file beside the settings says it was done), that old value becomes auto; a "window" chosen
+                 * in Settings afterwards is the player's and stays. */
+                char marker[600];
+                SDL_snprintf(marker, sizeof(marker), "%s.resolution-auto", path);
+                if (!khdays_fs_get_path_info(marker, NULL)) {
+                    if (resolution_said && profile.video.internal_resolution == KHDAYS_RESOLUTION_WINDOW &&
+                        SDL_getenv("KHDAYS_KEEP_RESOLUTION_WINDOW") == NULL) {
+                        profile.video.internal_resolution = KHDAYS_RESOLUTION_AUTO;
+                        khdays_profile_save(&profile, path, notice);
+                        fprintf(stderr, "host: the settings file said internal_resolution = window (an older build's "
+                                        "default): changed to auto once\n");
+                    }
+                    khdays_fs_save_file(marker, "1\n", 2);
+                }
+            }
         }
 #endif
         if (khdays_mod_installed(KHDAYS_MOD_WALK) && profile.enh.walk_speed == WALK_SPEED_DEFAULT) {
@@ -1622,6 +1643,9 @@ static int host_thread(void *unused)
                     redraw(window, renderer);
                     continue;
                 }
+                /* the three fingers are Escape: the menu must not go on following the second one (its lift
+                 * would be a tap on whatever row is under it) */
+                khdays_settings_touch_reset();
                 SDL_zero(event);
                 event.type = SDL_EVENT_KEY_DOWN;
                 event.key.scancode = SDL_SCANCODE_ESCAPE;

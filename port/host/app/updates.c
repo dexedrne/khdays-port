@@ -1,5 +1,6 @@
 /* host/app/updates.h. */
 #include "updates.h"
+#include "fs_path.h"
 
 #include "release_version.h"
 #include "update_install.h"
@@ -78,7 +79,7 @@ static int trusted(const char *url)
 
 static void read_state(void)
 {
-    char *text = (char *)SDL_LoadFile(STATE, NULL);
+    char *text = (char *)khdays_fs_load_file(STATE, NULL);
     char *line = text;
     if (text == NULL) {
         return;
@@ -130,9 +131,9 @@ static void write_state(void)
                                "asked = %lld\nlatest = %s\ninstaller = %s\ninstaller_url = %s\ninstaller_sha256 = %s\n"
                                "installer_size = %lld\nskip = %s\n",
                                asked, latest, installer.name, installer.url, installer.sha256, installer.size, skip);
-    SDL_CreateDirectory("saves");
-    if (n > 0 && SDL_SaveFile(STATE ".partial", text, (size_t)n)) {
-        SDL_RenamePath(STATE ".partial", STATE);
+    khdays_fs_create_directory("saves");
+    if (n > 0 && khdays_fs_save_file(STATE ".partial", text, (size_t)n)) {
+        khdays_fs_rename_path(STATE ".partial", STATE);
     }
     SDL_free(text);
 }
@@ -238,7 +239,7 @@ static int download_progress(void *unused, long long done)
 /* Whether the file `path` is `size` bytes long with the SHA-256 `sha256`. */
 static int file_matches(const char *path, long long size, const char *sha256)
 {
-    SDL_IOStream *in = SDL_IOFromFile(path, "rb");
+    SDL_IOStream *in = khdays_fs_io_from_file(path, "rb");
     KhdaysSha256 h;
     unsigned char digest[32];
     char got[65];
@@ -294,12 +295,12 @@ static int SDLCALL fetch(void *unused)
         return 0;
     }
     if (!file_matches(partial, want.size, want.sha256)) {
-        SDL_RemovePath(partial);
+        khdays_fs_remove_path(partial);
         download_over(KHDAYS_DOWNLOAD_FAILED, "the file is not the one GitHub lists (its size or SHA-256 differ)");
         return 0;
     }
-    SDL_RemovePath(file);
-    if (!SDL_RenamePath(partial, file)) {
+    khdays_fs_remove_path(file);
+    if (!khdays_fs_rename_path(partial, file)) {
         download_over(KHDAYS_DOWNLOAD_FAILED, "the file could not be put in place");
         return 0;
     }

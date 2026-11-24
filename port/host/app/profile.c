@@ -589,13 +589,12 @@ void khdays_settings_path(char *path, int size)
         khdays_host_user_path("settings.ini", path, size);
         /* another player's copy on the same PC starts from the first player's
          * settings (same PC, same screen and sound) */
-        char whole[KHDAYS_FS_PATH_MAX], first_whole[KHDAYS_FS_PATH_MAX];
-        const char *at = khdays_fs_path(path, whole, sizeof(whole));
-        if (khdays_host_player_slot_taken() > 1 && !SDL_GetPathInfo(at, NULL)) {
+        const char *at = path;
+        if (khdays_host_player_slot_taken() > 1 && !khdays_fs_get_path_info(at, NULL)) {
             size_t length = 0;
-            void *first = SDL_LoadFile(khdays_fs_path("saves/settings.ini", first_whole, sizeof(first_whole)), &length);
+            void *first = khdays_fs_load_file("saves/settings.ini", &length);
             if (first != NULL) {
-                SDL_SaveFile(at, first, length);
+                khdays_fs_save_file(at, first, length);
                 SDL_free(first);
             }
         }
@@ -1440,13 +1439,12 @@ void khdays_profile_load(KhdaysProfile *profile, const char *path, KhdaysNotice 
     size_t size = 0;
     char *text;
     Reader *r;
-    char whole[KHDAYS_FS_PATH_MAX];
     khdays_profile_default(profile);
     forget_unknown();
-    if (!SDL_GetPathInfo(khdays_fs_path(path, whole, sizeof(whole)), NULL)) {
+    if (!khdays_fs_get_path_info(path, NULL)) {
         return; /* no settings yet: the defaults */
     }
-    text = (char *)SDL_LoadFile(khdays_fs_path(path, whole, sizeof(whole)), &size);
+    text = (char *)khdays_fs_load_file(path, &size);
     r = (Reader *)SDL_calloc(1, sizeof(Reader));
     if (text != NULL && r != NULL) {
         r->profile = profile;
@@ -1454,9 +1452,8 @@ void khdays_profile_load(KhdaysProfile *profile, const char *path, KhdaysNotice 
         r->section = SEC_TOP;
         if (!read_text(r, text, size)) {
             char bad[512];
-            char bad_whole[KHDAYS_FS_PATH_MAX];
             SDL_snprintf(bad, sizeof(bad), "%s.bad", path);
-            SDL_CopyFile(khdays_fs_path(path, whole, sizeof(whole)), khdays_fs_path(bad, bad_whole, sizeof(bad_whole)));
+            khdays_fs_copy_file(path, bad);
             say(notice,
                 "settings: %s is not a settings file the port can read; it was kept as %s and the "
                 "defaults are used",
@@ -1821,16 +1818,14 @@ int khdays_profile_save(const KhdaysProfile *p, const char *path, KhdaysNotice n
         slash = SDL_strrchr(dir, '\\');
     }
     if (slash != NULL) {
-        char dir_whole[KHDAYS_FS_PATH_MAX];
         *slash = '\0';
-        SDL_CreateDirectory(khdays_fs_path(dir, dir_whole, sizeof(dir_whole)));
+        khdays_fs_create_directory(dir);
     }
     SDL_snprintf(tmp, sizeof(tmp), "%s.tmp", path);
     {
         /* whole paths: SDL on iOS keeps relative ones in Application Support (fs_path.h) */
-        char tmp_whole[KHDAYS_FS_PATH_MAX], path_whole[KHDAYS_FS_PATH_MAX];
-        const char *t_at = khdays_fs_path(tmp, tmp_whole, sizeof(tmp_whole));
-        ok = SDL_SaveFile(t_at, t.data, t.length) && SDL_RenamePath(t_at, khdays_fs_path(path, path_whole, sizeof(path_whole)));
+        const char *t_at = tmp;
+        ok = khdays_fs_save_file(t_at, t.data, t.length) && khdays_fs_rename_path(t_at, path);
     }
     if (!ok) {
         say(notice, "settings: %s could not be written: %s", path, SDL_GetError());

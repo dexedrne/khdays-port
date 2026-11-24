@@ -482,8 +482,7 @@ static void make_directories(const char *path)
             memcpy(part, path, (size_t)i);
             part[i] = '\0';
             {
-                char whole_[KHDAYS_FS_PATH_MAX];
-                SDL_CreateDirectory(khdays_fs_path(part, whole_, sizeof(whole_)));
+                khdays_fs_create_directory(part);
             }
         }
     }

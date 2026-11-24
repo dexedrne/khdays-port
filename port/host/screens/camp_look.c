@@ -1,4 +1,5 @@
 #include "camp_look.h"
+#include "../app/fs_path.h"
 
 #include "../app/places.h"
 #include "ui_text.h"
@@ -23,7 +24,7 @@ int khdays_camp_each_line(const char *path, void (*line)(char *text, const char 
                           const char *folder, void *ctx)
 {
     size_t size = 0;
-    char *text = (char *)SDL_LoadFile(path, &size), *next;
+    char *text = (char *)khdays_fs_load_file(path, &size), *next;
     if (text == NULL) {
         return 0;
     }

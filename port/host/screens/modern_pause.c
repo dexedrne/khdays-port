@@ -3,6 +3,7 @@
  * in, its E flipping back with a jump, the bands, the capsules, the bobbing glove -- with the pause's own words;
  * KH2's blue lines drawn white and grey. Without those files, a plainer pause of layouts/pause's pieces. */
 #include "modern_pause.h"
+#include "../app/fs_path.h"
 #include "game_pause.h"
 #include "../render/png_io.h"
 #include "../../runtime/movies/movie_hd.h"
@@ -364,7 +365,7 @@ static int key_load(SDL_Renderer *renderer, int language)
     sk.layout.who = "pause's settings key";
     sk.layout.renderer = renderer;
     snprintf(relative, sizeof(relative), "layouts/camp/%s/camp.txt", codes[language]);
-    if (!khdays_mods_find(relative, path, (int)sizeof(path)) || (text = (char *)SDL_LoadFile(path, &size)) == NULL) {
+    if (!khdays_mods_find(relative, path, (int)sizeof(path)) || (text = (char *)khdays_fs_load_file(path, &size)) == NULL) {
         return 0;
     }
     snprintf(folder, sizeof(folder), "%s", path);

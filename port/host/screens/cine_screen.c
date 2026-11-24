@@ -3,6 +3,7 @@
  * chapters (the port's list) or the game's page, each one's name and length; behind them the selected
  * one's artwork, read on a thread of its own, fades in over FADE_MS. */
 #include "cine_screen.h"
+#include "../app/fs_path.h"
 
 #include "layout_screen.h"
 #include "../app/host.h"
@@ -171,7 +172,7 @@ static uint32_t be32(const uint8_t *b)
  * Only its boxes' headers and the moov box are read. */
 static int mp4_seconds(const char *path)
 {
-    SDL_IOStream *io = SDL_IOFromFile(path, "rb");
+    SDL_IOStream *io = khdays_fs_io_from_file(path, "rb");
     Sint64 at = 0, end;
     int seconds = 0;
     if (io == NULL) {
@@ -256,7 +257,7 @@ static void add_chapter(const char *line)
         }
         khdays_movie_hd_scene_file(word, file, sizeof(file));
         more = (char **)realloc(c.stems, sizeof(char *) * (size_t)(c.stem_count + 1));
-        ok = more != NULL && SDL_GetPathInfo(file, NULL);
+        ok = more != NULL && khdays_fs_get_path_info(file, NULL);
         if (more != NULL) {
             c.stems = more;
             c.stems[c.stem_count] = SDL_strdup(word);
@@ -328,7 +329,7 @@ static int load(SDL_Renderer *renderer, int language)
     }
     snprintf(relative, sizeof(relative), "layouts/cine/%s/cine.txt", codes[language]);
     if (!khdays_mods_find(relative, path, (int)sizeof(path)) ||
-        (file_text = (char *)SDL_LoadFile(path, &file_size)) == NULL) {
+        (file_text = (char *)khdays_fs_load_file(path, &file_size)) == NULL) {
         return 0;
     }
     snprintf(folder, sizeof(folder), "%s", path);
