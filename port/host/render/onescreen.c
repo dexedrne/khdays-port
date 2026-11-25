@@ -1407,6 +1407,7 @@ void khdays_onescreen_prepare(const KhdaysFramePackage *p, int columns, KhdaysCo
     draw->backdrop_fit = composition->backdrop_fit;
     draw->hide3d_all = composition->hide3d_all;
     draw->lower_whole = composition->lower_whole;
+    draw->lower_below = composition->lower_below > 0.0f;
     for (int s = 0; s < 2; ++s) {
         draw->shop_screens[s] = composition->shop_screens[s];
         draw->shop_cut_layers[s] = composition->shop_cut_layers[s];

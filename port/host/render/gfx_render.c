@@ -1140,6 +1140,9 @@ static void one_reads(const KhdaysOneScreenDraw *one, int upper, const int colum
             out->count[e] = -1;
         }
     }
+    if (one->lower_below) {
+        out->count[!upper] = -1; /* (the lower screen whole: the window draws it below the picture) */
+    }
     for (int e = 0; e < 2; ++e) {
         for (int ty = 0; ty < ONE_TILES_Y && out->count[e] >= 0; ++ty) {
             int tx = 0;

@@ -10,8 +10,9 @@ from the port's own, `port/ui/compositions/port_days.txt` (`port/ui/composition.
 
 The file starts with `units port`, then sections
 `[<situation> [if <condition> ...]]` -- a condition is a state, `!` before it for
-its absence, `wide` (16:9 or wider) or `narrow` (4:3) -- taken in the file's
-order while their conditions hold. Their lines:
+its absence, `wide` (16:9 or wider) or `narrow` (4:3), `phone` (the phone's
+single screen filling the display) or `upright` (the phone held upright, on one
+screen) -- taken in the file's order while their conditions hold. Their lines:
 
 | Line | What it does |
 |---|---|
@@ -22,6 +23,7 @@ order while their conditions hold. Their lines:
 | `hide3d <hud\|all>` | not drawn |
 | `menu` | the common rule: the screens that show something, whole, as large as the picture allows (a situation no section names takes it too) |
 | `halves` | the two screens as one, joined in the middle: the upper's left half and the lower's right half where the DS has them, the DS's 256 columns enlarged to the picture's width (top and bottom cut when wider than 4:3); the upper's world's 3D enlarged with it (the HUD's left to its shapes), the lower's half under the section's shapes (Sora's memories in a battle) |
+| `lower-below <share>` | (on the phone held upright) the lower screen whole below the picture, `share` of the window's width, centred, inside the visible safe area; the picture across the width above it, its top and bottom rows cut as much as that needs, the section's corner shapes kept in what shows; a finger on it is the stylus; no lower-screen view over the picture (`port/host/render/gpu_present.c` `draw_split`) |
 | `stop` | no later section |
 | `backdrop <file> [at <corner>] [fit]` | a picture of the mod's `layouts/` folder (PNG) behind everything, covering the picture (with `fit`, inside it: all of it shows at any aspect ratio), its aspect kept, held at the corner |
 | `preload <file>` | a picture named as a backdrop's is (and an animated one's atlas) read ahead on a thread of its own while its section holds, so showing it later holds nothing up |

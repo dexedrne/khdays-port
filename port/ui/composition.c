@@ -103,17 +103,19 @@ typedef struct Shape3dDef {
     int fixed; /* `scale fixed(N)`: its scale and margins do not follow the HUD's */
 } Shape3dDef;
 
-enum { D_SCREENS, D_BRIGHTNESS, D_SHAPE, D_SHAPE3D, D_BACKDROP, D_PRELOAD, D_HIDE3D_ALL, D_MENU, D_HALVES, D_STOP };
+enum { D_SCREENS, D_BRIGHTNESS, D_SHAPE, D_SHAPE3D, D_BACKDROP, D_PRELOAD, D_HIDE3D_ALL, D_MENU, D_HALVES, D_LOWER_BELOW,
+       D_STOP };
 typedef struct Directive {
     int kind;
     int value; /* D_SCREENS, D_BRIGHTNESS: the choice; D_SHAPE, D_SHAPE3D: its index; D_BACKDROP,
-                 * D_PRELOAD: its name's (backdrops') */
+                 * D_PRELOAD: its name's (backdrops'); D_LOWER_BELOW: its share of the width, in thousandths */
 } Directive;
 
 typedef struct Condition {
     int state; /* KHDAYS_ST_*, or -1 for the picture's width or a mod */
     int negate;
-    int width; /* 1 `wide` (16:9 or wider), 2 `narrow` (4:3), 3 `phone` (khdays_composition_set_fill); 0 none */
+    int width; /* 1 `wide` (16:9 or wider), 2 `narrow` (4:3), 3 `phone` (khdays_composition_set_fill), 4 `upright`
+                * (khdays_composition_set_upright); 0 none */
     int mod;   /* `mod-<id>`: a mod of the port's features installed (runtime/mods/installed.h): its id + 1; 0 none */
 } Condition;
 
@@ -121,6 +123,8 @@ typedef struct Condition {
 static int current_columns = 256;
 /* the phone's single screen over the whole display (`phone`; khdays_composition_set_fill) */
 static int fill_picture, fill_movies;
+/* the phone held upright, on one screen (`upright`; khdays_composition_set_upright) */
+static int upright_picture;
 #define WIDE_COLUMNS 336 /* 16:9's 342 and wider; 16:10's 308 is neither wide nor narrow */
 
 typedef struct Section {
@@ -780,6 +784,9 @@ static int read_section(char **t, int n, const char **why)
         } else if (strcmp(w, "phone") == 0) {
             c.state = -1;
             c.width = 3; /* the phone's single screen over the whole display (khdays_composition_set_fill) */
+        } else if (strcmp(w, "upright") == 0) {
+            c.state = -1;
+            c.width = 4; /* the phone held upright, on one screen (khdays_composition_set_upright) */
         } else if (strncmp(w, "mod-", 4) == 0 && khdays_mod_named(w + 4) >= 0) {
             c.state = -1;
             c.mod = khdays_mod_named(w + 4) + 1;
@@ -908,6 +915,14 @@ static void read_text(const char *file, char *text)
         } else if (strcmp(line_words[0], "halves") == 0) {
             if (n != 1 || !add_directive(D_HALVES, 0)) {
                 why = "halves takes nothing";
+            }
+        } else if (strcmp(line_words[0], "lower-below") == 0) {
+            /* `lower-below <share>`: upright on the phone, the lower screen whole below the picture, `share` of
+             * the window's width (host/render/gpu_present.c draw_split) */
+            float share = 0.0f;
+            if (n != 2 || !number(line_words[1], &share) || share <= 0.0f || share > 1.0f ||
+                !add_directive(D_LOWER_BELOW, (int)(share * 1000.0f + 0.5f))) {
+                why = "lower-below <share of the width, above 0, at most 1>";
             }
         } else if (strcmp(line_words[0], "stop") == 0) {
             if (n != 1 || !add_directive(D_STOP, 0)) {
@@ -1069,6 +1084,7 @@ static int holds(const Section *s, const KhdaysSituation *situation)
                           : c->mod != 0   ? khdays_mod_installed(c->mod - 1)
                           : c->width == 1 ? current_columns >= WIDE_COLUMNS
                           : c->width == 3 ? fill_picture
+                          : c->width == 4 ? upright_picture
                                           : current_columns <= 256;
         if (truth == c->negate) {
             return 0;
@@ -2075,6 +2091,11 @@ void khdays_composition_set_lower_view_apart(int apart)
     lower_view_apart = apart;
 }
 
+void khdays_composition_set_upright(int upright)
+{
+    upright_picture = upright != 0;
+}
+
 void khdays_composition_set_fill(int picture, int movies)
 {
     fill_picture = picture != 0;
@@ -2182,6 +2203,7 @@ void khdays_composition_for(const KhdaysSituation *situation, int columns, Khday
     out->backdrop_fit = 0;
     out->hide3d_all = 0;
     out->lower_whole = 0;
+    out->lower_below = 0.0f;
     for (int s = 0; s < 2; ++s) {
         out->shop_screens[s] = out->shop_cut_layers[s] = 0u;
         out->shop_fade[s] = out->shop_with3d[s] = out->shop_slide[s] = 0;
@@ -2313,6 +2335,11 @@ void khdays_composition_for(const KhdaysSituation *situation, int columns, Khday
             case D_HIDE3D_ALL: out->hide3d_all = 1; break;
             case D_MENU: menu = 1; break;
             case D_HALVES: halves = 1; break;
+            case D_LOWER_BELOW:
+                if (out->lower_below <= 0.0f) { /* (the first that says it, as `screens`) */
+                    out->lower_below = (float)d->value / 1000.0f;
+                }
+                break;
             default: stopped = 1; break;
             }
         }
@@ -2355,7 +2382,8 @@ void khdays_composition_for(const KhdaysSituation *situation, int columns, Khday
     }
     out->screens = out->screens < 0 ? KHDAYS_SCREENS_UPPER : out->screens;
     lower_view_made = 0;
-    if (lower_view_on && !lower_view_apart && out->screens == KHDAYS_SCREENS_UPPER) {
+    /* (below the picture, the lower screen is already whole: no view over the picture) */
+    if (lower_view_on && !lower_view_apart && out->screens == KHDAYS_SCREENS_UPPER && out->lower_below <= 0.0f) {
         add_lower_view(columns, key_count, &shape_count);
     }
     out->brightness = out->brightness < 0 ? (int)KOB_DEFAULT : out->brightness;

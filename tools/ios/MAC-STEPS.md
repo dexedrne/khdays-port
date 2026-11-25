@@ -26,6 +26,14 @@ Do each step in a field with the DualSense connected, unfolded and then folded. 
 | Switch the controller off and touch the screen; press the Screen key, upright. | `host: gamepads: 0 connected, none plays; touch keys shown`. `picture N: touch keys drawn (...), their top at y T`. Upright as lying the view is `over the picture`, inside the safe area. Every part of the view takes the finger as the stylus. | A key or the Move pad lying over the view; a part of the view that presses a key instead. |
 | Open the settings (PS button) upright. | The Controls page shows every hint whole, one under the other. | Hints cut off mid-word. On a folded phone, check that each binding has a device label and a usable value on its own line. |
 
+## Phone checklist: mission select upright (round 12)
+
+| Do | Expect | A failure looks like |
+| --- | --- | --- |
+| Holo-Missions (Saix's mission select or Mission Mode), the phone upright, a mission opened (Summary, then D-pad right for Objectives and Rewards). | The world and the "Missions" bar across the top, "WORLD ..." at its foot; the mission panel (header, tabs, text, "A Embark B Back") whole below it, about 91% of the width, its text about 2.5x round 11's. The report: `drawn as the one-screen picture, the lower screen below it` and `split: 256xN covering the window, ... the lower screen at ...`; `lower view below the picture (the composition's lower-below)`. | The panel still small at the right over the world, the panel under the home bar, the header or the WORLD bar cut, a black or stale panel (not following the tabs). |
+| Tap a tab or the list on the panel (touch). | The game takes it as the DS's touch (the stylus rectangle is the panel). | A tap landing elsewhere. |
+| Turn the phone lying. | Exactly round 11's picture: the panel back at the right over the world. | Anything else lying. |
+
 ## Phone checklist: HD cutscenes
 
 Needs step 6. Start a new game for movie 802.

@@ -453,14 +453,20 @@ stop
 # backdrop), smaller the narrower the picture so that the world stays seen
 # beside it. All at the HUD's scale (the maintainer's choices from the
 # pictures, 2026-10-14 and 2026-10-15).
+# The phone held upright (`upright`): that panel at the right was a third of
+# the narrow picture and its text unreadable (the owner, 2026-11-24); there
+# the window puts the lower screen whole below the picture instead, 0.92 of
+# the width (`lower-below`), and the picture across the width above it.
 [world-selector]
 screens upper
 brightness upper
-[world-selector if wide]
+[world-selector if upright]
+lower-below 0.92
+[world-selector if wide !upright]
 shape lower at right margin 0 0 6 0 scale 0.52 round 8 force
-[world-selector if !wide !narrow]
+[world-selector if !wide !narrow !upright]
 shape lower at right margin 0 0 5 0 scale 0.45 round 8 force
-[world-selector if narrow]
+[world-selector if narrow !upright]
 shape lower at right margin 0 0 4 0 scale 0.38 round 8 force
 [world-selector]
 shape upper 0 0 128 16 at top-left scale 0.55

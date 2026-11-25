@@ -453,12 +453,11 @@ static void picture_area(int *pw, int *ph)
 /* FILL: the window's visible safe area (host/app/mobile_touch.h khdays_mobile_visible: inside the notch, the
  * home bar and clear of the rounded corners) in the units of the presentation `cols` x 192 that covers the
  * window, as OVERSCAN places it: centred, its overflow cut. 0 when not filling or with no safe area. */
-static int visible_presented(int cols, SDL_FRect *r)
+static int visible_presented_rows(int cols, int rows, SDL_FRect *r)
 {
     SDL_FRect vis;
     int ow = 0, oh = 0;
-    const int rows = H;
-    if (!fill_now() || window == NULL || cols <= 0 || !khdays_mobile_visible(window, &vis, NULL) ||
+    if (rows <= 0 || !fill_now() || window == NULL || cols <= 0 || !khdays_mobile_visible(window, &vis, NULL) ||
         !SDL_GetWindowSizeInPixels(window, &ow, &oh) || ow <= 0 || oh <= 0) {
         return 0;
     }
@@ -471,6 +470,92 @@ static int visible_presented(int cols, SDL_FRect *r)
         r->h = vis.h / s;
     }
     return 1;
+}
+
+static int visible_presented(int cols, SDL_FRect *r)
+{
+    return visible_presented_rows(cols, H, r);
+}
+
+/* Round 12 (owner, 2026-11-24: "days in portrait in mission select the world menu really really small cant see
+ * the mission summar objectives text"). Upright, the world selector's composition put the lower screen -- the
+ * mission's panel: its header, the Summary / Objectives / Rewards tabs and their text, the buttons' help -- at
+ * the picture's right at 0.38 of the DS's size, a third of the phone's width, over the world. A composition may
+ * now ask for the lower screen below the picture instead (`lower-below <share>`, ui/composition.h; only the
+ * world selector's does, docs/COMPOSITIONS.md): the presentation is `columns` wide and as tall as the window's
+ * shape gives; the lower screen whole at the foot of the visible safe area, `share` of its width, centred; the
+ * picture (the worlds in space, the header, the world's name) covering the room above it -- its top and bottom
+ * rows cut when that room is lower than the picture, its sides when it is taller (the folded phone) -- with the
+ * HUD's frame the part of it that shows inside the visible safe area, so the header and the world's name stay
+ * whole. A finger on the lower screen is the stylus. */
+#define SPLIT_GAP 3.0f  /* DS dots between the picture and the lower screen */
+#define SPLIT_FOOT 2.0f /* DS dots between the lower screen and the visible safe area's foot */
+
+typedef struct Split {
+    int rows;           /* the presentation's rows, `columns` wide */
+    SDL_FRect pic_from; /* the part of the picture shown, in its DS dots (`made` x 192) */
+    SDL_FRect pic_at;   /* where, in the presentation */
+    SDL_FRect lower_at; /* the lower screen, in the presentation */
+    float frame[4];     /* the HUD's frame: the part of the picture shown inside the visible safe area, its DS dots */
+} Split;
+
+/* the last composition's `lower-below` (0: none); the HUD's frame of a picture is set before it is composed,
+ * from this (the first picture of the world selector is composed with the frame of the scene before) */
+static float split_share;
+
+static int split_layout(int made, float share, Split *o)
+{
+    int pw = 0, ph = 0;
+    SDL_FRect vis;
+    if (window == NULL || !video.one_screen || !khdays_mobile_portrait(window) || made <= 0 || columns <= 0 ||
+        share <= 0.0f) {
+        return 0;
+    }
+    picture_area(&pw, &ph); /* (filling: the window; Fit: its safe area, where the presentation then goes) */
+    if (pw <= 0 || ph <= pw) {
+        return 0;
+    }
+    o->rows = (int)((double)columns * ph / pw);
+    if (o->rows <= H) {
+        return 0;
+    }
+    if (!visible_presented_rows(columns, o->rows, &vis)) {
+        vis = (SDL_FRect){0.0f, 0.0f, (float)columns, (float)o->rows};
+    }
+    {
+        const float x0 = SDL_max(0.0f, vis.x), y0 = SDL_max(0.0f, vis.y);
+        const float x1 = SDL_min((float)columns, vis.x + vis.w), y1 = SDL_min((float)o->rows, vis.y + vis.h);
+        float lw = share * (x1 - x0), lh = lw * (float)H / (float)W, room, s;
+        if (x1 - x0 < 16.0f || y1 - y0 < 64.0f) {
+            return 0;
+        }
+        /* the picture keeps at least the DS's half height above it (a nearly square window) */
+        if (y1 - SPLIT_FOOT - lh - SPLIT_GAP < (float)H / 2) {
+            lh = SDL_max(16.0f, y1 - SPLIT_FOOT - SPLIT_GAP - (float)H / 2);
+            lw = lh * (float)W / (float)H;
+        }
+        o->lower_at = (SDL_FRect){x0 + (x1 - x0 - lw) / 2, y1 - SPLIT_FOOT - lh, lw, lh};
+        room = o->lower_at.y - SPLIT_GAP;
+        o->pic_at = (SDL_FRect){0.0f, 0.0f, (float)columns, room};
+        /* the picture covering that room, centred, its overflow cut */
+        s = SDL_max((float)columns / (float)made, room / (float)H);
+        o->pic_from.w = (float)columns / s;
+        o->pic_from.h = room / s;
+        o->pic_from.x = ((float)made - o->pic_from.w) / 2;
+        o->pic_from.y = ((float)H - o->pic_from.h) / 2;
+        /* what shows of it inside the visible safe area */
+        o->frame[0] = o->pic_from.x + x0 / s;
+        o->frame[1] = o->pic_from.y + y0 / s;
+        o->frame[2] = o->pic_from.x + x1 / s;
+        o->frame[3] = o->pic_from.y + SDL_min(y1, room) / s;
+    }
+    return 1;
+}
+
+/* Whether the next picture is laid out with the lower screen below it, and its layout. */
+static int split_now(int made, Split *o)
+{
+    return split_share > 0.0f && split_layout(made, split_share, o);
 }
 
 /* FILL: where draw_fill puts a picture `made` DS columns wide in the presentation (`columns` wide, `*rows`
@@ -493,6 +578,11 @@ static SDL_FRect fill_at(int made, int *rows)
 static int fill_hud_frame(int made, float box[4])
 {
     SDL_FRect vis;
+    Split split;
+    if (split_now(made, &split)) {
+        SDL_memcpy(box, split.frame, sizeof(split.frame));
+        return box[2] > box[0] && box[3] > box[1];
+    }
     if (made <= 0 || !visible_presented(columns, &vis)) {
         return 0;
     }
@@ -540,11 +630,24 @@ static void hud_piece(const char *name, float x0, float y0, float x1, float y1, 
         return; /* (it covers the frame: the picture itself, not a piece in it) */
     }
     {
-        const SDL_FRect at = fill_at(made, &rows);
-        const float k = at.w / (float)made;
+        Split split;
+        SDL_FRect at = fill_at(made, &rows);
+        float k = at.w / (float)made, sx0 = 0.0f, sy0 = 0.0f;
+        if (split_now(made, &split)) {
+            /* (the picture's part shown above the lower screen; reported filling only: with Fit the presentation
+             * sits in the safe area, which this arithmetic does not place) */
+            if (!fill_now()) {
+                return;
+            }
+            rows = split.rows;
+            at = split.pic_at;
+            k = split.pic_at.w / split.pic_from.w;
+            sx0 = split.pic_from.x;
+            sy0 = split.pic_from.y;
+        }
         const float s = SDL_max((float)ow / (float)columns, (float)oh / (float)rows);
         const float ox = ((float)ow - (float)columns * s) / 2, oy = ((float)oh - (float)rows * s) / 2;
-        const float px0 = ox + (at.x + x0 * k) * s, py0 = oy + (at.y + y0 * k) * s;
+        const float px0 = ox + (at.x + (x0 - sx0) * k) * s, py0 = oy + (at.y + (y0 - sy0) * k) * s;
         SDL_strlcpy(hud_pieces[hud_piece_count].name, name, sizeof(hud_pieces[0].name));
         hud_pieces[hud_piece_count++].px = (SDL_FRect){px0, py0, (x1 - x0) * k * s, (y1 - y0) * k * s};
     }
@@ -2118,8 +2221,13 @@ static void present_now(const KhdaysFramePackage *p, int first)
                 khdays_composition_set_hud_frame(made, hud_framed ? frame : NULL);
             }
 #endif
+#ifdef KHDAYS_MOBILE
+            /* the compositions' `upright` sections (the world selector's lower screen below the picture) */
+            khdays_composition_set_upright(window != NULL && khdays_mobile_portrait(window));
+#endif
             khdays_onescreen_prepare(p, wide > W ? wide : W, &composition, &one);
 #ifdef KHDAYS_MOBILE
+            split_share = composition.screens == KHDAYS_SCREENS_UPPER ? composition.lower_below : 0.0f;
             ds_movie_text = NULL;
             if (khdays_onescreen_scene() == KHDAYS_SIT_MOVIE && movies_fill_now() && !lower_view &&
                 khdays_subtitles_shown() && !khdays_movie_hd_showing()) {
@@ -2777,6 +2885,43 @@ static void draw_fill(SDL_Texture *pic, const SDL_FRect *from, int made, int com
     lower_view_at = view;
     stylus_rect = view;
 }
+
+/* Upright, a composition with `lower-below` (round 12: the world selector): the one-screen picture `pic` (`made`
+ * DS columns wide) covering the room at the top, the lower screen whole below it (split_layout), on black. */
+static void draw_split(SDL_Texture *pic, int made, const Split *sp, SDL_Texture *lower, SDL_FRect lower_from)
+{
+    float tw = 0.0f, th = 0.0f;
+    SDL_FRect from;
+    present_size_as(columns, sp->rows, fill_now());
+    SDL_GetTextureSize(pic, &tw, &th);
+    from = (SDL_FRect){sp->pic_from.x * tw / (float)made, sp->pic_from.y * th / (float)H,
+                       sp->pic_from.w * tw / (float)made, sp->pic_from.h * th / (float)H};
+    picture_at = sp->pic_at;
+    one_at_x = sp->pic_at.x;
+    one_at_w = sp->pic_at.w;
+    one_at_y = sp->pic_at.y;
+    one_at_h = sp->pic_at.h;
+    SDL_SetTextureScaleMode(pic, mode_for(pic, sp->pic_at.w, sp->pic_at.h));
+    SDL_RenderTexture(renderer, pic, &from, &sp->pic_at);
+    if (wipe.on) {
+        draw_wipe(&sp->pic_at, sp->pic_at.w / sp->pic_from.w);
+    }
+    if (lower != NULL) {
+        SDL_SetTextureScaleMode(lower, mode_for(lower, sp->lower_at.w, sp->lower_at.h));
+        SDL_RenderTexture(renderer, lower, &lower_from, &sp->lower_at);
+        lower_view_shown = 1; /* (the lower screen is in the picture, whole: the view's button has nothing to add) */
+        lower_view_at = sp->lower_at;
+        stylus_rect = sp->lower_at;
+        view_where = "below the picture (the composition's lower-below)";
+    }
+    SDL_snprintf(fill_note, sizeof(fill_note),
+                 "split: %dx%d %s, the picture's %.1f,%.1f %.1fx%.1f at %.1f,%.1f %.1fx%.1f, the lower screen at "
+                 "%.1f,%.1f %.1fx%.1f",
+                 columns, sp->rows, fill_now() ? "covering the window" : "inside the safe area",
+                 (double)sp->pic_from.x, (double)sp->pic_from.y, (double)sp->pic_from.w, (double)sp->pic_from.h,
+                 (double)sp->pic_at.x, (double)sp->pic_at.y, (double)sp->pic_at.w, (double)sp->pic_at.h,
+                 (double)sp->lower_at.x, (double)sp->lower_at.y, (double)sp->lower_at.w, (double)sp->lower_at.h);
+}
 #endif
 
 /* A screen's place as an SDL rectangle. */
@@ -2825,8 +2970,12 @@ static void draw_screens(void)
         SDL_Texture *picture = khdays_gfx_render_picture(renderer, &made);
         /* the other screen, for the lower-screen view */
         SDL_Texture *other = screen_texture(one_kind == KHDAYS_SCREENS_LOWER ? port2d_upper : !port2d_upper, &wl);
+        Split split;
         draw_way = picture != NULL ? "the one-screen picture" : "nothing (no one-screen picture)";
-        if (picture != NULL) {
+        if (picture != NULL && one_kind == KHDAYS_SCREENS_UPPER && split_now(made, &split)) {
+            draw_way = "the one-screen picture, the lower screen below it";
+            draw_split(picture, made, &split, other, other != NULL ? ds_columns(other, wl) : (SDL_FRect){0, 0, 0, 0});
+        } else if (picture != NULL) {
             draw_fill(picture, NULL, made, 1, other, other != NULL ? ds_columns(other, wl) : (SDL_FRect){0, 0, 0, 0},
                       one_kind == KHDAYS_SCREENS_LOWER);
             SDL_FRect text_at;
@@ -2865,6 +3014,16 @@ static void draw_screens(void)
         int made = 0;
         SDL_Texture *picture = khdays_gfx_render_picture(renderer, &made);
 #ifdef KHDAYS_MOBILE
+        Split split;
+        if (picture != NULL && one_kind == KHDAYS_SCREENS_UPPER && split_now(made, &split)) {
+            /* (Fit, upright: the world selector's lower screen below the picture, in the safe area) */
+            int wl = 0;
+            SDL_Texture *lower = screen_texture(!port2d_upper, &wl);
+            draw_way = "the one-screen picture, the lower screen below it";
+            draw_split(picture, made, &split, lower, lower != NULL ? ds_columns(lower, wl) : (SDL_FRect){0, 0, 0, 0});
+            darken(1.0f - khdays_movie_hd_game_level());
+            return;
+        }
         /* (round 9: no room below the picture upright either: the picture's 192 rows, centred) */
         present_size(columns, H);
 #else

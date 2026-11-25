@@ -228,6 +228,71 @@ static void test_places(void)
     khdays_composition_load();
 }
 
+/* Round 12: the world selector (the mission select) on the phone held upright: no lower screen at the picture's
+ * right -- the composition asks the window for it below the picture (`lower-below 0.92`), with no lower-screen
+ * view over the picture; lying (and on a PC) the shapes as before, the lower screen at the right. A bad share
+ * is refused. */
+static void test_world_selector_upright(void)
+{
+    static const int columns[] = {256, 308, 342};
+    KhdaysSituation world = {KHDAYS_SIT_WORLD_SELECTOR, 0};
+    KhdaysComposition comp;
+    mods_file = KHDAYS_PORT_COMPOSITIONS_FILE;
+    ignored_lines = 0;
+    khdays_composition_load();
+    CHECK(ignored_lines == 0);
+    khdays_composition_set_hud_size(4);
+    for (int view = 0; view < 2; ++view) {
+        khdays_composition_set_lower_view(view, 0);
+        for (size_t n = 0; n < sizeof(columns) / sizeof(columns[0]); ++n) {
+            int lower = 0, lower_right = 0;
+            khdays_composition_set_upright(0);
+            khdays_composition_for(&world, columns[n], &comp);
+            CHECK(comp.screens == KHDAYS_SCREENS_UPPER && comp.lower_below == 0.0f);
+            for (int i = 0; i < comp.shape_count; ++i) {
+                if (comp.shapes[i].words[KO_FLAGS] & KOF_LOWER) {
+                    ++lower;
+                    lower_right += word_float(comp.shapes[i].words, KO_DST_X2) > (float)columns[n] - 7.0f;
+                }
+            }
+            /* lying: the panel at the right (and the view over the picture when it is on) */
+            CHECK(comp.shape_count == 5 + view && lower == 1 + view && lower_right >= 1);
+            khdays_composition_set_upright(1);
+            khdays_composition_for(&world, columns[n], &comp);
+            lower = 0;
+            for (int i = 0; i < comp.shape_count; ++i) {
+                lower += (comp.shapes[i].words[KO_FLAGS] & KOF_LOWER) != 0u;
+            }
+            /* upright: the header's four pieces alone, the lower screen below the picture (the window's) */
+            CHECK(comp.screens == KHDAYS_SCREENS_UPPER && fabsf(comp.lower_below - 0.92f) < 0.0005f);
+            CHECK(comp.shape_count == 4 && lower == 0);
+            {
+                float r[4];
+                CHECK(!khdays_composition_lower_view_rect(r));
+            }
+        }
+    }
+    khdays_composition_set_lower_view(0, 0);
+    /* the field upright is the field (only the world selector's section says `upright`) */
+    {
+        KhdaysSituation field = {KHDAYS_SIT_FIELD, 1u << KHDAYS_ST_HUD};
+        khdays_composition_for(&field, 256, &comp);
+        CHECK(comp.lower_below == 0.0f);
+    }
+    khdays_composition_set_upright(0);
+    /* a share above 0 and at most 1 */
+    mods_file = test_file("share.txt", "units port\n[world-selector]\nlower-below 0\nlower-below 1.5\nlower-below\n"
+                                       "lower-below 0.5\n");
+    ignored_lines = 0;
+    khdays_composition_load();
+    CHECK(ignored_lines == 3);
+    khdays_composition_for(&world, 256, &comp);
+    CHECK(fabsf(comp.lower_below - 0.5f) < 0.0005f);
+    remove(mods_file);
+    mods_file = NULL;
+    khdays_composition_load();
+}
+
 /* The port's own compositions: every line read; the game over's orb with its lines; the credits;
  * the countdown and the lock-on at the top in the middle whether the mission's information shows
  * or not; the party's rows -- at every HUD size. */
@@ -2128,6 +2193,7 @@ int main(void)
 {
     test_places();
     test_real_file();
+    test_world_selector_upright();
     test_field_hud_reference();
     test_hud_edge_alignment();
     test_mission_panel_place();

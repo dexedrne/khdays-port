@@ -41,6 +41,8 @@ typedef struct KhdaysOneScreenDraw {
     int hide3d_all;
     unsigned movie_text_engines; /* ov024 text drawn separately in the safe area, one bit per engine */
     int lower_whole; /* engine A, the lower screen, composed with its 3D (ui/composition.h) */
+    int lower_below; /* the lower screen composed whole though no shape reads it: the window draws it below the
+                      * picture (ui/composition.h `lower-below`, host/render/gpu_present.c draw_split) */
     /* The Moogle Shop's screens composed apart (ui/composition.h shop_*), and the camp's (the Files page's upper
      * screen, the Panels page's): by screen (0 the upper, 1 the lower), KHDAYS_SHOP_WANT_* bits, the layers its cut
      * leaves out, whether its normal one keeps the DS's fade, its 3D (at 1x) and is slid back by so many dots;

@@ -80,6 +80,10 @@ typedef struct KhdaysComposition {
     int backdrop_fit; /* 1: inside the picture, its aspect kept, instead of covering it (`backdrop ...
                        * fit`; a screen of the port's laid out over it: host/screens/camp_screen.c) */
     int hide3d_all;   /* `hide3d all`: the 3D not drawn */
+    /* `lower-below <share>` (upright on the phone: the world selector's mission panel, round 12): the window draws
+     * the picture across its width at the top and the lower screen whole below it, `share` of the width
+     * (host/render/gpu_present.c draw_split); 0 when the section does not ask for it */
+    float lower_below;
     int lower_whole;  /* the lower screen shown by the shapes whole, its 3D in it: engine A, when it is the lower
                        * screen, composed with its 3D (not apart from it) -- the 3D then not moved by any 3D shape */
     /* the Moogle Shop's screens composed apart (host/render/gfx_render.h khdays_gfx_render_shop), and the camp's
@@ -138,6 +142,9 @@ void khdays_composition_lower_view_drop(void);
  * instead of sitting in it at the DS's size; `movies` 1 does the same for the game's own movies (the situation
  * `movie`). Both 0 at the start and on a PC. */
 void khdays_composition_set_fill(int picture, int movies);
+/* The phone held upright on one screen: `upright` 1 makes the section condition `upright` hold (a section may then
+ * put the lower screen below the picture: `lower-below`). 0 at the start and on a PC. */
+void khdays_composition_set_upright(int upright);
 int khdays_composition_fill(void);
 /* The HUD's frame on the phone's filled display: the part of a picture `columns` DS dots wide (192 high) the
  * window shows inside its visible safe area (host/app/mobile_touch.h khdays_mobile_visible), x0, y0, x1, y1 in
